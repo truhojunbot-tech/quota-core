@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quota-core"
+version = "0.1.0"
+description = "Config-driven local LLM usage snapshots and dashboard rendering"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "quota_core maintainers" }
+]
+license = { text = "Proprietary until public release" }
+keywords = ["llm", "quota", "usage", "dashboard"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dashboard = ["fastapi", "uvicorn"]
+
+[project.scripts]
+quota-core = "quota_core.cli:main"
+
+[tool.setuptools]
+packages = [
+  "quota_core",
+  "quota_core.adapters",
+  "quota_core.dashboard",
+]
+
+[tool.setuptools.package-data]
+quota_core = ["fixtures/normalized/*.json"]
+
+[tool.setuptools.data-files]
+"share/doc/quota-core" = [
+  "docs/snapshot-schema.md",
+  "docs/public-private-boundary.md",
+]

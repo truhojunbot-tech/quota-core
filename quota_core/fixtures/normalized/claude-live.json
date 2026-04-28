@@ -1,0 +1,58 @@
+{
+  "source": "claude",
+  "sampled_at": 1770000000,
+  "windows": {
+    "five_hour": {
+      "window_start": 1769982000,
+      "window_end": 1770000000,
+      "resets_at": 1770000000,
+      "utilization": 0.42,
+      "total_tokens": 123456,
+      "requests": 72,
+      "by_project": {
+        "demo-project": {
+          "total_tokens": 90000,
+          "requests": 50,
+          "share_pct": 72.9,
+          "models": {
+            "claude-sonnet-4-6": 90000
+          },
+          "model_requests": {
+            "claude-sonnet-4-6": 50
+          }
+        }
+      },
+      "by_model": {
+        "claude-sonnet-4-6": {
+          "total_tokens": 90000,
+          "requests": 50,
+          "share_pct": 72.9,
+          "models": {},
+          "model_requests": {}
+        }
+      },
+      "runtime": {
+        "total_tokens": 12000,
+        "requests": 8,
+        "by_project": {
+          "demo-bot": {
+            "total_tokens": 12000,
+            "requests": 8,
+            "share_pct": 9.7,
+            "models": {
+              "claude-sonnet-4-6": 12000
+            },
+            "model_requests": {
+              "claude-sonnet-4-6": 8
+            }
+          }
+        },
+        "by_model": {}
+      },
+      "cache_state": "live",
+      "stale": false
+    }
+  },
+  "errors": [],
+  "warnings": []
+}
