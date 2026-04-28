@@ -18,6 +18,7 @@ WINDOW_SECONDS = {
     "minute": 60,
     "current_quota": 24 * 3600,
 }
+MAX_LOCAL_SCAN_FILE_BYTES = 50 * 1024 * 1024
 
 
 def normalize_gemini_usage(payload: dict[str, Any]) -> NormalizedSnapshot:
@@ -61,13 +62,20 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         return NormalizedSnapshot(
             source="gemini",
             sampled_at=sampled_at,
-            warnings=(f"gemini tmp_dir does not exist: {tmp_dir_raw}",),
+            warnings=("gemini tmp_dir does not exist",),
         )
 
     total_tokens = 0
     requests = 0
     projects: dict[str, AggregateBreakdown] = {}
+    skipped_large_files = 0
     for session_file in sorted(tmp_dir.rglob("session-*.json")):
+        try:
+            if session_file.stat().st_size > MAX_LOCAL_SCAN_FILE_BYTES:
+                skipped_large_files += 1
+                continue
+        except OSError:
+            continue
         record = _load_session_file(session_file)
         if record is None:
             continue
@@ -103,6 +111,10 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         )
         for project, aggregate in sorted(projects.items(), key=lambda item: -item[1].total_tokens)
     }
+    warnings = ()
+    if skipped_large_files:
+        warnings = (f"gemini skipped {skipped_large_files} oversized local files",)
+
     window = SnapshotWindow(
         window_start=None,
         window_end=sampled_at,
@@ -115,7 +127,7 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         cache_state="live",
         stale=False,
     )
-    return NormalizedSnapshot(source="gemini", sampled_at=sampled_at, windows={"local_all": window})
+    return NormalizedSnapshot(source="gemini", sampled_at=sampled_at, windows={"local_all": window}, warnings=warnings)
 
 
 def _load_session_file(path: Path) -> dict[str, Any] | None:

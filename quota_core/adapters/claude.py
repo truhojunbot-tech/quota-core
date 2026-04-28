@@ -18,6 +18,7 @@ WINDOW_SECONDS = {
     "five_hour": 5 * 3600,
     "seven_day": 7 * 24 * 3600,
 }
+MAX_LOCAL_SCAN_FILE_BYTES = 50 * 1024 * 1024
 
 
 def normalize_claude_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
@@ -78,44 +79,56 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         return NormalizedSnapshot(
             source="claude",
             sampled_at=sampled_at,
-            warnings=(f"claude projects_dir does not exist: {projects_dir_raw}",),
+            warnings=("claude projects_dir does not exist",),
         )
 
     total_tokens = 0
     requests = 0
     projects: dict[str, AggregateBreakdown] = {}
+    skipped_large_files = 0
 
     for jsonl_file in sorted(projects_dir.rglob("*.jsonl")):
         project_name = jsonl_file.parent.name or "unknown"
         try:
-            lines = jsonl_file.read_text(errors="replace").splitlines()
+            if jsonl_file.stat().st_size > MAX_LOCAL_SCAN_FILE_BYTES:
+                skipped_large_files += 1
+                continue
         except OSError:
             continue
-        for line in lines:
-            record = _parse_json_line(line)
-            if record is None:
-                continue
-            usage = _extract_usage(record)
-            if not usage:
-                continue
-            tokens = _usage_tokens(usage)
-            if tokens <= 0:
-                continue
-            model = _record_model(record)
-            total_tokens += tokens
-            requests += 1
-            current = projects.get(project_name, AggregateBreakdown())
-            models = dict(current.models)
-            model_requests = dict(current.model_requests)
-            if model:
-                models[model] = models.get(model, 0) + tokens
-                model_requests[model] = model_requests.get(model, 0) + 1
-            projects[project_name] = AggregateBreakdown(
-                total_tokens=current.total_tokens + tokens,
-                requests=current.requests + 1,
-                models=models,
-                model_requests=model_requests,
-            )
+        try:
+            line_iter = jsonl_file.open(errors="replace")
+        except OSError:
+            continue
+        with line_iter as lines:
+            for line in lines:
+                record = _parse_json_line(line)
+                if record is None:
+                    continue
+                usage = _extract_usage(record)
+                if not usage:
+                    continue
+                tokens = _usage_tokens(usage)
+                if tokens <= 0:
+                    continue
+                model = _record_model(record)
+                total_tokens += tokens
+                requests += 1
+                current = projects.get(project_name, AggregateBreakdown())
+                models = dict(current.models)
+                model_requests = dict(current.model_requests)
+                if model:
+                    models[model] = models.get(model, 0) + tokens
+                    model_requests[model] = model_requests.get(model, 0) + 1
+                projects[project_name] = AggregateBreakdown(
+                    total_tokens=current.total_tokens + tokens,
+                    requests=current.requests + 1,
+                    models=models,
+                    model_requests=model_requests,
+                )
+
+    warnings = ()
+    if skipped_large_files:
+        warnings = (f"claude skipped {skipped_large_files} oversized local files",)
 
     by_project = {
         project: AggregateBreakdown(
@@ -139,7 +152,7 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         cache_state="live",
         stale=False,
     )
-    return NormalizedSnapshot(source="claude", sampled_at=sampled_at, windows={"local_all": window})
+    return NormalizedSnapshot(source="claude", sampled_at=sampled_at, windows={"local_all": window}, warnings=warnings)
 
 
 def _project_aggregates(raw: Any, total_tokens: int) -> dict[str, AggregateBreakdown]:

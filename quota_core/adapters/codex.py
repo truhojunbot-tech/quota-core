@@ -77,7 +77,7 @@ def scan_codex_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnaps
         return NormalizedSnapshot(
             source="codex",
             sampled_at=sampled_at,
-            warnings=(f"codex state_db does not exist: {state_db_raw}",),
+            warnings=("codex state_db does not exist",),
         )
 
     try:
@@ -138,7 +138,8 @@ def scan_codex_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnaps
 
 
 def _thread_rows(state_db: Path) -> list[tuple[Any, Any, Any]]:
-    with sqlite3.connect(state_db, timeout=10) as conn:
+    uri = state_db.resolve().as_uri() + "?mode=ro"
+    with sqlite3.connect(uri, timeout=10, uri=True) as conn:
         return list(conn.execute("SELECT cwd, model, tokens_used FROM threads"))
 
 

@@ -136,7 +136,7 @@ def validate_config(config: QuotaCoreConfig) -> tuple[str, ...]:
         for key, raw_path in sorted(provider_config.paths.items()):
             candidate = Path(raw_path).expanduser()
             if not candidate.exists():
-                warnings.append(f"provider {provider_name}: path {key} does not exist: {raw_path}")
+                warnings.append(f"provider {provider_name}: path {key} does not exist")
     return tuple(warnings)
 
 

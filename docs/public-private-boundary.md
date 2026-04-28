@@ -104,6 +104,8 @@ Config must treat live credentials as optional. The public tool must still suppo
 Default behavior must be conservative:
 - Live probes disabled by default
 - Missing provider paths produce warnings, not crashes
+- Snapshot warnings should not echo full configured local paths
+- Local scanners should skip oversized files instead of loading unbounded input into memory
 - No network calls during `quota-core demo`
 - No private path assumptions
 

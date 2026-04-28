@@ -56,6 +56,7 @@ class ConfigTests(unittest.TestCase):
         warnings = validate_config(config)
         self.assertEqual(len(warnings), 1)
         self.assertIn("does not exist", warnings[0])
+        self.assertNotIn("/definitely/missing", warnings[0])
 
 
 class RuntimeTests(unittest.TestCase):
@@ -145,6 +146,21 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(window["requests"], 1)
             self.assertEqual(window["by_project"]["demo-project"]["models"]["claude-sonnet-4-6"], 35)
 
+    def test_claude_local_scanner_redacts_missing_path(self):
+        config = config_from_mapping(
+            {
+                "providers": {
+                    "claude": {
+                        "enabled": True,
+                        "paths": {"projects_dir": "/tmp/quota-core-private-missing-path"},
+                    }
+                }
+            }
+        )
+        snapshot = snapshot_to_dict(scan_config(config)[0])
+        self.assertEqual(snapshot["warnings"], ["claude projects_dir does not exist"])
+        self.assertNotIn("/tmp/quota-core-private-missing-path", json.dumps(snapshot))
+
     def test_codex_local_scanner_reads_state_db(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             state_db = Path(temp_dir) / "state_5.sqlite"
@@ -181,6 +197,21 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(window["requests"], 2)
             self.assertNotIn("ignored", window["by_project"])
             self.assertEqual(window["by_project"]["demo-codex"]["models"]["gpt-5.4"], 50)
+
+    def test_codex_local_scanner_redacts_missing_path(self):
+        config = config_from_mapping(
+            {
+                "providers": {
+                    "codex": {
+                        "enabled": True,
+                        "paths": {"state_db": "/tmp/quota-core-private-state.sqlite"},
+                    }
+                }
+            }
+        )
+        snapshot = snapshot_to_dict(scan_config(config)[0])
+        self.assertEqual(snapshot["warnings"], ["codex state_db does not exist"])
+        self.assertNotIn("/tmp/quota-core-private-state.sqlite", json.dumps(snapshot))
 
     def test_gemini_local_scanner_reads_sessions(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -236,6 +267,21 @@ class SnapshotTests(unittest.TestCase):
             self.assertEqual(window["requests"], 2)
             self.assertEqual(window["by_project"]["demo-gemini"]["models"]["gemini-2.5-pro"], 30)
             self.assertEqual(window["by_project"]["demo-gemini"]["models"]["gemini-2.5-flash"], 7)
+
+    def test_gemini_local_scanner_redacts_missing_path(self):
+        config = config_from_mapping(
+            {
+                "providers": {
+                    "gemini": {
+                        "enabled": True,
+                        "paths": {"tmp_dir": "/tmp/quota-core-private-gemini-tmp"},
+                    }
+                }
+            }
+        )
+        snapshot = snapshot_to_dict(scan_config(config)[0])
+        self.assertEqual(snapshot["warnings"], ["gemini tmp_dir does not exist"])
+        self.assertNotIn("/tmp/quota-core-private-gemini-tmp", json.dumps(snapshot))
 
 
 class PublicSplitGuardTests(unittest.TestCase):

@@ -117,3 +117,5 @@ See [docs/public-private-boundary.md](docs/public-private-boundary.md) for the f
 `quota_core demo` performs no network calls and reads no real provider data.
 
 `quota_core scan` should work from explicit local config. Live provider probes must be opt-in. Public fixtures should be synthetic, not copied from real logs.
+
+Scanner warnings avoid echoing full configured local paths into snapshot output. Claude and Gemini local scanners also skip oversized local files instead of loading them fully into memory.
