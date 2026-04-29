@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2 - 2026-04-29
+
+Operations dashboard correction.
+
+- Separated local-history snapshots from live quota windows in the dashboard UI.
+- Added attention and operations briefing sections for quota pressure, warnings, and project concentration.
+- Made provider summary cards choose the highest-pressure quota window instead of always preferring the shortest window.
+- Added regression coverage so local-only scans do not render as misleading `0.0%` quota utilization.
+
 ## 0.1.1 - 2026-04-29
 
 Dashboard usability update.

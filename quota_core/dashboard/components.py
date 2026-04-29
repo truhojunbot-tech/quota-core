@@ -9,6 +9,7 @@ import time
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, SnapshotWindow
 
 TOP_ROW_LIMIT = 12
+BRIEF_PROJECT_LIMIT = 5
 
 
 def badge(label: str, tone: str = "neutral") -> str:
@@ -52,6 +53,7 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
     total_tokens = 0
     total_requests = 0
     active_providers = 0
+    quota_windows = 0
     warnings = 0
     for snapshot in snapshots:
         if snapshot.errors:
@@ -64,23 +66,27 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
         total_tokens += window.total_tokens
         total_requests += window.requests
         active_providers += 1
+        quota_windows += sum(1 for name, item in snapshot.windows.items() if is_quota_window(name, item))
         warnings += len(snapshot.warnings)
         cards.append(provider_strip(snapshot))
 
     return (
         '<section class="qc-overview">'
         '<div class="qc-overview-copy">'
-        '<p class="qc-eyebrow">Local Usage</p>'
-        '<h2>Quota dashboard</h2>'
-        '<p>Provider usage, project share, and model mix from normalized local snapshots.</p>'
+        '<p class="qc-eyebrow">Operations</p>'
+        '<h2>Quota control</h2>'
+        '<p>Current pressure, local usage, project concentration, and model mix from normalized snapshots.</p>'
         '</div>'
         '<div class="qc-overview-metrics">'
         f'{metric_tile("Providers", str(active_providers), "enabled")}'
-        f'{metric_tile("Tokens", compact_number(total_tokens), "local total")}'
-        f'{metric_tile("Requests", compact_number(total_requests), "local total")}'
+        f'{metric_tile("Quota windows", str(quota_windows), "live/cached")}'
+        f'{metric_tile("Shown tokens", compact_number(total_tokens), "selected windows")}'
+        f'{metric_tile("Requests", compact_number(total_requests), "selected windows")}'
         f'{metric_tile("Notices", str(warnings), "warnings/errors")}'
         '</div>'
         f'<div class="qc-provider-strip">{"".join(cards)}</div>'
+        f'{attention_panel(snapshots)}'
+        f'{operations_briefing(snapshots)}'
         '</section>'
     )
 
@@ -90,10 +96,12 @@ def window_panel(name: str, window: SnapshotWindow, *, compact: bool = False) ->
 
     title = html.escape(window_label(name))
     extra_class = " qc-window-compact" if compact else ""
+    quota = is_quota_window(name, window)
+    bar = usage_bar(window.utilization) if quota else local_meter(window)
     return (
         f'<article class="qc-window{extra_class}">'
         f'<header><div><p class="qc-eyebrow">Window</p><h3>{title}</h3></div>{badge(window.cache_state, cache_tone(window))}</header>'
-        f'{usage_bar(window.utilization)}'
+        f'{bar}'
         f'{window_meta(window)}'
         f'{aggregate_table("Projects", window.by_project, kind="project")}'
         f'{aggregate_table("Models", window.by_model, kind="model")}'
@@ -108,6 +116,19 @@ def usage_bar(utilization: float) -> str:
     pct = max(0.0, min(100.0, utilization * 100))
     tone = "hot" if pct >= 85 else "warm" if pct >= 65 else "cool"
     return '<div class="qc-bar qc-bar-%s" aria-label="usage"><span style="width: %.1f%%"></span></div>' % (tone, pct)
+
+
+def local_meter(window: SnapshotWindow) -> str:
+    """Render a local-history meter without pretending it is quota utilization."""
+
+    leader = next(iter(window.by_project.values()), AggregateBreakdown())
+    share = max(0.0, min(100.0, leader.share_pct))
+    return (
+        '<div class="qc-local-meter" aria-label="local history">'
+        f'<span style="width: {share:.1f}%"></span>'
+        f'<em>top project {share:.1f}% share</em>'
+        '</div>'
+    )
 
 
 def aggregate_table(title: str, rows: dict[str, AggregateBreakdown], *, kind: str) -> str:
@@ -149,15 +170,15 @@ def stylesheet() -> str:
     return """
 * { box-sizing: border-box; }
 body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #18212f; background: #eef1f4; }
-main { max-width: 1320px; margin: 0 auto; padding: 24px; }
-h1 { margin: 0 0 18px; font-size: 26px; font-weight: 720; }
+main { max-width: 1380px; margin: 0 auto; padding: 22px; }
+h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-eyebrow { margin: 0 0 4px; color: #697586; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
-.qc-overview { display: grid; grid-template-columns: minmax(240px, 1fr) 2fr; gap: 16px; margin-bottom: 18px; }
-.qc-overview-copy, .qc-provider, .qc-overview-metrics, .qc-provider-strip article { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
+.qc-overview { display: grid; grid-template-columns: minmax(260px, .85fr) 2.15fr; gap: 14px; margin-bottom: 18px; }
+.qc-overview-copy, .qc-provider, .qc-overview-metrics, .qc-provider-strip article, .qc-attention, .qc-briefing { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
 .qc-overview-copy { padding: 18px; }
 .qc-overview-copy h2 { margin: 0 0 6px; font-size: 22px; }
 .qc-overview-copy p:last-child { margin: 0; color: #536173; line-height: 1.5; }
-.qc-overview-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; overflow: hidden; }
+.qc-overview-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; overflow: hidden; }
 .qc-metric { min-width: 0; padding: 16px; border-left: 1px solid #e5eaf0; }
 .qc-metric:first-child { border-left: 0; }
 .qc-metric dt { margin: 0; color: #697586; font-size: 12px; }
@@ -168,6 +189,26 @@ h1 { margin: 0 0 18px; font-size: 26px; font-weight: 720; }
 .qc-provider-strip h3 { margin: 0 0 10px; font-size: 16px; }
 .qc-strip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 8px; color: #536173; }
 .qc-strip-row strong { color: #18212f; }
+.qc-attention { grid-column: 1 / -1; padding: 14px; }
+.qc-attention h3, .qc-briefing h3 { margin: 0; font-size: 16px; }
+.qc-attention ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; list-style: none; margin: 12px 0 0; padding: 0; }
+.qc-attention li { min-width: 0; border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; background: #f9fafb; }
+.qc-attention strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qc-attention span { display: block; margin-top: 4px; color: #536173; font-size: 12px; }
+.qc-risk-high { border-color: #f0b4af !important; background: #fff5f5 !important; }
+.qc-risk-medium { border-color: #ead29d !important; background: #fffaf0 !important; }
+.qc-risk-low { border-color: #c8d9d4 !important; background: #f2fbf7 !important; }
+.qc-briefing { grid-column: 1 / -1; padding: 14px; }
+.qc-brief-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.qc-brief-card { border: 1px solid #e3e8ef; border-radius: 6px; overflow: hidden; }
+.qc-brief-card header { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; background: #f7f9fb; border-bottom: 1px solid #e3e8ef; }
+.qc-brief-card h4 { margin: 0; text-transform: capitalize; }
+.qc-brief-lines { margin: 0; padding: 10px 12px; }
+.qc-brief-lines div { display: grid; grid-template-columns: 82px 1fr; gap: 8px; padding: 4px 0; font-size: 13px; }
+.qc-brief-lines dt { color: #697586; }
+.qc-brief-lines dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.qc-brief-projects { margin: 0; padding: 0 12px 12px 28px; color: #536173; font-size: 13px; }
+.qc-brief-projects li { padding: 2px 0; }
 .qc-provider { padding: 18px; margin-bottom: 18px; }
 .qc-provider-head, .qc-window header, .qc-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .qc-provider h2, .qc-window h3, .qc-table-wrap h4, .qc-runtime h4 { margin: 0; }
@@ -188,6 +229,9 @@ h1 { margin: 0 0 18px; font-size: 26px; font-weight: 720; }
 .qc-bar-cool span { background: #287f71; }
 .qc-bar-warm span { background: #c17a1b; }
 .qc-bar-hot span { background: #c2413a; }
+.qc-local-meter { position: relative; height: 26px; background: #eef2f5; border-radius: 6px; overflow: hidden; margin: 14px 0; }
+.qc-local-meter span { display: block; height: 100%; background: #c8d7e1; }
+.qc-local-meter em { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 10px; color: #334155; font-size: 12px; font-style: normal; font-weight: 650; }
 .qc-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
 .qc-metrics div { background: #f9fafb; border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; }
 .qc-metrics dt { font-size: 12px; color: #697586; }
@@ -207,8 +251,8 @@ h1 { margin: 0 0 18px; font-size: 26px; font-weight: 720; }
 .qc-warning { margin: 12px 0 0; color: #7a4b00; }
 @media (max-width: 900px) {
   main { padding: 16px; }
-  .qc-overview, .qc-provider-strip { grid-template-columns: 1fr; }
-  .qc-overview-metrics, .qc-kpis, .qc-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .qc-overview, .qc-provider-strip, .qc-brief-grid, .qc-attention ol { grid-template-columns: 1fr; }
+    .qc-overview-metrics, .qc-kpis, .qc-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 620px) {
   .qc-overview-metrics, .qc-kpis, .qc-metrics { grid-template-columns: 1fr; }
@@ -221,10 +265,20 @@ h1 { margin: 0 0 18px; font-size: 26px; font-weight: 720; }
 def primary_window_for(snapshot: NormalizedSnapshot) -> tuple[str, SnapshotWindow]:
     """Return the most operationally useful window for a provider."""
 
-    for name in ("five_hour", "current_quota", "local_all", "today", "seven_day"):
-        if name in snapshot.windows:
-            return name, snapshot.windows[name]
+    quota_windows = [
+        (name, snapshot.windows[name])
+        for name in ("five_hour", "current_quota", "seven_day", "today")
+        if name in snapshot.windows and is_quota_window(name, snapshot.windows[name])
+    ]
+    if quota_windows:
+        return max(quota_windows, key=lambda item: item[1].utilization)
+    if "local_all" in snapshot.windows:
+        return "local_all", snapshot.windows["local_all"]
     return next(iter(snapshot.windows.items()))
+
+
+def is_quota_window(name: str, window: SnapshotWindow) -> bool:
+    return name != "local_all" and (window.resets_at is not None or window.window_start is not None or window.utilization > 0)
 
 
 def provider_strip(snapshot: NormalizedSnapshot) -> str:
@@ -232,12 +286,16 @@ def provider_strip(snapshot: NormalizedSnapshot) -> str:
 
     name, window = primary_window_for(snapshot)
     source = html.escape(snapshot.source.title())
+    quota = is_quota_window(name, window)
+    meter = usage_bar(window.utilization) if quota else local_meter(window)
+    status = percent(window.utilization) if quota else "local history"
+    token_label = "Used" if quota else "Tokens"
     return (
         '<article>'
         f'<h3>{source}</h3>'
-        f'{usage_bar(window.utilization)}'
-        f'<div class="qc-strip-row"><span>{html.escape(window_label(name))}</span><strong>{percent(window.utilization)}</strong></div>'
-        f'<div class="qc-strip-row"><span>Tokens</span><strong>{compact_number(window.total_tokens)}</strong></div>'
+        f'{meter}'
+        f'<div class="qc-strip-row"><span>{html.escape(window_label(name))}</span><strong>{status}</strong></div>'
+        f'<div class="qc-strip-row"><span>{token_label}</span><strong>{compact_number(window.total_tokens)}</strong></div>'
         '</article>'
     )
 
@@ -245,10 +303,11 @@ def provider_strip(snapshot: NormalizedSnapshot) -> str:
 def provider_kpis(window_name: str, window: SnapshotWindow) -> str:
     """Render provider KPI tiles."""
 
+    quota = is_quota_window(window_name, window)
     return (
         '<dl class="qc-kpis">'
         f'{kpi("Window", window_label(window_name))}'
-        f'{kpi("Utilization", percent(window.utilization))}'
+        f'{kpi("Utilization", percent(window.utilization) if quota else "local history")}'
         f'{kpi("Tokens", compact_number(window.total_tokens))}'
         f'{kpi("Requests", f"{window.requests:,}")}'
         f'{kpi("Reset", reset_label(window))}'
@@ -259,14 +318,111 @@ def provider_kpis(window_name: str, window: SnapshotWindow) -> str:
 def window_meta(window: SnapshotWindow) -> str:
     """Render window metrics."""
 
+    quota = window.resets_at is not None or window.window_start is not None or window.utilization > 0
     return (
         '<dl class="qc-metrics">'
         f'{metric_block("Tokens", compact_number(window.total_tokens))}'
         f'{metric_block("Requests", f"{window.requests:,}")}'
-        f'{metric_block("Utilization", percent(window.utilization))}'
-        f'{metric_block("Pace", pace_label(window))}'
+        f'{metric_block("Utilization", percent(window.utilization) if quota else "local history")}'
+        f'{metric_block("Pace", pace_label(window) if quota else concentration_label(window))}'
         '</dl>'
     )
+
+
+def attention_panel(snapshots: list[NormalizedSnapshot]) -> str:
+    items: list[tuple[str, str, str]] = []
+    for snapshot in snapshots:
+        source = snapshot.source.title()
+        for error in snapshot.errors:
+            items.append(("high", source, error))
+        for warning in snapshot.warnings:
+            items.append(("medium", source, warning))
+        for name, window in snapshot.windows.items():
+            if is_quota_window(name, window):
+                if window.utilization >= 0.85:
+                    items.append(("high", source, f"{window_label(name)} at {percent(window.utilization)}"))
+                elif window.utilization >= 0.65:
+                    items.append(("medium", source, f"{window_label(name)} at {percent(window.utilization)}"))
+            top_project = next(iter(window.by_project.items()), None)
+            if top_project and top_project[1].share_pct >= 50:
+                items.append(("medium", source, f"{display_name(top_project[0], kind='project')} owns {top_project[1].share_pct:.1f}%"))
+    if not items:
+        items.append(("low", "All providers", "No quota pressure or warnings in the current snapshot"))
+    rows = "".join(
+        f'<li class="qc-risk-{html.escape(tone)}"><strong>{html.escape(title)}</strong><span>{html.escape(detail)}</span></li>'
+        for tone, title, detail in items[:6]
+    )
+    return f'<section class="qc-attention"><h3>Attention</h3><ol>{rows}</ol></section>'
+
+
+def operations_briefing(snapshots: list[NormalizedSnapshot]) -> str:
+    cards = "".join(briefing_card(snapshot) for snapshot in snapshots)
+    return f'<section class="qc-briefing"><h3>Operations briefing</h3><div class="qc-brief-grid">{cards}</div></section>'
+
+
+def briefing_card(snapshot: NormalizedSnapshot) -> str:
+    source = html.escape(snapshot.source)
+    if snapshot.errors:
+        errors = "".join(f"<li>{html.escape(error)}</li>" for error in snapshot.errors)
+        return f'<article class="qc-brief-card"><header><h4>{source}</h4>{badge("error", "danger")}</header><ul class="qc-brief-projects">{errors}</ul></article>'
+    if not snapshot.windows:
+        return f'<article class="qc-brief-card"><header><h4>{source}</h4>{badge("empty", "muted")}</header></article>'
+
+    lines = []
+    for name in ("five_hour", "seven_day", "current_quota", "local_all"):
+        window = snapshot.windows.get(name)
+        if window is None:
+            continue
+        label = window_label(name)
+        value = quota_brief(window) if is_quota_window(name, window) else local_brief(window)
+        lines.append(f'<div><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>')
+    if not lines:
+        name, window = primary_window_for(snapshot)
+        lines.append(f'<div><dt>{html.escape(window_label(name))}</dt><dd>{html.escape(local_brief(window))}</dd></div>')
+
+    _, primary = primary_window_for(snapshot)
+    projects = "".join(
+        f'<li>{html.escape(display_name(name, kind="project"))}: {aggregate.share_pct:.1f}%</li>'
+        for name, aggregate in list(primary.by_project.items())[:BRIEF_PROJECT_LIMIT]
+    )
+    projects_block = f'<ol class="qc-brief-projects">{projects}</ol>' if projects else ""
+    return (
+        '<article class="qc-brief-card">'
+        f'<header><h4>{source}</h4>{badge(primary.cache_state, cache_tone(primary))}</header>'
+        f'<dl class="qc-brief-lines">{"".join(lines)}</dl>'
+        f'{projects_block}'
+        '</article>'
+    )
+
+
+def quota_brief(window: SnapshotWindow) -> str:
+    pace = pace_label(window)
+    suffix = f", {pace}" if pace != "--" else ""
+    return f"{percent(window.utilization)} · {quota_reset_text(window)} · {compact_number(window.total_tokens)} tokens{suffix}"
+
+
+def quota_reset_text(window: SnapshotWindow) -> str:
+    label = reset_label(window)
+    if label == "--":
+        return "no reset"
+    if label == "reset":
+        return "reset now"
+    return f"reset {label}"
+
+
+def local_brief(window: SnapshotWindow) -> str:
+    return f"{compact_number(window.total_tokens)} tokens · {window.requests:,} requests · {concentration_label(window)}"
+
+
+def concentration_label(window: SnapshotWindow) -> str:
+    top_project = next(iter(window.by_project.values()), None)
+    if top_project is None:
+        return "no project mix"
+    if top_project.share_pct >= 50:
+        return f"top-heavy {top_project.share_pct:.0f}%"
+    if top_project.share_pct >= 25:
+        return f"focused {top_project.share_pct:.0f}%"
+    return f"spread {top_project.share_pct:.0f}% top"
 
 
 def kpi(label: str, value: str) -> str:

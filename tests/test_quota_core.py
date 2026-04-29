@@ -10,8 +10,9 @@ from pathlib import Path
 from quota_core.adapters.claude import normalize_claude_quota
 from quota_core.config import config_from_mapping, load_config, validate_config, write_default_config
 from quota_core.runtime import runtime_env
-from quota_core.snapshot import snapshot_to_dict, validate_snapshot_dict
+from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
 from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
+from quota_core.dashboard.renderer import render_page
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -109,6 +110,27 @@ class SnapshotTests(unittest.TestCase):
     def test_invalid_snapshot_reports_errors(self):
         errors = validate_snapshot_dict({"source": "", "sampled_at": "bad", "windows": []})
         self.assertGreaterEqual(len(errors), 3)
+
+    def test_dashboard_distinguishes_local_history_from_quota(self):
+        snapshot = NormalizedSnapshot(
+            source="claude",
+            sampled_at=1770000000,
+            windows={
+                "local_all": SnapshotWindow(
+                    total_tokens=1000,
+                    requests=2,
+                    by_project={
+                        "demo": AggregateBreakdown(total_tokens=800, requests=1, share_pct=80.0),
+                    },
+                    cache_state="live",
+                )
+            },
+        )
+        page = render_page([snapshot])
+        self.assertIn("Operations briefing", page)
+        self.assertIn("local history", page)
+        self.assertIn("top-heavy 80%", page)
+        self.assertNotIn("<dt>Utilization</dt><dd>0.0%</dd>", page)
 
     def test_claude_local_scanner_reads_jsonl(self):
         with tempfile.TemporaryDirectory() as temp_dir:
