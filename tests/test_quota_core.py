@@ -14,6 +14,7 @@ from quota_core.runtime import runtime_env
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
 from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
 from quota_core.dashboard.renderer import render_page
+from quota_core.dashboard.view_model import build_provider_dashboard
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -189,6 +190,40 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("weekly-app", page)
         self.assertIn("sonnet 100.0%", page)
 
+    def test_dashboard_view_model_matches_original_report_windows(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="codex",
+            sampled_at=now,
+            windows={
+                "five_hour": SnapshotWindow(
+                    window_start=now - 3600,
+                    window_end=now,
+                    resets_at=now + 4 * 3600,
+                    utilization=0.21,
+                    total_tokens=2100,
+                    requests=21,
+                    by_project={"short-app": AggregateBreakdown(total_tokens=2100, requests=21, share_pct=100.0)},
+                    cache_state="live",
+                ),
+                "seven_day": SnapshotWindow(
+                    window_start=now - 24 * 3600,
+                    window_end=now,
+                    resets_at=now + 6 * 24 * 3600,
+                    utilization=0.44,
+                    total_tokens=4400,
+                    requests=44,
+                    by_project={"weekly-app": AggregateBreakdown(total_tokens=4400, requests=44, share_pct=100.0)},
+                    cache_state="live",
+                ),
+                "local_all": SnapshotWindow(total_tokens=9000, requests=90, cache_state="live"),
+            },
+        )
+        provider = build_provider_dashboard(snapshot)
+        self.assertEqual([item.name for item in provider.comparison], ["five_hour", "seven_day"])
+        self.assertEqual(provider.primary.name if provider.primary else None, "seven_day")
+        self.assertEqual([item.name for item in provider.details], ["local_all"])
+
     def test_dashboard_pairs_current_quota_with_seven_day_when_no_five_hour(self):
         now = int(time.time())
         snapshot = NormalizedSnapshot(
@@ -222,6 +257,10 @@ class SnapshotTests(unittest.TestCase):
             },
         )
         page = render_page([snapshot])
+        provider = build_provider_dashboard(snapshot)
+        self.assertEqual([item.name for item in provider.comparison], ["current_quota", "seven_day"])
+        self.assertTrue(provider.comparison[0].is_quota)
+        self.assertTrue(provider.comparison[1].is_usage)
         self.assertIn("Current quota usage", page)
         self.assertIn("7 day usage", page)
         self.assertIn("qc-quota-split", page)

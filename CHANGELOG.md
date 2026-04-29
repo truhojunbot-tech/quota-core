@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.8 - 2026-04-29
+
+Dashboard structure refactor.
+
+- Added a dashboard view model that maps snapshots into the original operations report structure before rendering.
+- Moved provider window pairing, primary-window selection, reset ordering, and data-state summaries out of HTML components.
+- Added regression coverage for Claude/Codex-style 5-hour + 7-day and Gemini-style current quota + 7-day grouping.
+
 ## 0.1.7 - 2026-04-29
 
 Gemini quota window alignment.

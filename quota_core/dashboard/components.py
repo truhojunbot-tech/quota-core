@@ -7,6 +7,17 @@ import html
 import time
 
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, SnapshotWindow
+from quota_core.dashboard.view_model import (
+    DashboardWindow,
+    ProviderDashboard,
+    build_dashboard,
+    build_provider_dashboard,
+    data_state_label,
+    iter_quota_windows,
+    next_reset_window,
+    pressure_windows,
+    window_is_quota,
+)
 
 TOP_ROW_LIMIT = 12
 BRIEF_PROJECT_LIMIT = 5
@@ -24,6 +35,8 @@ def badge(label: str, tone: str = "neutral") -> str:
 def provider_summary(snapshot: NormalizedSnapshot) -> str:
     """Render provider-level summary."""
 
+    provider = build_provider_dashboard(snapshot)
+
     source = html.escape(snapshot.source)
     if snapshot.errors:
         body = "".join(f"<p>{html.escape(error)}</p>" for error in snapshot.errors)
@@ -31,16 +44,18 @@ def provider_summary(snapshot: NormalizedSnapshot) -> str:
     if not snapshot.windows:
         return f'<section class="qc-provider qc-provider-empty"><h2>{source}</h2>{badge("empty", "muted")}</section>'
 
-    primary_name, primary_window = primary_window_for(snapshot)
-    windows = provider_windows(snapshot, primary_name=primary_name)
+    if provider.primary is None:
+        return f'<section class="qc-provider qc-provider-empty"><h2>{source}</h2>{badge("empty", "muted")}</section>'
+    primary = provider.primary
+    windows = provider_windows(provider)
     warnings = "".join(f"<p class=\"qc-warning\">{html.escape(warning)}</p>" for warning in snapshot.warnings)
     return (
         '<section class="qc-provider">'
         '<div class="qc-provider-head">'
         f'<div><p class="qc-eyebrow">Provider</p><h2>{source}</h2></div>'
-        f'{badge(primary_window.cache_state, cache_tone(primary_window))}'
+        f'{badge(primary.window.cache_state, cache_tone(primary.window))}'
         '</div>'
-        f'{provider_kpis(primary_name, primary_window)}'
+        f'{provider_kpis(primary)}'
         f'{warnings}'
         f'{windows}'
         '</section>'
@@ -50,26 +65,30 @@ def provider_summary(snapshot: NormalizedSnapshot) -> str:
 def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
     """Render a top-level operational summary for all providers."""
 
+    providers = build_dashboard(snapshots)
     cards = []
     total_tokens = 0
     total_requests = 0
     active_providers = 0
     quota_windows = 0
     warnings = 0
-    for snapshot in snapshots:
+    for provider in providers:
+        snapshot = provider.snapshot
         if snapshot.errors:
             warnings += len(snapshot.errors)
             continue
         if not snapshot.windows:
             warnings += len(snapshot.warnings)
             continue
-        _, window = primary_window_for(snapshot)
-        total_tokens += window.total_tokens
-        total_requests += window.requests
+        if provider.primary is None:
+            warnings += len(snapshot.warnings)
+            continue
+        total_tokens += provider.primary.window.total_tokens
+        total_requests += provider.primary.window.requests
         active_providers += 1
-        quota_windows += sum(1 for name, item in snapshot.windows.items() if is_quota_window(name, item))
+        quota_windows += sum(1 for item in provider.windows if item.is_quota)
         warnings += len(snapshot.warnings)
-        cards.append(provider_strip(snapshot))
+        cards.append(provider_strip(provider))
 
     return (
         '<section class="qc-overview">'
@@ -78,7 +97,7 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
         '<p class="qc-eyebrow">Operations</p>'
         '<h2>Quota control</h2>'
         '</div>'
-        f'{command_center(snapshots)}'
+        f'{command_center(providers)}'
         '</div>'
         '<div class="qc-overview-metrics">'
         f'{metric_tile("Providers", str(active_providers), "enabled")}'
@@ -88,36 +107,38 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
         f'{metric_tile("Notices", str(warnings), "warnings/errors")}'
         '</div>'
         f'<div class="qc-provider-strip">{"".join(cards)}</div>'
-        f'{quota_matrix(snapshots)}'
-        f'{reset_schedule(snapshots)}'
-        f'{attention_panel(snapshots)}'
-        f'{operations_briefing(snapshots)}'
+        f'{quota_matrix(providers)}'
+        f'{reset_schedule(providers)}'
+        f'{attention_panel(providers)}'
+        f'{operations_briefing(providers)}'
         '</section>'
     )
 
 
-def provider_windows(snapshot: NormalizedSnapshot, *, primary_name: str) -> str:
+def provider_windows(provider: ProviderDashboard) -> str:
     """Render provider windows, pairing short and weekly quota views when present."""
 
-    paired_names = paired_quota_names(snapshot)
     panels = []
-    if paired_names:
-        paired = "".join(window_panel(name, snapshot.windows[name], project_title="Apps") for name in paired_names)
+    paired_names = {item.name for item in provider.comparison}
+    if provider.comparison:
+        paired = "".join(window_panel(item, project_title="Apps") for item in provider.comparison)
         panels.append(f'<div class="qc-quota-split">{paired}</div>')
-    for name, window in snapshot.windows.items():
-        if name in paired_names:
+    for item in provider.details:
+        if item.name in paired_names:
             continue
-        panels.append(window_panel(name, window, compact=name != primary_name))
+        primary_name = provider.primary.name if provider.primary else ""
+        panels.append(window_panel(item, compact=item.name != primary_name))
     return "".join(panels)
 
 
-def window_panel(name: str, window: SnapshotWindow, *, compact: bool = False, project_title: str = "Projects") -> str:
+def window_panel(item: DashboardWindow, *, compact: bool = False, project_title: str = "Projects") -> str:
     """Render one normalized quota/session window."""
 
+    name = item.name
+    window = item.window
     title = html.escape(window_label(name))
     extra_class = " qc-window-compact" if compact else ""
-    quota = is_quota_window(name, window)
-    bar = usage_bar(window.utilization) if quota else local_meter(window)
+    bar = usage_bar(window.utilization) if item.is_quota else local_meter(window)
     return (
         f'<article class="qc-window{extra_class}">'
         f'<header><div><p class="qc-eyebrow">Window</p><h3>{title}</h3></div>{badge(window.cache_state, cache_tone(window))}</header>'
@@ -129,25 +150,6 @@ def window_panel(name: str, window: SnapshotWindow, *, compact: bool = False, pr
         f'{runtime_section(window)}'
         '</article>'
     )
-
-
-def paired_quota_names(snapshot: NormalizedSnapshot) -> list[str]:
-    """Return the quota windows that should be compared side by side."""
-
-    short_name = next(
-        (
-            name
-            for name in ("five_hour", "current_quota", "today")
-            if name in snapshot.windows and is_comparison_window(name, snapshot.windows[name])
-        ),
-        None,
-    )
-    has_week = "seven_day" in snapshot.windows and is_comparison_window("seven_day", snapshot.windows["seven_day"])
-    if short_name and has_week:
-        return [short_name, "seven_day"]
-    if has_week:
-        return ["seven_day"]
-    return [short_name] if short_name else []
 
 
 def usage_bar(utilization: float) -> str:
@@ -171,23 +173,23 @@ def local_meter(window: SnapshotWindow) -> str:
     )
 
 
-def command_center(snapshots: list[NormalizedSnapshot]) -> str:
+def command_center(providers: tuple[ProviderDashboard, ...]) -> str:
     """Render the most important operating state in one compact block."""
 
-    pressure = pressure_windows(snapshots)
+    pressure = pressure_windows(providers)
     highest = pressure[0] if pressure else None
-    next_reset = next_reset_window(snapshots)
-    data_state = data_state_label(snapshots)
+    next_reset = next_reset_window(providers)
+    data_state = data_state_label(providers)
     if highest is None:
         pressure_text = "No live quota pressure"
     else:
-        source, name, window = highest
-        pressure_text = f"{source.title()} {window_label(name)} {percent(window.utilization)}"
+        source, item = highest
+        pressure_text = f"{source.title()} {window_label(item.name)} {percent(item.window.utilization)}"
     if next_reset is None:
         reset_text = "No quota reset scheduled"
     else:
-        source, name, window = next_reset
-        reset_text = f"{source.title()} {window_label(name)} resets {reset_label(window)}"
+        source, item = next_reset
+        reset_text = f"{source.title()} {window_label(item.name)} resets {reset_label(item.window)}"
     return (
         '<div class="qc-command-center">'
         f'<div><span>Highest pressure</span><strong>{html.escape(pressure_text)}</strong></div>'
@@ -197,20 +199,20 @@ def command_center(snapshots: list[NormalizedSnapshot]) -> str:
     )
 
 
-def quota_matrix(snapshots: list[NormalizedSnapshot]) -> str:
+def quota_matrix(providers: tuple[ProviderDashboard, ...]) -> str:
     """Render a compact 5h/7d comparison table across providers."""
 
     rows = []
-    for snapshot in snapshots:
-        for name in ("five_hour", "seven_day", "current_quota", "today"):
-            window = snapshot.windows.get(name)
-            if window is None or not is_quota_window(name, window):
+    for provider in providers:
+        for item in provider.windows:
+            if not item.is_quota or item.name not in {"five_hour", "seven_day", "current_quota", "today"}:
                 continue
+            window = item.window
             top_project = top_aggregate_label(window.by_project, kind="project")
             rows.append(
                 "<tr>"
-                f"<td>{html.escape(snapshot.source.title())}</td>"
-                f"<td>{html.escape(window_label(name))}</td>"
+                f"<td>{html.escape(provider.source.title())}</td>"
+                f"<td>{html.escape(window_label(item.name))}</td>"
                 f'<td><span class="qc-pressure qc-pressure-{pressure_tone(window.utilization)}">{percent(window.utilization)}</span></td>'
                 f"<td>{compact_number(window.total_tokens)}</td>"
                 f"<td>{html.escape(reset_label(window))}</td>"
@@ -231,12 +233,12 @@ def quota_matrix(snapshots: list[NormalizedSnapshot]) -> str:
     )
 
 
-def reset_schedule(snapshots: list[NormalizedSnapshot]) -> str:
+def reset_schedule(providers: tuple[ProviderDashboard, ...]) -> str:
     """Render upcoming quota reset order."""
 
     rows = []
     for source, name, window in sorted(
-        (item for item in iter_quota_windows(snapshots) if item[2].resets_at),
+        ((source, item.name, item.window) for source, item in iter_quota_windows(providers) if item.window.resets_at),
         key=lambda item: item[2].resets_at or 0,
     )[:RESET_ROW_LIMIT]:
         rows.append(
@@ -261,39 +263,6 @@ def window_context(name: str, window: SnapshotWindow) -> str:
         ("Top model", top_aggregate_label(window.by_model, kind="model")),
     ]
     return '<dl class="qc-window-context">' + "".join(metric_block(label, value) for label, value in context) + '</dl>'
-
-
-def iter_quota_windows(snapshots: list[NormalizedSnapshot]) -> list[tuple[str, str, SnapshotWindow]]:
-    windows: list[tuple[str, str, SnapshotWindow]] = []
-    for snapshot in snapshots:
-        for name, window in snapshot.windows.items():
-            if is_quota_window(name, window):
-                windows.append((snapshot.source, name, window))
-    return windows
-
-
-def pressure_windows(snapshots: list[NormalizedSnapshot]) -> list[tuple[str, str, SnapshotWindow]]:
-    return sorted(iter_quota_windows(snapshots), key=lambda item: item[2].utilization, reverse=True)
-
-
-def next_reset_window(snapshots: list[NormalizedSnapshot]) -> tuple[str, str, SnapshotWindow] | None:
-    candidates = [item for item in iter_quota_windows(snapshots) if item[2].resets_at and item[2].resets_at > time.time()]
-    if not candidates:
-        return None
-    return min(candidates, key=lambda item: item[2].resets_at or 0)
-
-
-def data_state_label(snapshots: list[NormalizedSnapshot]) -> str:
-    states = [window.cache_state for snapshot in snapshots for window in snapshot.windows.values()]
-    if not states:
-        return "no data"
-    cached = sum(1 for state in states if state in {"cached", "stale"})
-    live = sum(1 for state in states if state == "live")
-    if cached and live:
-        return f"{live} live / {cached} cached"
-    if cached:
-        return f"{cached} cached"
-    return f"{live} live"
 
 
 def top_aggregate_label(rows: dict[str, AggregateBreakdown], *, kind: str) -> str:
@@ -501,38 +470,18 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 """.strip()
 
 
-def primary_window_for(snapshot: NormalizedSnapshot) -> tuple[str, SnapshotWindow]:
-    """Return the most operationally useful window for a provider."""
-
-    quota_windows = [
-        (name, snapshot.windows[name])
-        for name in ("five_hour", "current_quota", "seven_day", "today")
-        if name in snapshot.windows and is_quota_window(name, snapshot.windows[name])
-    ]
-    if quota_windows:
-        return max(quota_windows, key=lambda item: item[1].utilization)
-    if "local_all" in snapshot.windows:
-        return "local_all", snapshot.windows["local_all"]
-    return next(iter(snapshot.windows.items()))
-
-
 def is_quota_window(name: str, window: SnapshotWindow) -> bool:
-    return name != "local_all" and (window.resets_at is not None or window.window_start is not None or window.utilization > 0)
+    return window_is_quota(name, window)
 
 
-def is_comparison_window(name: str, window: SnapshotWindow) -> bool:
-    if is_quota_window(name, window):
-        return True
-    return name in {"seven_day", "today", "this_month"} and (window.total_tokens > 0 or bool(window.by_project))
-
-
-def provider_strip(snapshot: NormalizedSnapshot) -> str:
+def provider_strip(provider: ProviderDashboard) -> str:
     """Render a compact provider status card."""
 
-    name, window = primary_window_for(snapshot)
-    source = html.escape(snapshot.source.title())
-    rows = provider_strip_rows(snapshot, fallback_name=name, fallback_window=window)
-    fallback_meter = "" if any(snapshot.windows.get(item) for item in ("five_hour", "seven_day")) else local_meter(window)
+    if provider.primary is None:
+        return ""
+    source = html.escape(provider.source.title())
+    rows = provider_strip_rows(provider)
+    fallback_meter = "" if provider.comparison else local_meter(provider.primary.window)
     return (
         '<article>'
         f'<h3>{source}</h3>'
@@ -542,26 +491,26 @@ def provider_strip(snapshot: NormalizedSnapshot) -> str:
     )
 
 
-def provider_strip_rows(snapshot: NormalizedSnapshot, *, fallback_name: str, fallback_window: SnapshotWindow) -> str:
+def provider_strip_rows(provider: ProviderDashboard) -> str:
     """Render compact provider rows without hiding the short quota window."""
 
     rows = []
-    row_names = paired_quota_names(snapshot) or [name for name in ("five_hour", "seven_day") if name in snapshot.windows]
-    for name in row_names:
-        window = snapshot.windows.get(name)
-        if window is None or not is_comparison_window(name, window):
-            continue
-        if is_quota_window(name, window):
+    for item in provider.comparison:
+        window = item.window
+        if item.is_quota:
             value = f"{percent(window.utilization)} · {compact_number(window.total_tokens)} · {quota_reset_text(window)}"
         else:
             value = f"local history · {compact_number(window.total_tokens)}"
-        rows.append(strip_window_row(window_label(name), value, window))
+        rows.append(strip_window_row(window_label(item.name), value, window))
     if rows:
         return "".join(rows)
-    quota = is_quota_window(fallback_name, fallback_window)
+    if provider.primary is None:
+        return ""
+    quota = provider.primary.is_quota
+    fallback_window = provider.primary.window
     status = percent(fallback_window.utilization) if quota else "local history"
     token_label = "Used" if quota else "Tokens"
-    return strip_row(window_label(fallback_name), status) + strip_row(token_label, compact_number(fallback_window.total_tokens))
+    return strip_row(window_label(provider.primary.name), status) + strip_row(token_label, compact_number(fallback_window.total_tokens))
 
 
 def strip_row(label: str, value: str) -> str:
@@ -579,14 +528,14 @@ def strip_window_row(label: str, value: str, window: SnapshotWindow) -> str:
     )
 
 
-def provider_kpis(window_name: str, window: SnapshotWindow) -> str:
+def provider_kpis(item: DashboardWindow) -> str:
     """Render provider KPI tiles."""
 
-    quota = is_quota_window(window_name, window)
+    window = item.window
     return (
         '<dl class="qc-kpis">'
-        f'{kpi("Window", window_label(window_name))}'
-        f'{kpi("Utilization", percent(window.utilization) if quota else "local history")}'
+        f'{kpi("Window", window_label(item.name))}'
+        f'{kpi("Utilization", percent(window.utilization) if item.is_quota else "local history")}'
         f'{kpi("Tokens", compact_number(window.total_tokens))}'
         f'{kpi("Requests", f"{window.requests:,}")}'
         f'{kpi("Reset", reset_label(window))}'
@@ -608,20 +557,21 @@ def window_meta(window: SnapshotWindow) -> str:
     )
 
 
-def attention_panel(snapshots: list[NormalizedSnapshot]) -> str:
+def attention_panel(providers: tuple[ProviderDashboard, ...]) -> str:
     items: list[tuple[str, str, str]] = []
-    for snapshot in snapshots:
-        source = snapshot.source.title()
-        for error in snapshot.errors:
+    for provider in providers:
+        source = provider.source.title()
+        for error in provider.snapshot.errors:
             items.append(("high", source, error))
-        for warning in snapshot.warnings:
+        for warning in provider.snapshot.warnings:
             items.append(("medium", source, warning))
-        for name, window in snapshot.windows.items():
-            if is_quota_window(name, window):
+        for item in provider.windows:
+            window = item.window
+            if item.is_quota:
                 if window.utilization >= 0.85:
-                    items.append(("high", source, f"{window_label(name)} at {percent(window.utilization)}"))
+                    items.append(("high", source, f"{window_label(item.name)} at {percent(window.utilization)}"))
                 elif window.utilization >= 0.65:
-                    items.append(("medium", source, f"{window_label(name)} at {percent(window.utilization)}"))
+                    items.append(("medium", source, f"{window_label(item.name)} at {percent(window.utilization)}"))
             top_project = next(iter(window.by_project.items()), None)
             if top_project and top_project[1].share_pct >= 50:
                 items.append(("medium", source, f"{display_name(top_project[0], kind='project')} owns {top_project[1].share_pct:.1f}%"))
@@ -634,40 +584,41 @@ def attention_panel(snapshots: list[NormalizedSnapshot]) -> str:
     return f'<section class="qc-attention"><h3>Attention</h3><ol>{rows}</ol></section>'
 
 
-def operations_briefing(snapshots: list[NormalizedSnapshot]) -> str:
-    cards = "".join(briefing_card(snapshot) for snapshot in snapshots)
+def operations_briefing(providers: tuple[ProviderDashboard, ...]) -> str:
+    cards = "".join(briefing_card(provider) for provider in providers)
     return f'<section class="qc-briefing"><h3>Operations briefing</h3><div class="qc-brief-grid">{cards}</div></section>'
 
 
-def briefing_card(snapshot: NormalizedSnapshot) -> str:
-    source = html.escape(snapshot.source)
-    if snapshot.errors:
-        errors = "".join(f"<li>{html.escape(error)}</li>" for error in snapshot.errors)
+def briefing_card(provider: ProviderDashboard) -> str:
+    source = html.escape(provider.source)
+    if provider.snapshot.errors:
+        errors = "".join(f"<li>{html.escape(error)}</li>" for error in provider.snapshot.errors)
         return f'<article class="qc-brief-card"><header><h4>{source}</h4>{badge("error", "danger")}</header><ul class="qc-brief-projects">{errors}</ul></article>'
-    if not snapshot.windows:
+    if not provider.windows:
         return f'<article class="qc-brief-card"><header><h4>{source}</h4>{badge("empty", "muted")}</header></article>'
 
     lines = []
-    for name in ("five_hour", "seven_day", "current_quota", "local_all"):
-        window = snapshot.windows.get(name)
-        if window is None:
-            continue
-        label = window_label(name)
-        value = quota_brief(window) if is_quota_window(name, window) else local_brief(window)
+    ordered = list(provider.comparison) + [item for item in provider.details if item.name == "local_all"]
+    for item in ordered:
+        label = window_label(item.name)
+        value = quota_brief(item.window) if item.is_quota else local_brief(item.window)
         lines.append(f'<div><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>')
     if not lines:
-        name, window = primary_window_for(snapshot)
-        lines.append(f'<div><dt>{html.escape(window_label(name))}</dt><dd>{html.escape(local_brief(window))}</dd></div>')
+        primary = provider.primary
+        if primary is not None:
+            lines.append(f'<div><dt>{html.escape(window_label(primary.name))}</dt><dd>{html.escape(local_brief(primary.window))}</dd></div>')
 
-    _, primary = primary_window_for(snapshot)
+    primary = provider.primary
+    if primary is None:
+        return f'<article class="qc-brief-card"><header><h4>{source}</h4>{badge("empty", "muted")}</header></article>'
     projects = "".join(
         f'<li>{html.escape(display_name(name, kind="project"))}: {aggregate.share_pct:.1f}%</li>'
-        for name, aggregate in list(primary.by_project.items())[:BRIEF_PROJECT_LIMIT]
+        for name, aggregate in list(primary.window.by_project.items())[:BRIEF_PROJECT_LIMIT]
     )
     projects_block = f'<ol class="qc-brief-projects">{projects}</ol>' if projects else ""
     return (
         '<article class="qc-brief-card">'
-        f'<header><h4>{source}</h4>{badge(primary.cache_state, cache_tone(primary))}</header>'
+        f'<header><h4>{source}</h4>{badge(primary.window.cache_state, cache_tone(primary.window))}</header>'
         f'<dl class="qc-brief-lines">{"".join(lines)}</dl>'
         f'{projects_block}'
         '</article>'
