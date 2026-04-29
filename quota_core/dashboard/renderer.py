@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 
 from quota_core.snapshot import NormalizedSnapshot
-from quota_core.dashboard.components import provider_summary, stylesheet
+from quota_core.dashboard.components import dashboard_overview, provider_summary, stylesheet
 
 
 def render_snapshot(snapshot: NormalizedSnapshot) -> str:
@@ -19,7 +19,7 @@ def render_page(snapshots: list[NormalizedSnapshot], title: str = "quota_core") 
     """Render a complete HTML page for normalized snapshots."""
 
     safe_title = html.escape(title)
-    body = "".join(render_snapshot(snapshot) for snapshot in snapshots)
+    body = dashboard_overview(snapshots) + "".join(render_snapshot(snapshot) for snapshot in snapshots)
     if not body:
         body = '<section class="qc-provider qc-provider-empty"><h2>No snapshots</h2></section>'
     return (
