@@ -182,7 +182,8 @@ class SnapshotTests(unittest.TestCase):
             },
         )
         page = render_page([snapshot])
-        self.assertNotIn("Highest pressure", page)
+        self.assertIn("Overall status", page)
+        self.assertIn("Highest pressure", page)
         self.assertNotIn("Operations report", page)
         self.assertIn("Quota report", page)
         self.assertIn("Runtime", page)

@@ -66,11 +66,48 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
     """Render the legacy operational report first."""
 
     providers = build_dashboard(snapshots)
+    status = overall_status(providers)
     cards = "".join(legacy_provider_report(provider) for provider in providers)
     runtime = legacy_runtime_report(providers)
-    if not cards and not runtime:
+    if not status and not cards and not runtime:
         return ""
-    return f'<section class="qc-legacy-report"><h2>Quota report</h2><div class="qc-legacy-grid">{cards}</div>{runtime}</section>'
+    return f'{status}<section class="qc-legacy-report"><h2>Quota report</h2><div class="qc-legacy-grid">{cards}</div>{runtime}</section>'
+
+
+def overall_status(providers: tuple[ProviderDashboard, ...]) -> str:
+    """Render the dashboard-wide status summary above the legacy report."""
+
+    active_providers = 0
+    quota_windows = 0
+    total_tokens = 0
+    total_requests = 0
+    warnings = 0
+    for provider in providers:
+        snapshot = provider.snapshot
+        warnings += len(snapshot.errors) + len(snapshot.warnings)
+        if provider.primary is None:
+            continue
+        active_providers += 1
+        quota_windows += sum(1 for item in provider.windows if item.is_quota)
+        total_tokens += provider.primary.window.total_tokens
+        total_requests += provider.primary.window.requests
+    if not providers:
+        return ""
+    return (
+        '<section class="qc-overall-status">'
+        '<div class="qc-overall-head">'
+        '<div><p class="qc-eyebrow">Operations</p><h2>Overall status</h2></div>'
+        f'{command_center(providers)}'
+        '</div>'
+        '<div class="qc-overall-metrics">'
+        f'{metric_tile("Providers", str(active_providers), "enabled")}'
+        f'{metric_tile("Quota windows", str(quota_windows), "live/cached")}'
+        f'{metric_tile("Shown tokens", compact_number(total_tokens), "selected windows")}'
+        f'{metric_tile("Requests", compact_number(total_requests), "selected windows")}'
+        f'{metric_tile("Notices", str(warnings), "warnings/errors")}'
+        '</div>'
+        '</section>'
+    )
 
 
 def legacy_provider_report(provider: ProviderDashboard) -> str:
@@ -408,7 +445,12 @@ main { max-width: 1380px; margin: 0 auto; padding: 22px; }
 h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-eyebrow { margin: 0 0 4px; color: #697586; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 .qc-overview { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; margin-bottom: 18px; }
-.qc-legacy-report, .qc-provider, .qc-attention, .qc-briefing, .qc-matrix, .qc-reset-schedule { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
+.qc-overall-status, .qc-legacy-report, .qc-provider, .qc-attention, .qc-briefing, .qc-matrix, .qc-reset-schedule { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
+.qc-overall-status { padding: 16px; margin-bottom: 14px; }
+.qc-overall-head { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: center; }
+.qc-overall-head h2 { margin: 0; font-size: 20px; }
+.qc-overall-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; margin-top: 14px; border-top: 1px solid #e5eaf0; }
+.qc-overall-metrics .qc-metric:first-child { border-left: 0; }
 .qc-legacy-report { padding: 16px; margin-bottom: 18px; }
 .qc-legacy-report h2 { margin: 0 0 12px; font-size: 20px; }
 .qc-legacy-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -532,12 +574,12 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-warning { margin: 12px 0 0; color: #7a4b00; }
 @media (max-width: 900px) {
   main { padding: 16px; }
-    .qc-overview-copy, .qc-legacy-grid, .qc-provider-strip, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol, .qc-quota-split { grid-template-columns: 1fr; }
+    .qc-overall-head, .qc-overview-copy, .qc-legacy-grid, .qc-provider-strip, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol, .qc-quota-split { grid-template-columns: 1fr; }
         .qc-command-center { grid-template-columns: 1fr; }
-        .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .qc-overall-metrics, .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 620px) {
-    .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: 1fr; }
+    .qc-overall-metrics, .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: 1fr; }
   .qc-table th:nth-child(3), .qc-table td:nth-child(3) { display: none; }
   .qc-table th:first-child, .qc-table td:first-child { width: 54%; }
 }

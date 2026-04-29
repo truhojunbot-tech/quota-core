@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.12 - 2026-04-29
+
+Overall status restore.
+
+- Restores the dashboard-wide Overall status block above the legacy quota report.
+- Keeps provider quota details in the report section below so the summary and report have separate roles.
+
 ## 0.1.11 - 2026-04-29
 
 Legacy dashboard layout restore.
