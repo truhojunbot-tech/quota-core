@@ -148,9 +148,26 @@ class SnapshotTests(unittest.TestCase):
                     requests=7,
                     by_project={
                         "demo": AggregateBreakdown(total_tokens=6480, requests=6, share_pct=90.0),
+                        "alpha-app": AggregateBreakdown(total_tokens=720, requests=1, share_pct=10.0),
                     },
                     by_model={
                         "sonnet": AggregateBreakdown(total_tokens=7200, requests=7, share_pct=100.0),
+                    },
+                    cache_state="live",
+                ),
+                "seven_day": SnapshotWindow(
+                    window_start=now - 2 * 24 * 3600,
+                    window_end=now,
+                    resets_at=now + 5 * 24 * 3600,
+                    utilization=0.34,
+                    total_tokens=34000,
+                    requests=31,
+                    by_project={
+                        "weekly-app": AggregateBreakdown(total_tokens=20400, requests=19, share_pct=60.0),
+                        "archive-app": AggregateBreakdown(total_tokens=13600, requests=12, share_pct=40.0),
+                    },
+                    by_model={
+                        "sonnet": AggregateBreakdown(total_tokens=34000, requests=31, share_pct=100.0),
                     },
                     cache_state="live",
                 )
@@ -163,9 +180,13 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("5 hour</span><strong>72.0%", page)
         self.assertIn("qc-strip-bar-warm", page)
         self.assertIn("5 hour usage", page)
+        self.assertIn("7 day usage", page)
+        self.assertIn("qc-quota-split", page)
+        self.assertEqual(page.count("<h4>Apps</h4>"), 2)
         self.assertIn("Window range", page)
         self.assertIn("Top model", page)
         self.assertIn("demo 90.0%", page)
+        self.assertIn("weekly-app", page)
         self.assertIn("sonnet 100.0%", page)
 
     def test_claude_local_scanner_reads_jsonl(self):

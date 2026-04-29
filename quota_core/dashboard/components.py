@@ -32,7 +32,7 @@ def provider_summary(snapshot: NormalizedSnapshot) -> str:
         return f'<section class="qc-provider qc-provider-empty"><h2>{source}</h2>{badge("empty", "muted")}</section>'
 
     primary_name, primary_window = primary_window_for(snapshot)
-    windows = "".join(window_panel(name, window, compact=name != primary_name) for name, window in snapshot.windows.items())
+    windows = provider_windows(snapshot, primary_name=primary_name)
     warnings = "".join(f"<p class=\"qc-warning\">{html.escape(warning)}</p>" for warning in snapshot.warnings)
     return (
         '<section class="qc-provider">'
@@ -96,7 +96,26 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
     )
 
 
-def window_panel(name: str, window: SnapshotWindow, *, compact: bool = False) -> str:
+def provider_windows(snapshot: NormalizedSnapshot, *, primary_name: str) -> str:
+    """Render provider windows, pairing short and weekly quota views when present."""
+
+    paired_names = [
+        name
+        for name in ("five_hour", "seven_day")
+        if name in snapshot.windows and is_quota_window(name, snapshot.windows[name])
+    ]
+    panels = []
+    if paired_names:
+        paired = "".join(window_panel(name, snapshot.windows[name], project_title="Apps") for name in paired_names)
+        panels.append(f'<div class="qc-quota-split">{paired}</div>')
+    for name, window in snapshot.windows.items():
+        if name in paired_names:
+            continue
+        panels.append(window_panel(name, window, compact=name != primary_name))
+    return "".join(panels)
+
+
+def window_panel(name: str, window: SnapshotWindow, *, compact: bool = False, project_title: str = "Projects") -> str:
     """Render one normalized quota/session window."""
 
     title = html.escape(window_label(name))
@@ -109,7 +128,7 @@ def window_panel(name: str, window: SnapshotWindow, *, compact: bool = False) ->
         f'{bar}'
         f'{window_meta(window)}'
         f'{window_context(name, window)}'
-        f'{aggregate_table("Projects", window.by_project, kind="project")}'
+        f'{aggregate_table(project_title, window.by_project, kind="project", empty_label="No app usage in this window")}'
         f'{aggregate_table("Models", window.by_model, kind="model")}'
         f'{runtime_section(window)}'
         '</article>'
@@ -293,10 +312,19 @@ def pressure_tone(utilization: float) -> str:
     return "cool"
 
 
-def aggregate_table(title: str, rows: dict[str, AggregateBreakdown], *, kind: str) -> str:
+def aggregate_table(title: str, rows: dict[str, AggregateBreakdown], *, kind: str, empty_label: str = "") -> str:
     """Render project/model aggregate table."""
 
     if not rows:
+        if empty_label:
+            safe_title = html.escape(title)
+            safe_empty = html.escape(empty_label)
+            return (
+                '<section class="qc-table-wrap">'
+                f'<div class="qc-section-head"><h4>{safe_title}</h4></div>'
+                f'<p class="qc-empty-list">{safe_empty}</p>'
+                '</section>'
+            )
         return ""
     limited_rows = list(rows.items())[:TOP_ROW_LIMIT]
     body = "".join(_aggregate_row(name, aggregate, kind=kind) for name, aggregate in limited_rows)
@@ -407,6 +435,8 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-kpi dd { margin: 5px 0 0; font-weight: 720; overflow-wrap: anywhere; }
 .qc-window { border-top: 1px solid #e5eaf0; padding-top: 16px; margin-top: 16px; }
 .qc-window-compact { padding-top: 14px; }
+.qc-quota-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.qc-quota-split .qc-window { min-width: 0; margin-top: 0; padding: 14px; border: 1px solid #e3e8ef; border-radius: 8px; background: #fcfdfe; }
 .qc-badge { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 650; background: #eef2f5; color: #334155; white-space: nowrap; }
 .qc-badge-success { background: #e5f4ea; color: #16633b; }
 .qc-badge-warning { background: #fff1d6; color: #7a4b00; }
@@ -438,12 +468,13 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-share-bar { height: 6px; border-radius: 999px; background: #e5eaf0; overflow: hidden; }
 .qc-share-bar span { display: block; height: 100%; background: #4d6f91; }
 .qc-table-note { margin: 0; color: #697586; font-size: 12px; }
+.qc-empty-list { margin: 8px 0 0; padding: 10px; border: 1px dashed #ccd5df; border-radius: 6px; color: #697586; font-size: 13px; background: #f9fafb; }
 .qc-runtime { margin-top: 16px; padding: 12px; border: 1px solid #e3e8ef; border-radius: 6px; background: #f9fafb; }
 .qc-runtime p { margin: 6px 0 0; color: #536173; }
 .qc-warning { margin: 12px 0 0; color: #7a4b00; }
 @media (max-width: 900px) {
   main { padding: 16px; }
-        .qc-overview-copy, .qc-provider-strip, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol { grid-template-columns: 1fr; }
+        .qc-overview-copy, .qc-provider-strip, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol, .qc-quota-split { grid-template-columns: 1fr; }
         .qc-command-center { grid-template-columns: 1fr; }
         .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.6 - 2026-04-29
+
+Dashboard provider-detail split view.
+
+- Added a side-by-side 5-hour and 7-day layout in provider detail sections.
+- Lists each quota window's top apps inside its own detail column.
+
 ## 0.1.5 - 2026-04-29
 
 Dashboard provider-card progress bars.
