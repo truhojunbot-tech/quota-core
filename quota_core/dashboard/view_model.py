@@ -131,7 +131,7 @@ def _comparison_window_names(windows: dict[str, DashboardWindow]) -> tuple[str, 
         ),
         None,
     )
-    has_week = "seven_day" in windows and _is_report_window(windows["seven_day"])
+    has_week = "seven_day" in windows and windows["seven_day"].is_quota
     if short_name and has_week:
         return (short_name, "seven_day")
     if has_week:

@@ -226,7 +226,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(provider.primary.name if provider.primary else None, "seven_day")
         self.assertEqual([item.name for item in provider.details], ["local_all"])
 
-    def test_dashboard_pairs_current_quota_with_seven_day_when_no_five_hour(self):
+    def test_dashboard_keeps_gemini_local_history_out_of_operations_pair(self):
         now = int(time.time())
         snapshot = NormalizedSnapshot(
             source="gemini",
@@ -260,15 +260,16 @@ class SnapshotTests(unittest.TestCase):
         )
         page = render_page([snapshot])
         provider = build_provider_dashboard(snapshot)
-        self.assertEqual([item.name for item in provider.comparison], ["current_quota", "seven_day"])
+        self.assertEqual([item.name for item in provider.comparison], ["current_quota"])
+        self.assertEqual([item.name for item in provider.details], ["seven_day"])
         self.assertTrue(provider.comparison[0].is_quota)
-        self.assertTrue(provider.comparison[1].is_usage)
         self.assertIn("Gemini Code Assist", page)
         self.assertIn("Current quota usage", page)
-        self.assertIn("local history · 4.6K", page)
-        self.assertIn("7 day usage", page)
+        self.assertIn("<h3>7 day</h3>", page)
+        self.assertIn("<dt>Utilization</dt><dd>local history</dd>", page)
+        self.assertIn("<dt>Tokens</dt><dd>4.6K</dd>", page)
         self.assertIn("qc-quota-split", page)
-        self.assertEqual(page.count("<h4>Apps</h4>"), 2)
+        self.assertEqual(page.count("<h4>Apps</h4>"), 1)
         self.assertIn("gemini-live", page)
         self.assertIn("gemini-week", page)
 

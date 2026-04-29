@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10 - 2026-04-29
+
+Gemini operations report correction.
+
+- Keeps Gemini local 7-day history out of the first-screen Operations report quota pair.
+- Leaves Gemini 7-day local usage available in provider details where it is labeled as local history.
+
 ## 0.1.9 - 2026-04-29
 
 Visible operations report layout.
