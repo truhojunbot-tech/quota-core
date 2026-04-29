@@ -1,0 +1,32 @@
+name: Validate quota-core
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out quota-core
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Validate clean install and demo
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+          quota-core --help
+          quota-core demo --output /tmp/quota-core-demo.html
+          test -s /tmp/quota-core-demo.html

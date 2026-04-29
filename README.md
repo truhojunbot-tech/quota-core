@@ -11,7 +11,7 @@ quota-core scan
 quota-core dashboard
 ```
 
-This repository is currently being refactored toward that public shape. Hojoon's private operations code lives beside it for now, but public `quota_core` must not depend on private paths, credentials, Telegram settings, real databases, or internal bot names.
+This public package intentionally avoids private paths, credentials, Telegram settings, real databases, and internal bot names. Private operations code should depend on `quota_core`, not the other way around.
 
 ## Quickstart
 
@@ -119,3 +119,7 @@ See [docs/public-private-boundary.md](docs/public-private-boundary.md) for the f
 `quota_core scan` should work from explicit local config. Live provider probes must be opt-in. Public fixtures should be synthetic, not copied from real logs.
 
 Scanner warnings avoid echoing full configured local paths into snapshot output. Claude and Gemini local scanners also skip oversized local files instead of loading them fully into memory.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
