@@ -10,6 +10,7 @@ from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, Snapshot
 
 TOP_ROW_LIMIT = 12
 BRIEF_PROJECT_LIMIT = 5
+RESET_ROW_LIMIT = 8
 
 
 def badge(label: str, tone: str = "neutral") -> str:
@@ -73,9 +74,11 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
     return (
         '<section class="qc-overview">'
         '<div class="qc-overview-copy">'
+        '<div class="qc-overview-title">'
         '<p class="qc-eyebrow">Operations</p>'
         '<h2>Quota control</h2>'
-        '<p>Current pressure, local usage, project concentration, and model mix from normalized snapshots.</p>'
+        '</div>'
+        f'{command_center(snapshots)}'
         '</div>'
         '<div class="qc-overview-metrics">'
         f'{metric_tile("Providers", str(active_providers), "enabled")}'
@@ -85,6 +88,8 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
         f'{metric_tile("Notices", str(warnings), "warnings/errors")}'
         '</div>'
         f'<div class="qc-provider-strip">{"".join(cards)}</div>'
+        f'{quota_matrix(snapshots)}'
+        f'{reset_schedule(snapshots)}'
         f'{attention_panel(snapshots)}'
         f'{operations_briefing(snapshots)}'
         '</section>'
@@ -103,6 +108,7 @@ def window_panel(name: str, window: SnapshotWindow, *, compact: bool = False) ->
         f'<header><div><p class="qc-eyebrow">Window</p><h3>{title}</h3></div>{badge(window.cache_state, cache_tone(window))}</header>'
         f'{bar}'
         f'{window_meta(window)}'
+        f'{window_context(name, window)}'
         f'{aggregate_table("Projects", window.by_project, kind="project")}'
         f'{aggregate_table("Models", window.by_model, kind="model")}'
         f'{runtime_section(window)}'
@@ -129,6 +135,162 @@ def local_meter(window: SnapshotWindow) -> str:
         f'<em>top project {share:.1f}% share</em>'
         '</div>'
     )
+
+
+def command_center(snapshots: list[NormalizedSnapshot]) -> str:
+    """Render the most important operating state in one compact block."""
+
+    pressure = pressure_windows(snapshots)
+    highest = pressure[0] if pressure else None
+    next_reset = next_reset_window(snapshots)
+    data_state = data_state_label(snapshots)
+    if highest is None:
+        pressure_text = "No live quota pressure"
+    else:
+        source, name, window = highest
+        pressure_text = f"{source.title()} {window_label(name)} {percent(window.utilization)}"
+    if next_reset is None:
+        reset_text = "No quota reset scheduled"
+    else:
+        source, name, window = next_reset
+        reset_text = f"{source.title()} {window_label(name)} resets {reset_label(window)}"
+    return (
+        '<div class="qc-command-center">'
+        f'<div><span>Highest pressure</span><strong>{html.escape(pressure_text)}</strong></div>'
+        f'<div><span>Next reset</span><strong>{html.escape(reset_text)}</strong></div>'
+        f'<div><span>Data state</span><strong>{html.escape(data_state)}</strong></div>'
+        '</div>'
+    )
+
+
+def quota_matrix(snapshots: list[NormalizedSnapshot]) -> str:
+    """Render a compact 5h/7d comparison table across providers."""
+
+    rows = []
+    for snapshot in snapshots:
+        for name in ("five_hour", "seven_day", "current_quota", "today"):
+            window = snapshot.windows.get(name)
+            if window is None or not is_quota_window(name, window):
+                continue
+            top_project = top_aggregate_label(window.by_project, kind="project")
+            rows.append(
+                "<tr>"
+                f"<td>{html.escape(snapshot.source.title())}</td>"
+                f"<td>{html.escape(window_label(name))}</td>"
+                f'<td><span class="qc-pressure qc-pressure-{pressure_tone(window.utilization)}">{percent(window.utilization)}</span></td>'
+                f"<td>{compact_number(window.total_tokens)}</td>"
+                f"<td>{html.escape(reset_label(window))}</td>"
+                f"<td>{html.escape(pace_label(window))}</td>"
+                f"<td>{html.escape(top_project)}</td>"
+                f"<td>{badge(window.cache_state, cache_tone(window))}</td>"
+                "</tr>"
+            )
+    if not rows:
+        return ""
+    return (
+        '<section class="qc-matrix">'
+        '<div class="qc-section-head"><h3>Quota matrix</h3><p class="qc-table-note">5h and 7d quota windows</p></div>'
+        '<table class="qc-table qc-matrix-table"><thead><tr>'
+        '<th>Provider</th><th>Window</th><th>Used</th><th>Tokens</th><th>Reset</th><th>Pace</th><th>Top project</th><th>State</th>'
+        f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
+        '</section>'
+    )
+
+
+def reset_schedule(snapshots: list[NormalizedSnapshot]) -> str:
+    """Render upcoming quota reset order."""
+
+    rows = []
+    for source, name, window in sorted(
+        (item for item in iter_quota_windows(snapshots) if item[2].resets_at),
+        key=lambda item: item[2].resets_at or 0,
+    )[:RESET_ROW_LIMIT]:
+        rows.append(
+            '<li>'
+            f'<strong>{html.escape(source.title())} {html.escape(window_label(name))}</strong>'
+            f'<span>{html.escape(reset_label(window))} · {html.escape(window_range(window))} · {percent(window.utilization)}</span>'
+            '</li>'
+        )
+    if not rows:
+        return ""
+    return f'<section class="qc-reset-schedule"><h3>Reset schedule</h3><ol>{"".join(rows)}</ol></section>'
+
+
+def window_context(name: str, window: SnapshotWindow) -> str:
+    """Render extra context that helps explain a window beyond the main KPIs."""
+
+    quota = is_quota_window(name, window)
+    context = [
+        ("Window range", window_range(window) if quota else "local history"),
+        ("Sampled", sampled_label(window)),
+        ("Top project", top_aggregate_label(window.by_project, kind="project")),
+        ("Top model", top_aggregate_label(window.by_model, kind="model")),
+    ]
+    return '<dl class="qc-window-context">' + "".join(metric_block(label, value) for label, value in context) + '</dl>'
+
+
+def iter_quota_windows(snapshots: list[NormalizedSnapshot]) -> list[tuple[str, str, SnapshotWindow]]:
+    windows: list[tuple[str, str, SnapshotWindow]] = []
+    for snapshot in snapshots:
+        for name, window in snapshot.windows.items():
+            if is_quota_window(name, window):
+                windows.append((snapshot.source, name, window))
+    return windows
+
+
+def pressure_windows(snapshots: list[NormalizedSnapshot]) -> list[tuple[str, str, SnapshotWindow]]:
+    return sorted(iter_quota_windows(snapshots), key=lambda item: item[2].utilization, reverse=True)
+
+
+def next_reset_window(snapshots: list[NormalizedSnapshot]) -> tuple[str, str, SnapshotWindow] | None:
+    candidates = [item for item in iter_quota_windows(snapshots) if item[2].resets_at and item[2].resets_at > time.time()]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item[2].resets_at or 0)
+
+
+def data_state_label(snapshots: list[NormalizedSnapshot]) -> str:
+    states = [window.cache_state for snapshot in snapshots for window in snapshot.windows.values()]
+    if not states:
+        return "no data"
+    cached = sum(1 for state in states if state in {"cached", "stale"})
+    live = sum(1 for state in states if state == "live")
+    if cached and live:
+        return f"{live} live / {cached} cached"
+    if cached:
+        return f"{cached} cached"
+    return f"{live} live"
+
+
+def top_aggregate_label(rows: dict[str, AggregateBreakdown], *, kind: str) -> str:
+    item = next(iter(rows.items()), None)
+    if item is None:
+        return "--"
+    name, aggregate = item
+    return f"{display_name(name, kind=kind)} {aggregate.share_pct:.1f}%"
+
+
+def window_range(window: SnapshotWindow) -> str:
+    if not window.window_start or not window.resets_at:
+        return "--"
+    start = datetime.fromtimestamp(window.window_start).strftime("%b %-d %H:%M")
+    end = datetime.fromtimestamp(window.resets_at).strftime("%b %-d %H:%M")
+    return f"{start} to {end}"
+
+
+def sampled_label(window: SnapshotWindow) -> str:
+    if not window.window_end:
+        return "--"
+    return datetime.fromtimestamp(window.window_end).strftime("%b %-d %H:%M")
+
+
+def pressure_tone(utilization: float) -> str:
+    pct = utilization * 100
+    if pct >= 85:
+        return "hot"
+    if pct >= 65:
+        return "warm"
+    return "cool"
 
 
 def aggregate_table(title: str, rows: dict[str, AggregateBreakdown], *, kind: str) -> str:
@@ -173,12 +335,15 @@ body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, B
 main { max-width: 1380px; margin: 0 auto; padding: 22px; }
 h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-eyebrow { margin: 0 0 4px; color: #697586; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
-.qc-overview { display: grid; grid-template-columns: minmax(260px, .85fr) 2.15fr; gap: 14px; margin-bottom: 18px; }
-.qc-overview-copy, .qc-provider, .qc-overview-metrics, .qc-provider-strip article, .qc-attention, .qc-briefing { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
-.qc-overview-copy { padding: 18px; }
-.qc-overview-copy h2 { margin: 0 0 6px; font-size: 22px; }
-.qc-overview-copy p:last-child { margin: 0; color: #536173; line-height: 1.5; }
-.qc-overview-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; overflow: hidden; }
+.qc-overview { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; margin-bottom: 18px; }
+.qc-overview-copy, .qc-provider, .qc-overview-metrics, .qc-provider-strip article, .qc-attention, .qc-briefing, .qc-matrix, .qc-reset-schedule { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
+.qc-overview-copy { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: center; padding: 18px; }
+.qc-overview-title h2 { margin: 0; font-size: 22px; }
+.qc-command-center { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.qc-command-center div { border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; background: #f9fafb; }
+.qc-command-center span { display: block; color: #697586; font-size: 12px; }
+.qc-command-center strong { display: block; margin-top: 4px; font-size: 14px; overflow-wrap: anywhere; }
+.qc-overview-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; align-self: start; overflow: hidden; }
 .qc-metric { min-width: 0; padding: 16px; border-left: 1px solid #e5eaf0; }
 .qc-metric:first-child { border-left: 0; }
 .qc-metric dt { margin: 0; color: #697586; font-size: 12px; }
@@ -189,6 +354,22 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-provider-strip h3 { margin: 0 0 10px; font-size: 16px; }
 .qc-strip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 8px; color: #536173; }
 .qc-strip-row strong { color: #18212f; }
+.qc-matrix { grid-column: 1 / -1; padding: 14px; overflow-x: auto; }
+.qc-matrix h3, .qc-reset-schedule h3 { margin: 0; font-size: 16px; }
+.qc-matrix-table { min-width: 940px; table-layout: auto; }
+.qc-matrix-table th:first-child, .qc-matrix-table td:first-child { width: auto; }
+.qc-matrix-table th, .qc-matrix-table td { white-space: nowrap; }
+.qc-matrix-table th:nth-child(7), .qc-matrix-table td:nth-child(7) { min-width: 180px; white-space: normal; overflow-wrap: anywhere; }
+.qc-matrix-table th:nth-child(8), .qc-matrix-table td:nth-child(8) { width: 92px; text-align: right; }
+.qc-pressure { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; font-weight: 720; }
+.qc-pressure-cool { background: #e4f2ef; color: #176355; }
+.qc-pressure-warm { background: #fff1d6; color: #7a4b00; }
+.qc-pressure-hot { background: #ffe5e5; color: #9b1c1c; }
+.qc-reset-schedule { grid-column: 1 / -1; padding: 14px; }
+.qc-reset-schedule ol { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.qc-reset-schedule li { border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; background: #f9fafb; min-width: 0; }
+.qc-reset-schedule strong, .qc-reset-schedule span { display: block; overflow-wrap: anywhere; }
+.qc-reset-schedule span { margin-top: 4px; color: #536173; font-size: 12px; }
 .qc-attention { grid-column: 1 / -1; padding: 14px; }
 .qc-attention h3, .qc-briefing h3 { margin: 0; font-size: 16px; }
 .qc-attention ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; list-style: none; margin: 12px 0 0; padding: 0; }
@@ -236,6 +417,10 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-metrics div { background: #f9fafb; border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; }
 .qc-metrics dt { font-size: 12px; color: #697586; }
 .qc-metrics dd { margin: 4px 0 0; font-weight: 700; overflow-wrap: anywhere; }
+.qc-window-context { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.qc-window-context div { background: #fff; border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; }
+.qc-window-context dt { font-size: 12px; color: #697586; }
+.qc-window-context dd { margin: 4px 0 0; font-weight: 650; overflow-wrap: anywhere; }
 .qc-table-wrap { margin-top: 16px; }
 .qc-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .qc-table th, .qc-table td { text-align: left; border-bottom: 1px solid #e5eaf0; padding: 8px 10px; font-size: 13px; vertical-align: middle; }
@@ -251,11 +436,12 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-warning { margin: 12px 0 0; color: #7a4b00; }
 @media (max-width: 900px) {
   main { padding: 16px; }
-    .qc-overview, .qc-provider-strip, .qc-brief-grid, .qc-attention ol { grid-template-columns: 1fr; }
-    .qc-overview-metrics, .qc-kpis, .qc-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .qc-overview-copy, .qc-provider-strip, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol { grid-template-columns: 1fr; }
+        .qc-command-center { grid-template-columns: 1fr; }
+        .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 620px) {
-  .qc-overview-metrics, .qc-kpis, .qc-metrics { grid-template-columns: 1fr; }
+    .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: 1fr; }
   .qc-table th:nth-child(3), .qc-table td:nth-child(3) { display: none; }
   .qc-table th:first-child, .qc-table td:first-child { width: 54%; }
 }

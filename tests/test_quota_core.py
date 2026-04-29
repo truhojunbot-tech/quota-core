@@ -4,6 +4,7 @@ import ast
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -131,6 +132,38 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("local history", page)
         self.assertIn("top-heavy 80%", page)
         self.assertNotIn("<dt>Utilization</dt><dd>0.0%</dd>", page)
+
+    def test_dashboard_surfaces_operational_quota_context(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="claude",
+            sampled_at=now,
+            windows={
+                "five_hour": SnapshotWindow(
+                    window_start=now - 3600,
+                    window_end=now,
+                    resets_at=now + 4 * 3600,
+                    utilization=0.72,
+                    total_tokens=7200,
+                    requests=7,
+                    by_project={
+                        "demo": AggregateBreakdown(total_tokens=6480, requests=6, share_pct=90.0),
+                    },
+                    by_model={
+                        "sonnet": AggregateBreakdown(total_tokens=7200, requests=7, share_pct=100.0),
+                    },
+                    cache_state="live",
+                )
+            },
+        )
+        page = render_page([snapshot])
+        self.assertIn("Highest pressure", page)
+        self.assertIn("Quota matrix", page)
+        self.assertIn("Reset schedule", page)
+        self.assertIn("Window range", page)
+        self.assertIn("Top model", page)
+        self.assertIn("demo 90.0%", page)
+        self.assertIn("sonnet 100.0%", page)
 
     def test_claude_local_scanner_reads_jsonl(self):
         with tempfile.TemporaryDirectory() as temp_dir:

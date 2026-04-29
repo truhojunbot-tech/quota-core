@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3 - 2026-04-29
+
+Dashboard information architecture update.
+
+- Added a command-center summary for highest pressure, next reset, and live/cached data state.
+- Added a quota matrix that compares provider windows by utilization, tokens, reset, pace, top project, and cache state.
+- Added a reset schedule and per-window context for range, sampled time, top project, and top model.
+- Added regression coverage for the operational quota context sections.
+
 ## 0.1.2 - 2026-04-29
 
 Operations dashboard correction.
