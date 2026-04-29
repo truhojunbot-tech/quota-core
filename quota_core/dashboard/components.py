@@ -99,11 +99,7 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
 def provider_windows(snapshot: NormalizedSnapshot, *, primary_name: str) -> str:
     """Render provider windows, pairing short and weekly quota views when present."""
 
-    paired_names = [
-        name
-        for name in ("five_hour", "seven_day")
-        if name in snapshot.windows and is_quota_window(name, snapshot.windows[name])
-    ]
+    paired_names = paired_quota_names(snapshot)
     panels = []
     if paired_names:
         paired = "".join(window_panel(name, snapshot.windows[name], project_title="Apps") for name in paired_names)
@@ -133,6 +129,25 @@ def window_panel(name: str, window: SnapshotWindow, *, compact: bool = False, pr
         f'{runtime_section(window)}'
         '</article>'
     )
+
+
+def paired_quota_names(snapshot: NormalizedSnapshot) -> list[str]:
+    """Return the quota windows that should be compared side by side."""
+
+    short_name = next(
+        (
+            name
+            for name in ("five_hour", "current_quota", "today")
+            if name in snapshot.windows and is_comparison_window(name, snapshot.windows[name])
+        ),
+        None,
+    )
+    has_week = "seven_day" in snapshot.windows and is_comparison_window("seven_day", snapshot.windows["seven_day"])
+    if short_name and has_week:
+        return [short_name, "seven_day"]
+    if has_week:
+        return ["seven_day"]
+    return [short_name] if short_name else []
 
 
 def usage_bar(utilization: float) -> str:
@@ -505,6 +520,12 @@ def is_quota_window(name: str, window: SnapshotWindow) -> bool:
     return name != "local_all" and (window.resets_at is not None or window.window_start is not None or window.utilization > 0)
 
 
+def is_comparison_window(name: str, window: SnapshotWindow) -> bool:
+    if is_quota_window(name, window):
+        return True
+    return name in {"seven_day", "today", "this_month"} and (window.total_tokens > 0 or bool(window.by_project))
+
+
 def provider_strip(snapshot: NormalizedSnapshot) -> str:
     """Render a compact provider status card."""
 
@@ -525,11 +546,15 @@ def provider_strip_rows(snapshot: NormalizedSnapshot, *, fallback_name: str, fal
     """Render compact provider rows without hiding the short quota window."""
 
     rows = []
-    for name in ("five_hour", "seven_day"):
+    row_names = paired_quota_names(snapshot) or [name for name in ("five_hour", "seven_day") if name in snapshot.windows]
+    for name in row_names:
         window = snapshot.windows.get(name)
-        if window is None or not is_quota_window(name, window):
+        if window is None or not is_comparison_window(name, window):
             continue
-        value = f"{percent(window.utilization)} · {compact_number(window.total_tokens)} · {quota_reset_text(window)}"
+        if is_quota_window(name, window):
+            value = f"{percent(window.utilization)} · {compact_number(window.total_tokens)} · {quota_reset_text(window)}"
+        else:
+            value = f"local history · {compact_number(window.total_tokens)}"
         rows.append(strip_window_row(window_label(name), value, window))
     if rows:
         return "".join(rows)

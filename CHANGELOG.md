@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7 - 2026-04-29
+
+Gemini quota window alignment.
+
+- Pairs `current_quota` with `seven_day` in provider cards and detail sections when a provider has no 5-hour window.
+- Keeps per-window app lists side by side for Gemini-style quota snapshots.
+
 ## 0.1.6 - 2026-04-29
 
 Dashboard provider-detail split view.

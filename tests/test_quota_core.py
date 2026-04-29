@@ -189,6 +189,46 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("weekly-app", page)
         self.assertIn("sonnet 100.0%", page)
 
+    def test_dashboard_pairs_current_quota_with_seven_day_when_no_five_hour(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="gemini",
+            sampled_at=now,
+            windows={
+                "current_quota": SnapshotWindow(
+                    window_start=now - 2 * 3600,
+                    window_end=now,
+                    resets_at=now + 22 * 3600,
+                    utilization=0.12,
+                    total_tokens=1200,
+                    requests=12,
+                    by_project={
+                        "gemini-live": AggregateBreakdown(total_tokens=1200, requests=12, share_pct=100.0),
+                    },
+                    cache_state="live",
+                ),
+                "seven_day": SnapshotWindow(
+                    window_start=None,
+                    window_end=now,
+                    resets_at=None,
+                    utilization=0.0,
+                    total_tokens=4600,
+                    requests=46,
+                    by_project={
+                        "gemini-week": AggregateBreakdown(total_tokens=3680, requests=36, share_pct=80.0),
+                    },
+                    cache_state="live",
+                ),
+            },
+        )
+        page = render_page([snapshot])
+        self.assertIn("Current quota usage", page)
+        self.assertIn("7 day usage", page)
+        self.assertIn("qc-quota-split", page)
+        self.assertEqual(page.count("<h4>Apps</h4>"), 2)
+        self.assertIn("gemini-live", page)
+        self.assertIn("gemini-week", page)
+
     def test_claude_local_scanner_reads_jsonl(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             project_dir = Path(temp_dir) / "demo-project"
