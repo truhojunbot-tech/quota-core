@@ -107,12 +107,97 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
         f'{metric_tile("Notices", str(warnings), "warnings/errors")}'
         '</div>'
         f'<div class="qc-provider-strip">{"".join(cards)}</div>'
+        f'{operations_report(providers)}'
         f'{quota_matrix(providers)}'
         f'{reset_schedule(providers)}'
         f'{attention_panel(providers)}'
         f'{operations_briefing(providers)}'
         '</section>'
     )
+
+
+def operations_report(providers: tuple[ProviderDashboard, ...]) -> str:
+    """Render the original operations report structure as visible provider cards."""
+
+    cards = "".join(report_card(provider) for provider in providers if provider.primary is not None or provider.snapshot.errors)
+    if not cards:
+        return ""
+    return f'<section class="qc-report"><h3>Operations report</h3><div class="qc-report-grid">{cards}</div></section>'
+
+
+def report_card(provider: ProviderDashboard) -> str:
+    source = html.escape(provider_report_title(provider.source))
+    if provider.snapshot.errors:
+        errors = "".join(f"<li>{html.escape(error)}</li>" for error in provider.snapshot.errors)
+        return f'<article class="qc-report-card"><header><h4>{source}</h4>{badge("error", "danger")}</header><ul class="qc-report-apps">{errors}</ul></article>'
+    windows = provider.comparison or ((provider.primary,) if provider.primary else ())
+    body = "".join(report_window(item) for item in windows if item is not None)
+    state = badge(provider.primary.window.cache_state, cache_tone(provider.primary.window)) if provider.primary else badge("empty", "muted")
+    return f'<article class="qc-report-card"><header><h4>{source}</h4>{state}</header>{body}</article>'
+
+
+def report_window(item: DashboardWindow) -> str:
+    window = item.window
+    bar = usage_bar(window.utilization) if item.is_quota else local_meter(window)
+    apps = report_apps(window.by_project)
+    runtime = report_runtime(window)
+    return (
+        '<section class="qc-report-window">'
+        f'<div class="qc-report-window-head"><span>{html.escape(window_label(item.name))}</span><strong>{html.escape(report_window_value(item))}</strong></div>'
+        f'{bar}'
+        f'<p>{html.escape(report_window_meta(item))}</p>'
+        f'{apps}'
+        f'{runtime}'
+        '</section>'
+    )
+
+
+def report_window_value(item: DashboardWindow) -> str:
+    if item.is_quota:
+        return percent(item.window.utilization)
+    return "local history"
+
+
+def report_window_meta(item: DashboardWindow) -> str:
+    window = item.window
+    parts = [f"{compact_number(window.total_tokens)} tokens"]
+    if item.is_quota:
+        parts.append(f"reset {quota_reset_text(window).replace('reset ', '')}")
+        pace = pace_label(window)
+        if pace != "--":
+            parts.append(pace)
+    else:
+        parts.append(concentration_label(window))
+    return " · ".join(parts)
+
+
+def report_apps(rows: dict[str, AggregateBreakdown]) -> str:
+    if not rows:
+        return '<p class="qc-empty-list">No app usage in this window</p>'
+    items = "".join(
+        f'<li><span>{html.escape(display_name(name, kind="project"))}</span><strong>{aggregate.share_pct:.1f}%</strong></li>'
+        for name, aggregate in list(rows.items())[:BRIEF_PROJECT_LIMIT]
+    )
+    return f'<ol class="qc-report-apps">{items}</ol>'
+
+
+def report_runtime(window: SnapshotWindow) -> str:
+    if not window.runtime.by_project:
+        return ""
+    items = "".join(
+        f'<li><span>{html.escape(display_name(name, kind="project"))}</span><strong>{compact_number(aggregate.total_tokens)}</strong></li>'
+        for name, aggregate in list(window.runtime.by_project.items())[:BRIEF_PROJECT_LIMIT]
+    )
+    return f'<div class="qc-report-runtime"><span>Runtime</span><ol>{items}</ol></div>'
+
+
+def provider_report_title(source: str) -> str:
+    titles = {
+        "claude": "Claude Max",
+        "codex": "Codex (ChatGPT Plus)",
+        "gemini": "Gemini Code Assist",
+    }
+    return titles.get(source, source.title())
 
 
 def provider_windows(provider: ProviderDashboard) -> str:
@@ -348,7 +433,7 @@ main { max-width: 1380px; margin: 0 auto; padding: 22px; }
 h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-eyebrow { margin: 0 0 4px; color: #697586; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 .qc-overview { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; margin-bottom: 18px; }
-.qc-overview-copy, .qc-provider, .qc-overview-metrics, .qc-provider-strip article, .qc-attention, .qc-briefing, .qc-matrix, .qc-reset-schedule { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
+.qc-overview-copy, .qc-provider, .qc-overview-metrics, .qc-provider-strip article, .qc-report, .qc-attention, .qc-briefing, .qc-matrix, .qc-reset-schedule { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
 .qc-overview-copy { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: center; padding: 18px; }
 .qc-overview-title h2 { margin: 0; font-size: 22px; }
 .qc-command-center { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -373,6 +458,28 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-strip-bar-cool span { background: #287f71; }
 .qc-strip-bar-warm span { background: #c17a1b; }
 .qc-strip-bar-hot span { background: #c2413a; }
+.qc-report { grid-column: 1 / -1; padding: 14px; }
+.qc-report h3 { margin: 0; font-size: 16px; }
+.qc-report-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.qc-report-card { min-width: 0; border: 1px solid #e3e8ef; border-radius: 6px; overflow: hidden; background: #fcfdfe; }
+.qc-report-card header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #e3e8ef; background: #f7f9fb; }
+.qc-report-card h4 { margin: 0; font-size: 15px; }
+.qc-report-window { padding: 10px 12px; border-top: 1px solid #edf1f5; }
+.qc-report-card header + .qc-report-window { border-top: 0; }
+.qc-report-window-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.qc-report-window-head span { color: #536173; }
+.qc-report-window-head strong { font-size: 16px; overflow-wrap: anywhere; text-align: right; }
+.qc-report-window .qc-bar, .qc-report-window .qc-local-meter { margin: 8px 0; }
+.qc-report-window p { margin: 0 0 8px; color: #536173; font-size: 12px; overflow-wrap: anywhere; }
+.qc-report-apps { margin: 0; padding: 0; list-style: none; }
+.qc-report-apps li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 3px 0; border-top: 1px solid #edf1f5; font-size: 13px; }
+.qc-report-apps li:first-child { border-top: 0; }
+.qc-report-apps span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qc-report-apps strong { white-space: nowrap; }
+.qc-report-runtime { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccd5df; }
+.qc-report-runtime > span { display: block; margin-bottom: 4px; color: #697586; font-size: 12px; font-weight: 700; }
+.qc-report-runtime ol { margin: 0; padding: 0; list-style: none; }
+.qc-report-runtime li { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 12px; color: #536173; }
 .qc-matrix { grid-column: 1 / -1; padding: 14px; overflow-x: auto; }
 .qc-matrix h3, .qc-reset-schedule h3 { margin: 0; font-size: 16px; }
 .qc-matrix-table { min-width: 1040px; table-layout: auto; }
@@ -458,7 +565,7 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-warning { margin: 12px 0 0; color: #7a4b00; }
 @media (max-width: 900px) {
   main { padding: 16px; }
-        .qc-overview-copy, .qc-provider-strip, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol, .qc-quota-split { grid-template-columns: 1fr; }
+        .qc-overview-copy, .qc-provider-strip, .qc-report-grid, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol, .qc-quota-split { grid-template-columns: 1fr; }
         .qc-command-center { grid-template-columns: 1fr; }
         .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.9 - 2026-04-29
+
+Visible operations report layout.
+
+- Added a first-screen Operations report section that mirrors the original provider-first report structure.
+- Shows each provider's short/current quota and 7-day windows with app lists in the overview, not only in lower detail sections.
+
 ## 0.1.8 - 2026-04-29
 
 Dashboard structure refactor.
