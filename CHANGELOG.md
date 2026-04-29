@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.5 - 2026-04-29
+
+Dashboard provider-card progress bars.
+
+- Added separate 5-hour and 7-day progress bars in provider summary cards.
+- Removed the single combined provider-card bar when quota windows are available.
+
 ## 0.1.4 - 2026-04-29
 
 Dashboard short-window visibility fix.

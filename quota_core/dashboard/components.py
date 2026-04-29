@@ -354,6 +354,13 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-provider-strip h3 { margin: 0 0 10px; font-size: 16px; }
 .qc-strip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 8px; color: #536173; }
 .qc-strip-row strong { color: #18212f; text-align: right; overflow-wrap: anywhere; }
+.qc-strip-window { margin-top: 10px; }
+.qc-strip-window .qc-strip-row { margin-top: 0; }
+.qc-strip-bar { height: 8px; margin-top: 6px; border-radius: 999px; overflow: hidden; background: #e5eaf0; }
+.qc-strip-bar span { display: block; height: 100%; }
+.qc-strip-bar-cool span { background: #287f71; }
+.qc-strip-bar-warm span { background: #c17a1b; }
+.qc-strip-bar-hot span { background: #c2413a; }
 .qc-matrix { grid-column: 1 / -1; padding: 14px; overflow-x: auto; }
 .qc-matrix h3, .qc-reset-schedule h3 { margin: 0; font-size: 16px; }
 .qc-matrix-table { min-width: 1040px; table-layout: auto; }
@@ -472,13 +479,12 @@ def provider_strip(snapshot: NormalizedSnapshot) -> str:
 
     name, window = primary_window_for(snapshot)
     source = html.escape(snapshot.source.title())
-    quota = is_quota_window(name, window)
-    meter = usage_bar(window.utilization) if quota else local_meter(window)
     rows = provider_strip_rows(snapshot, fallback_name=name, fallback_window=window)
+    fallback_meter = "" if any(snapshot.windows.get(item) for item in ("five_hour", "seven_day")) else local_meter(window)
     return (
         '<article>'
         f'<h3>{source}</h3>'
-        f'{meter}'
+        f'{fallback_meter}'
         f'{rows}'
         '</article>'
     )
@@ -493,7 +499,7 @@ def provider_strip_rows(snapshot: NormalizedSnapshot, *, fallback_name: str, fal
         if window is None or not is_quota_window(name, window):
             continue
         value = f"{percent(window.utilization)} · {compact_number(window.total_tokens)} · {quota_reset_text(window)}"
-        rows.append(strip_row(window_label(name), value))
+        rows.append(strip_window_row(window_label(name), value, window))
     if rows:
         return "".join(rows)
     quota = is_quota_window(fallback_name, fallback_window)
@@ -504,6 +510,17 @@ def provider_strip_rows(snapshot: NormalizedSnapshot, *, fallback_name: str, fal
 
 def strip_row(label: str, value: str) -> str:
     return f'<div class="qc-strip-row"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
+
+
+def strip_window_row(label: str, value: str, window: SnapshotWindow) -> str:
+    pct = max(0.0, min(100.0, window.utilization * 100))
+    tone = pressure_tone(window.utilization)
+    return (
+        '<div class="qc-strip-window">'
+        f'<div class="qc-strip-row"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
+        f'<div class="qc-strip-bar qc-strip-bar-{html.escape(tone)}" aria-label="{html.escape(label)} usage"><span style="width: {pct:.1f}%"></span></div>'
+        '</div>'
+    )
 
 
 def provider_kpis(window_name: str, window: SnapshotWindow) -> str:
