@@ -11,7 +11,7 @@ from pathlib import Path
 from quota_core.adapters.claude import normalize_claude_quota
 from quota_core.config import config_from_mapping, load_config, validate_config, write_default_config
 from quota_core.runtime import runtime_env
-from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
+from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
 from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
 from quota_core.dashboard.renderer import render_page
 from quota_core.dashboard.view_model import build_provider_dashboard
@@ -129,7 +129,7 @@ class SnapshotTests(unittest.TestCase):
             },
         )
         page = render_page([snapshot])
-        self.assertIn("Operations briefing", page)
+        self.assertIn("Quota report", page)
         self.assertIn("local history", page)
         self.assertIn("top-heavy 80%", page)
         self.assertNotIn("<dt>Utilization</dt><dd>0.0%</dd>", page)
@@ -154,6 +154,13 @@ class SnapshotTests(unittest.TestCase):
                     by_model={
                         "sonnet": AggregateBreakdown(total_tokens=7200, requests=7, share_pct=100.0),
                     },
+                    runtime=RuntimeBreakdown(
+                        total_tokens=1800,
+                        requests=3,
+                        by_project={
+                            "quota-runtime": AggregateBreakdown(total_tokens=1800, requests=3, share_pct=100.0),
+                        },
+                    ),
                     cache_state="live",
                 ),
                 "seven_day": SnapshotWindow(
@@ -175,15 +182,16 @@ class SnapshotTests(unittest.TestCase):
             },
         )
         page = render_page([snapshot])
-        self.assertIn("Highest pressure", page)
-        self.assertIn("Operations report", page)
+        self.assertNotIn("Highest pressure", page)
+        self.assertNotIn("Operations report", page)
+        self.assertIn("Quota report", page)
+        self.assertIn("Runtime", page)
+        self.assertIn("quota-runtime", page)
+        self.assertNotIn("<h4>Runtime</h4>", page)
         self.assertIn("Claude Max", page)
-        self.assertIn("Quota matrix", page)
-        self.assertIn("Reset schedule", page)
-        self.assertIn("5 hour</span><strong>72.0%", page)
-        self.assertIn("qc-strip-bar-warm", page)
-        self.assertIn("5 hour usage", page)
-        self.assertIn("7 day usage", page)
+        self.assertIn("5시간", page)
+        self.assertIn("7일", page)
+        self.assertIn("72.0%", page)
         self.assertIn("qc-quota-split", page)
         self.assertEqual(page.count("<h4>Apps</h4>"), 2)
         self.assertIn("Window range", page)
@@ -263,8 +271,9 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual([item.name for item in provider.comparison], ["current_quota"])
         self.assertEqual([item.name for item in provider.details], ["seven_day"])
         self.assertTrue(provider.comparison[0].is_quota)
-        self.assertIn("Gemini Code Assist", page)
-        self.assertIn("Current quota usage", page)
+        self.assertNotIn("Operations report", page)
+        self.assertIn("Quota report", page)
+        self.assertIn("Current quota", page)
         self.assertIn("<h3>7 day</h3>", page)
         self.assertIn("<dt>Utilization</dt><dd>local history</dd>", page)
         self.assertIn("<dt>Tokens</dt><dd>4.6K</dd>", page)

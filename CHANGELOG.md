@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11 - 2026-04-29
+
+Legacy dashboard layout restore.
+
+- Restores the first screen to the original report-style provider sections: Claude Max, Codex, and Gemini quota lines with app lists.
+- Keeps runtime usage in a separate report block instead of scattering it through provider windows.
+
 ## 0.1.10 - 2026-04-29
 
 Gemini operations report correction.

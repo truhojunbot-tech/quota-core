@@ -63,132 +63,123 @@ def provider_summary(snapshot: NormalizedSnapshot) -> str:
 
 
 def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
-    """Render a top-level operational summary for all providers."""
+    """Render the legacy operational report first."""
 
     providers = build_dashboard(snapshots)
-    cards = []
-    total_tokens = 0
-    total_requests = 0
-    active_providers = 0
-    quota_windows = 0
-    warnings = 0
-    for provider in providers:
-        snapshot = provider.snapshot
-        if snapshot.errors:
-            warnings += len(snapshot.errors)
-            continue
-        if not snapshot.windows:
-            warnings += len(snapshot.warnings)
-            continue
-        if provider.primary is None:
-            warnings += len(snapshot.warnings)
-            continue
-        total_tokens += provider.primary.window.total_tokens
-        total_requests += provider.primary.window.requests
-        active_providers += 1
-        quota_windows += sum(1 for item in provider.windows if item.is_quota)
-        warnings += len(snapshot.warnings)
-        cards.append(provider_strip(provider))
-
-    return (
-        '<section class="qc-overview">'
-        '<div class="qc-overview-copy">'
-        '<div class="qc-overview-title">'
-        '<p class="qc-eyebrow">Operations</p>'
-        '<h2>Quota control</h2>'
-        '</div>'
-        f'{command_center(providers)}'
-        '</div>'
-        '<div class="qc-overview-metrics">'
-        f'{metric_tile("Providers", str(active_providers), "enabled")}'
-        f'{metric_tile("Quota windows", str(quota_windows), "live/cached")}'
-        f'{metric_tile("Shown tokens", compact_number(total_tokens), "selected windows")}'
-        f'{metric_tile("Requests", compact_number(total_requests), "selected windows")}'
-        f'{metric_tile("Notices", str(warnings), "warnings/errors")}'
-        '</div>'
-        f'<div class="qc-provider-strip">{"".join(cards)}</div>'
-        f'{operations_report(providers)}'
-        f'{quota_matrix(providers)}'
-        f'{reset_schedule(providers)}'
-        f'{attention_panel(providers)}'
-        f'{operations_briefing(providers)}'
-        '</section>'
-    )
-
-
-def operations_report(providers: tuple[ProviderDashboard, ...]) -> str:
-    """Render the original operations report structure as visible provider cards."""
-
-    cards = "".join(report_card(provider) for provider in providers if provider.primary is not None or provider.snapshot.errors)
-    if not cards:
+    cards = "".join(legacy_provider_report(provider) for provider in providers)
+    runtime = legacy_runtime_report(providers)
+    if not cards and not runtime:
         return ""
-    return f'<section class="qc-report"><h3>Operations report</h3><div class="qc-report-grid">{cards}</div></section>'
+    return f'<section class="qc-legacy-report"><h2>Quota report</h2><div class="qc-legacy-grid">{cards}</div>{runtime}</section>'
 
 
-def report_card(provider: ProviderDashboard) -> str:
-    source = html.escape(provider_report_title(provider.source))
+def legacy_provider_report(provider: ProviderDashboard) -> str:
+    """Render one provider in the same shape as the original hourly report."""
+
+    title = html.escape(provider_report_title(provider.source))
     if provider.snapshot.errors:
         errors = "".join(f"<li>{html.escape(error)}</li>" for error in provider.snapshot.errors)
-        return f'<article class="qc-report-card"><header><h4>{source}</h4>{badge("error", "danger")}</header><ul class="qc-report-apps">{errors}</ul></article>'
-    windows = provider.comparison or ((provider.primary,) if provider.primary else ())
-    body = "".join(report_window(item) for item in windows if item is not None)
-    state = badge(provider.primary.window.cache_state, cache_tone(provider.primary.window)) if provider.primary else badge("empty", "muted")
-    return f'<article class="qc-report-card"><header><h4>{source}</h4>{state}</header>{body}</article>'
-
-
-def report_window(item: DashboardWindow) -> str:
-    window = item.window
-    bar = usage_bar(window.utilization) if item.is_quota else local_meter(window)
-    apps = report_apps(window.by_project)
-    runtime = report_runtime(window)
+        return f'<article class="qc-legacy-card"><h3>{title}</h3><ul class="qc-legacy-list">{errors}</ul></article>'
+    lines = []
+    for item in provider.comparison:
+        if not item.is_quota:
+            continue
+        lines.append(legacy_quota_line(item))
+    if not lines and provider.primary is not None and provider.primary.is_quota:
+        lines.append(legacy_quota_line(provider.primary))
+    app_window = next((item.window for item in provider.comparison if item.name in {"five_hour", "current_quota", "today"}), None)
+    apps = legacy_app_list(app_window.by_project if app_window else {})
     return (
-        '<section class="qc-report-window">'
-        f'<div class="qc-report-window-head"><span>{html.escape(window_label(item.name))}</span><strong>{html.escape(report_window_value(item))}</strong></div>'
-        f'{bar}'
-        f'<p>{html.escape(report_window_meta(item))}</p>'
+        '<article class="qc-legacy-card">'
+        f'<h3>{title}</h3>'
+        f'<div class="qc-legacy-lines">{"".join(lines)}</div>'
         f'{apps}'
-        f'{runtime}'
-        '</section>'
+        '</article>'
     )
 
 
-def report_window_value(item: DashboardWindow) -> str:
-    if item.is_quota:
-        return percent(item.window.utilization)
-    return "local history"
-
-
-def report_window_meta(item: DashboardWindow) -> str:
+def legacy_quota_line(item: DashboardWindow) -> str:
+    label = "5시간" if item.name == "five_hour" else "7일" if item.name == "seven_day" else window_label(item.name)
     window = item.window
-    parts = [f"{compact_number(window.total_tokens)} tokens"]
-    if item.is_quota:
-        parts.append(f"reset {quota_reset_text(window).replace('reset ', '')}")
-        pace = pace_label(window)
-        if pace != "--":
-            parts.append(pace)
-    else:
-        parts.append(concentration_label(window))
-    return " · ".join(parts)
-
-
-def report_apps(rows: dict[str, AggregateBreakdown]) -> str:
-    if not rows:
-        return '<p class="qc-empty-list">No app usage in this window</p>'
-    items = "".join(
-        f'<li><span>{html.escape(display_name(name, kind="project"))}</span><strong>{aggregate.share_pct:.1f}%</strong></li>'
-        for name, aggregate in list(rows.items())[:BRIEF_PROJECT_LIMIT]
+    pace = pace_label(window)
+    pace_text = f'<span>{html.escape(pace)}</span>' if pace != "--" else ""
+    return (
+        '<div class="qc-legacy-quota-line">'
+        f'<span>{html.escape(label)}</span>'
+        f'<strong>{percent(window.utilization)} <em>(만기 {html.escape(reset_label(window))})</em></strong>'
+        f'{pace_text}'
+        '</div>'
     )
-    return f'<ol class="qc-report-apps">{items}</ol>'
 
 
-def report_runtime(window: SnapshotWindow) -> str:
-    if not window.runtime.by_project:
+def legacy_app_list(rows: dict[str, AggregateBreakdown]) -> str:
+    if not rows:
         return ""
     items = "".join(
-        f'<li><span>{html.escape(display_name(name, kind="project"))}</span><strong>{compact_number(aggregate.total_tokens)}</strong></li>'
-        for name, aggregate in list(window.runtime.by_project.items())[:BRIEF_PROJECT_LIMIT]
+        f'<li><span>{html.escape(display_name(name, kind="project"))}</span><strong>{aggregate.share_pct:.1f}%</strong></li>'
+        for name, aggregate in list(rows.items())[:8]
+        if aggregate.share_pct > 0
     )
-    return f'<div class="qc-report-runtime"><span>Runtime</span><ol>{items}</ol></div>'
+    return f'<ol class="qc-legacy-list">{items}</ol>' if items else ""
+
+
+def legacy_runtime_report(providers: tuple[ProviderDashboard, ...]) -> str:
+    """Render runtime-only usage as one separate report block."""
+
+    total_tokens = 0
+    total_requests = 0
+    project_totals: dict[str, AggregateBreakdown] = {}
+    for provider in providers:
+        item = runtime_source_window(provider)
+        if item is None:
+            continue
+        runtime = item.window.runtime
+        total_tokens += runtime.total_tokens
+        total_requests += runtime.requests
+        for name, aggregate in runtime.by_project.items():
+            current = project_totals.get(name, AggregateBreakdown())
+            project_totals[name] = AggregateBreakdown(
+                total_tokens=current.total_tokens + aggregate.total_tokens,
+                requests=current.requests + aggregate.requests,
+            )
+    if not project_totals and total_tokens <= 0 and total_requests <= 0:
+        return ""
+    items = "".join(
+        f'<li><span>{html.escape(display_name(name, kind="project"))}</span><strong>{compact_number(aggregate.total_tokens)} tok · {aggregate.share_pct:.1f}%</strong></li>'
+        for name, aggregate in list(share_aggregates(project_totals).items())[:8]
+    )
+    return (
+        '<article class="qc-legacy-runtime">'
+        '<h3>Runtime</h3>'
+        f'<p>{compact_number(total_tokens)} tokens · {total_requests:,} requests</p>'
+        f'<ol class="qc-legacy-list">{items}</ol>'
+        '</article>'
+    )
+
+
+def runtime_source_window(provider: ProviderDashboard) -> DashboardWindow | None:
+    candidates = [
+        item
+        for item in provider.windows
+        if item.window.runtime.total_tokens > 0 or item.window.runtime.requests > 0 or item.window.runtime.by_project
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item.window.runtime.total_tokens, item.window.runtime.requests))
+
+
+def share_aggregates(rows: dict[str, AggregateBreakdown]) -> dict[str, AggregateBreakdown]:
+    total = sum(row.total_tokens for row in rows.values())
+    if total <= 0:
+        return rows
+    return {
+        name: AggregateBreakdown(
+            total_tokens=aggregate.total_tokens,
+            requests=aggregate.requests,
+            share_pct=aggregate.total_tokens / total * 100,
+        )
+        for name, aggregate in sorted(rows.items(), key=lambda item: item[1].total_tokens, reverse=True)
+    }
 
 
 def provider_report_title(source: str) -> str:
@@ -232,7 +223,6 @@ def window_panel(item: DashboardWindow, *, compact: bool = False, project_title:
         f'{window_context(name, window)}'
         f'{aggregate_table(project_title, window.by_project, kind="project", empty_label="No app usage in this window")}'
         f'{aggregate_table("Models", window.by_model, kind="model")}'
-        f'{runtime_section(window)}'
         '</article>'
     )
 
@@ -408,21 +398,6 @@ def aggregate_table(title: str, rows: dict[str, AggregateBreakdown], *, kind: st
     )
 
 
-def runtime_section(window: SnapshotWindow) -> str:
-    """Render runtime usage for a window."""
-
-    runtime = window.runtime
-    if runtime.total_tokens <= 0 and runtime.requests <= 0 and not runtime.by_project:
-        return ""
-    return (
-        '<section class="qc-runtime">'
-        '<h4>Runtime</h4>'
-        f'<p>{compact_number(runtime.total_tokens)} tokens / {runtime.requests:,} requests</p>'
-        f'{aggregate_table("Runtime Projects", runtime.by_project, kind="project")}'
-        '</section>'
-    )
-
-
 def stylesheet() -> str:
     """Return dashboard CSS."""
 
@@ -433,7 +408,23 @@ main { max-width: 1380px; margin: 0 auto; padding: 22px; }
 h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-eyebrow { margin: 0 0 4px; color: #697586; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 .qc-overview { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; margin-bottom: 18px; }
-.qc-overview-copy, .qc-provider, .qc-overview-metrics, .qc-provider-strip article, .qc-report, .qc-attention, .qc-briefing, .qc-matrix, .qc-reset-schedule { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
+.qc-legacy-report, .qc-provider, .qc-attention, .qc-briefing, .qc-matrix, .qc-reset-schedule { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
+.qc-legacy-report { padding: 16px; margin-bottom: 18px; }
+.qc-legacy-report h2 { margin: 0 0 12px; font-size: 20px; }
+.qc-legacy-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.qc-legacy-card, .qc-legacy-runtime { min-width: 0; border: 1px solid #e3e8ef; border-radius: 6px; padding: 14px; background: #fcfdfe; }
+.qc-legacy-card h3, .qc-legacy-runtime h3 { margin: 0 0 10px; font-size: 16px; }
+.qc-legacy-lines { display: grid; gap: 8px; }
+.qc-legacy-quota-line { display: grid; grid-template-columns: 56px 1fr auto; align-items: baseline; gap: 8px; padding: 7px 0; border-bottom: 1px solid #edf1f5; }
+.qc-legacy-quota-line > span { color: #536173; }
+.qc-legacy-quota-line strong { text-align: right; }
+.qc-legacy-quota-line em { color: #536173; font-style: normal; font-weight: 500; }
+.qc-legacy-list { margin: 10px 0 0; padding: 0; list-style: none; }
+.qc-legacy-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 4px 0; color: #536173; }
+.qc-legacy-list span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qc-legacy-list strong { color: #18212f; white-space: nowrap; }
+.qc-legacy-runtime { margin-top: 12px; }
+.qc-legacy-runtime p { margin: 0; color: #536173; font-weight: 700; }
 .qc-overview-copy { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: center; padding: 18px; }
 .qc-overview-title h2 { margin: 0; font-size: 22px; }
 .qc-command-center { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -458,28 +449,6 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-strip-bar-cool span { background: #287f71; }
 .qc-strip-bar-warm span { background: #c17a1b; }
 .qc-strip-bar-hot span { background: #c2413a; }
-.qc-report { grid-column: 1 / -1; padding: 14px; }
-.qc-report h3 { margin: 0; font-size: 16px; }
-.qc-report-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
-.qc-report-card { min-width: 0; border: 1px solid #e3e8ef; border-radius: 6px; overflow: hidden; background: #fcfdfe; }
-.qc-report-card header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border-bottom: 1px solid #e3e8ef; background: #f7f9fb; }
-.qc-report-card h4 { margin: 0; font-size: 15px; }
-.qc-report-window { padding: 10px 12px; border-top: 1px solid #edf1f5; }
-.qc-report-card header + .qc-report-window { border-top: 0; }
-.qc-report-window-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.qc-report-window-head span { color: #536173; }
-.qc-report-window-head strong { font-size: 16px; overflow-wrap: anywhere; text-align: right; }
-.qc-report-window .qc-bar, .qc-report-window .qc-local-meter { margin: 8px 0; }
-.qc-report-window p { margin: 0 0 8px; color: #536173; font-size: 12px; overflow-wrap: anywhere; }
-.qc-report-apps { margin: 0; padding: 0; list-style: none; }
-.qc-report-apps li { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 3px 0; border-top: 1px solid #edf1f5; font-size: 13px; }
-.qc-report-apps li:first-child { border-top: 0; }
-.qc-report-apps span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qc-report-apps strong { white-space: nowrap; }
-.qc-report-runtime { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #ccd5df; }
-.qc-report-runtime > span { display: block; margin-bottom: 4px; color: #697586; font-size: 12px; font-weight: 700; }
-.qc-report-runtime ol { margin: 0; padding: 0; list-style: none; }
-.qc-report-runtime li { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 12px; color: #536173; }
 .qc-matrix { grid-column: 1 / -1; padding: 14px; overflow-x: auto; }
 .qc-matrix h3, .qc-reset-schedule h3 { margin: 0; font-size: 16px; }
 .qc-matrix-table { min-width: 1040px; table-layout: auto; }
@@ -518,7 +487,7 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-brief-projects li { padding: 2px 0; }
 .qc-provider { padding: 18px; margin-bottom: 18px; }
 .qc-provider-head, .qc-window header, .qc-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.qc-provider h2, .qc-window h3, .qc-table-wrap h4, .qc-runtime h4 { margin: 0; }
+.qc-provider h2, .qc-window h3, .qc-table-wrap h4 { margin: 0; }
 .qc-provider h2 { font-size: 22px; text-transform: capitalize; }
 .qc-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
 .qc-kpi { min-width: 0; border: 1px solid #e3e8ef; border-radius: 6px; padding: 12px; background: #f9fafb; }
@@ -560,12 +529,10 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-share-bar span { display: block; height: 100%; background: #4d6f91; }
 .qc-table-note { margin: 0; color: #697586; font-size: 12px; }
 .qc-empty-list { margin: 8px 0 0; padding: 10px; border: 1px dashed #ccd5df; border-radius: 6px; color: #697586; font-size: 13px; background: #f9fafb; }
-.qc-runtime { margin-top: 16px; padding: 12px; border: 1px solid #e3e8ef; border-radius: 6px; background: #f9fafb; }
-.qc-runtime p { margin: 6px 0 0; color: #536173; }
 .qc-warning { margin: 12px 0 0; color: #7a4b00; }
 @media (max-width: 900px) {
   main { padding: 16px; }
-        .qc-overview-copy, .qc-provider-strip, .qc-report-grid, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol, .qc-quota-split { grid-template-columns: 1fr; }
+    .qc-overview-copy, .qc-legacy-grid, .qc-provider-strip, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol, .qc-quota-split { grid-template-columns: 1fr; }
         .qc-command-center { grid-template-columns: 1fr; }
         .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
