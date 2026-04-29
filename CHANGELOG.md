@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.4 - 2026-04-29
+
+Dashboard short-window visibility fix.
+
+- Restored 5-hour quota visibility in provider summary cards instead of showing only the highest-pressure window.
+- Provider cards now show both 5-hour and 7-day rows when both quota windows are available.
+
 ## 0.1.3 - 2026-04-29
 
 Dashboard information architecture update.

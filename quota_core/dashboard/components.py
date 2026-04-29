@@ -353,13 +353,13 @@ h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
 .qc-provider-strip article { padding: 14px; }
 .qc-provider-strip h3 { margin: 0 0 10px; font-size: 16px; }
 .qc-strip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 8px; color: #536173; }
-.qc-strip-row strong { color: #18212f; }
+.qc-strip-row strong { color: #18212f; text-align: right; overflow-wrap: anywhere; }
 .qc-matrix { grid-column: 1 / -1; padding: 14px; overflow-x: auto; }
 .qc-matrix h3, .qc-reset-schedule h3 { margin: 0; font-size: 16px; }
-.qc-matrix-table { min-width: 940px; table-layout: auto; }
+.qc-matrix-table { min-width: 1040px; table-layout: auto; }
 .qc-matrix-table th:first-child, .qc-matrix-table td:first-child { width: auto; }
 .qc-matrix-table th, .qc-matrix-table td { white-space: nowrap; }
-.qc-matrix-table th:nth-child(7), .qc-matrix-table td:nth-child(7) { min-width: 180px; white-space: normal; overflow-wrap: anywhere; }
+.qc-matrix-table th:nth-child(7), .qc-matrix-table td:nth-child(7) { min-width: 240px; white-space: normal; overflow-wrap: anywhere; }
 .qc-matrix-table th:nth-child(8), .qc-matrix-table td:nth-child(8) { width: 92px; text-align: right; }
 .qc-pressure { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; font-weight: 720; }
 .qc-pressure-cool { background: #e4f2ef; color: #176355; }
@@ -474,16 +474,36 @@ def provider_strip(snapshot: NormalizedSnapshot) -> str:
     source = html.escape(snapshot.source.title())
     quota = is_quota_window(name, window)
     meter = usage_bar(window.utilization) if quota else local_meter(window)
-    status = percent(window.utilization) if quota else "local history"
-    token_label = "Used" if quota else "Tokens"
+    rows = provider_strip_rows(snapshot, fallback_name=name, fallback_window=window)
     return (
         '<article>'
         f'<h3>{source}</h3>'
         f'{meter}'
-        f'<div class="qc-strip-row"><span>{html.escape(window_label(name))}</span><strong>{status}</strong></div>'
-        f'<div class="qc-strip-row"><span>{token_label}</span><strong>{compact_number(window.total_tokens)}</strong></div>'
+        f'{rows}'
         '</article>'
     )
+
+
+def provider_strip_rows(snapshot: NormalizedSnapshot, *, fallback_name: str, fallback_window: SnapshotWindow) -> str:
+    """Render compact provider rows without hiding the short quota window."""
+
+    rows = []
+    for name in ("five_hour", "seven_day"):
+        window = snapshot.windows.get(name)
+        if window is None or not is_quota_window(name, window):
+            continue
+        value = f"{percent(window.utilization)} · {compact_number(window.total_tokens)} · {quota_reset_text(window)}"
+        rows.append(strip_row(window_label(name), value))
+    if rows:
+        return "".join(rows)
+    quota = is_quota_window(fallback_name, fallback_window)
+    status = percent(fallback_window.utilization) if quota else "local history"
+    token_label = "Used" if quota else "Tokens"
+    return strip_row(window_label(fallback_name), status) + strip_row(token_label, compact_number(fallback_window.total_tokens))
+
+
+def strip_row(label: str, value: str) -> str:
+    return f'<div class="qc-strip-row"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
 
 
 def provider_kpis(window_name: str, window: SnapshotWindow) -> str:

@@ -160,6 +160,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("Highest pressure", page)
         self.assertIn("Quota matrix", page)
         self.assertIn("Reset schedule", page)
+        self.assertIn("5 hour</span><strong>72.0%", page)
         self.assertIn("Window range", page)
         self.assertIn("Top model", page)
         self.assertIn("demo 90.0%", page)
