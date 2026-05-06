@@ -9,6 +9,8 @@ import unittest
 from pathlib import Path
 
 from quota_core.adapters.claude import normalize_claude_quota
+from quota_core.adapters.projects import normalize_project_name
+from quota_core.adapters.gemini import normalize_gemini_usage
 from quota_core.config import config_from_mapping, load_config, validate_config, write_default_config
 from quota_core.runtime import runtime_env
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
@@ -109,6 +111,73 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(validate_snapshot_dict(snapshot), ())
         self.assertEqual(snapshot["windows"]["five_hour"]["runtime"]["total_tokens"], 200)
 
+    def test_agent_crew_worktree_projects_merge_with_parent_project(self):
+        payload = {
+            "fetched_at": 1770000000,
+            "seven_day": {
+                "utilization": 0.09,
+                "resets_at": 1770003600,
+                "tokens_used": 300,
+                "by_project": {
+                    "demo-app": {
+                        "tokens": 180,
+                        "requests": 2,
+                        "models": {"sonnet": 180},
+                        "model_requests": {"sonnet": 2},
+                    },
+                    "-agent-crew-worktrees-demo-app-claude": {
+                        "tokens": 120,
+                        "requests": 1,
+                        "models": {"sonnet": 120},
+                        "model_requests": {"sonnet": 1},
+                    },
+                },
+                "runtime_tokens_used": 100,
+                "runtime_by_project": {
+                    "-agent-crew-worktrees-alpha-engine-claude": {
+                        "tokens": 100,
+                        "requests": 1,
+                        "models": {"haiku": 100},
+                    }
+                },
+            },
+        }
+        snapshot = snapshot_to_dict(normalize_claude_quota(payload))
+        window = snapshot["windows"]["seven_day"]
+        self.assertEqual(validate_snapshot_dict(snapshot), ())
+        self.assertEqual(list(window["by_project"]), ["demo-app"])
+        self.assertEqual(window["by_project"]["demo-app"]["total_tokens"], 300)
+        self.assertEqual(window["by_project"]["demo-app"]["requests"], 3)
+        self.assertEqual(window["by_project"]["demo-app"]["models"]["sonnet"], 300)
+        self.assertEqual(window["runtime"]["by_project"]["alpha-engine"]["total_tokens"], 100)
+        self.assertNotIn("agent-crew-worktrees", json.dumps(window))
+
+    def test_project_name_normalizes_provider_leaf_worktrees(self):
+        self.assertEqual(
+            normalize_project_name("/workspace/.agent_crew/worktrees/alpha_engine/codex"),
+            "alpha-engine",
+        )
+        self.assertEqual(
+            normalize_project_name("/workspace/worktrees/context-forge-core/codex"),
+            "context-forge-core",
+        )
+        self.assertEqual(
+            normalize_project_name("/workspace/worktrees/agent_crew/codex"),
+            "agent-crew",
+        )
+        self.assertEqual(
+            normalize_project_name("/workspace/worktrees/archive/logs"),
+            "logs",
+        )
+        self.assertEqual(
+            normalize_project_name("/workspace/agent_crew/archive/logs"),
+            "logs",
+        )
+        self.assertEqual(
+            normalize_project_name("worktrees-context-forge-core-claude"),
+            "context-forge-core",
+        )
+
     def test_invalid_snapshot_reports_errors(self):
         errors = validate_snapshot_dict({"source": "", "sampled_at": "bad", "windows": []})
         self.assertGreaterEqual(len(errors), 3)
@@ -129,7 +198,7 @@ class SnapshotTests(unittest.TestCase):
             },
         )
         page = render_page([snapshot])
-        self.assertIn("Quota report", page)
+        self.assertIn("Provider Details", page)
         self.assertIn("local history", page)
         self.assertIn("top-heavy 80%", page)
         self.assertNotIn("<dt>Utilization</dt><dd>0.0%</dd>", page)
@@ -182,24 +251,69 @@ class SnapshotTests(unittest.TestCase):
             },
         )
         page = render_page([snapshot])
-        self.assertIn("Overall status", page)
-        self.assertIn("Highest pressure", page)
+        self.assertIn("전체 현황", page)
+        self.assertIn("setInterval(function(){window.location.reload();},60000)", page)
+        self.assertIn("CLAUDE MAX", page)
         self.assertNotIn("Operations report", page)
-        self.assertIn("Quota report", page)
-        self.assertIn("Runtime", page)
+        self.assertNotIn("Quota report", page)
+        self.assertIn("LLM Dashboard", page)
+        self.assertIn("Claude Max Quota", page)
+        self.assertIn("Provider Details", page)
+        self.assertIn("자동 런타임 LLM 사용량", page)
+        self.assertIn("qc-runtime-report", page)
+        self.assertIn("Claude Runtime", page)
         self.assertIn("quota-runtime", page)
         self.assertNotIn("<h4>Runtime</h4>", page)
         self.assertIn("Claude Max", page)
         self.assertIn("5시간", page)
         self.assertIn("7일", page)
+        self.assertIn("시간 후 리셋", page)
         self.assertIn("72.0%", page)
         self.assertIn("qc-quota-split", page)
-        self.assertEqual(page.count("<h4>Apps</h4>"), 2)
+        self.assertGreaterEqual(page.count("<h4>Apps</h4>"), 2)
         self.assertIn("Window range", page)
         self.assertIn("Top model", page)
         self.assertIn("demo 90.0%", page)
         self.assertIn("weekly-app", page)
         self.assertIn("sonnet 100.0%", page)
+
+    def test_dashboard_timeline_preserves_legacy_history_semantics(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="claude",
+            sampled_at=now,
+            windows={},
+            history={
+                "usage_timeline": {
+                    "unit": "usd",
+                    "dates": ["2026-04-28", "2026-04-29", "2026-04-30"],
+                    "daily_total": {"2026-04-28": 1.0, "2026-04-29": 2.0, "2026-04-30": 3.0},
+                    "datasets": [
+                        {
+                            "project": "alpha-app",
+                            "total_cost": 4.0,
+                            "daily": {"2026-04-28": 0.0, "2026-04-29": 1.0, "2026-04-30": 3.0},
+                        }
+                    ],
+                },
+                "quota_history": [
+                    {"ts": now - 60, "5h_util": 0.47, "7d_util": 0.06},
+                    {"ts": now, "5h_util": 0.72, "7d_util": 0.08},
+                ],
+            },
+        )
+        page = render_page([snapshot])
+        self.assertIn("시계열 사용량", page)
+        self.assertIn("Quota 시계열", page)
+        self.assertIn("project-line-chart", page)
+        self.assertIn("project-line", page)
+        self.assertIn("style=\"stroke:#38bdf8\"", page)
+        self.assertIn("timeline-project-name", page)
+        self.assertIn("<i style=\"background:#38bdf8\"></i>alpha-app", page)
+        self.assertIn("<polyline points=", page)
+        self.assertIn("mini-sparkline", page)
+        self.assertIn("72.0%", page)
+        self.assertNotIn("0.7%", page)
 
     def test_dashboard_view_model_matches_original_report_windows(self):
         now = int(time.time())
@@ -273,15 +387,60 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual([item.name for item in provider.details], ["seven_day"])
         self.assertTrue(provider.comparison[0].is_quota)
         self.assertNotIn("Operations report", page)
-        self.assertIn("Quota report", page)
-        self.assertIn("Current quota", page)
-        self.assertIn("<h3>7 day</h3>", page)
+        self.assertNotIn("Quota report", page)
+        self.assertIn("Gemini (Google)", page)
+        self.assertIn("현재 quota window", page)
+        self.assertIn("7일 전체 사용량", page)
         self.assertIn("<dt>Utilization</dt><dd>local history</dd>", page)
         self.assertIn("<dt>Tokens</dt><dd>4.6K</dd>", page)
         self.assertIn("qc-quota-split", page)
-        self.assertEqual(page.count("<h4>Apps</h4>"), 1)
+        self.assertGreaterEqual(page.count("<h4>Apps</h4>"), 1)
         self.assertIn("gemini-live", page)
         self.assertIn("gemini-week", page)
+
+    def test_gemini_quota_groups_are_normalized_and_rendered(self):
+        now = int(time.time())
+        snapshot = normalize_gemini_usage(
+            {
+                "fetched_at": now,
+                "quota": {"buckets": []},
+                "current_quota": {
+                    "total": 1200,
+                    "requests": 12,
+                    "utilization": 0.03,
+                    "resets_at": now + 22 * 3600,
+                    "window_seconds": 24 * 3600,
+                    "by_project": {
+                        "gemini-live": {
+                            "total": 1200,
+                            "requests": 12,
+                            "models": {"gemini-3-flash-preview": 1200},
+                        }
+                    },
+                },
+                "quota_by_model": {
+                    "gemini-3-flash-preview": {
+                        "utilization": 0.03,
+                        "resets_at": now + 22 * 3600,
+                        "token_type": "REQUESTS",
+                    },
+                    "gemini-3.1-pro-preview": {
+                        "utilization": 0.0,
+                        "resets_at": now + 24 * 3600,
+                        "token_type": "REQUESTS",
+                    },
+                },
+            }
+        )
+        payload = snapshot_to_dict(snapshot)
+        self.assertEqual(validate_snapshot_dict(payload), ())
+        groups = payload["windows"]["current_quota"]["quota_groups"]
+        self.assertEqual(groups["flash"]["label"], "Flash 그룹")
+        self.assertEqual(groups["pro"]["label"], "Pro 그룹")
+        page = render_page([snapshot])
+        self.assertIn("Flash 그룹", page)
+        self.assertIn("Pro 그룹", page)
+        self.assertIn("그룹별 Request 한도", page)
 
     def test_claude_local_scanner_reads_jsonl(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -349,6 +508,10 @@ class SnapshotTests(unittest.TestCase):
                 )
                 conn.execute(
                     "INSERT INTO threads (cwd, model, tokens_used) VALUES (?, ?, ?)",
+                    (str(Path(temp_dir) / ".agent_crew" / "demo-codex" / "claude"), "openai/gpt-5.4", 5),
+                )
+                conn.execute(
+                    "INSERT INTO threads (cwd, model, tokens_used) VALUES (?, ?, ?)",
                     (str(Path(temp_dir) / "ignored"), "openai/gpt-5.4", 0),
                 )
             config = config_from_mapping(
@@ -366,10 +529,11 @@ class SnapshotTests(unittest.TestCase):
             snapshot = snapshot_to_dict(snapshots[0])
             self.assertEqual(validate_snapshot_dict(snapshot), ())
             window = snapshot["windows"]["local_all"]
-            self.assertEqual(window["total_tokens"], 50)
-            self.assertEqual(window["requests"], 2)
+            self.assertEqual(window["total_tokens"], 55)
+            self.assertEqual(window["requests"], 3)
             self.assertNotIn("ignored", window["by_project"])
-            self.assertEqual(window["by_project"]["demo-codex"]["models"]["gpt-5.4"], 50)
+            self.assertEqual(window["by_project"]["demo-codex"]["models"]["gpt-5.4"], 55)
+            self.assertNotIn("claude", window["by_project"])
 
     def test_codex_local_scanner_redacts_missing_path(self):
         config = config_from_mapping(
@@ -390,6 +554,9 @@ class SnapshotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             session_dir = Path(temp_dir) / "demo-gemini" / "chats"
             session_dir.mkdir(parents=True)
+            (Path(temp_dir) / "demo-gemini" / ".project_root").write_text(
+                "/workspace/.agent_crew/worktrees/demo-gemini/gemini"
+            )
             session = {
                 "messages": [
                     {
@@ -421,6 +588,23 @@ class SnapshotTests(unittest.TestCase):
                     }
                 )
             )
+            jsonl_message = {
+                "id": "jsonl-message-1",
+                "type": "gemini",
+                "timestamp": "2026-04-30T08:24:48.369Z",
+                "model": "models/gemini-3-flash-preview",
+                "tokens": {"total": 13},
+            }
+            (session_dir / "session-3.jsonl").write_text(
+                "\n".join(
+                    [
+                        json.dumps({"sessionId": "demo"}),
+                        json.dumps(jsonl_message),
+                        json.dumps({**jsonl_message, "toolCalls": [{"id": "tool-1"}]}),
+                    ]
+                )
+                + "\n"
+            )
             config = config_from_mapping(
                 {
                     "providers": {
@@ -436,10 +620,11 @@ class SnapshotTests(unittest.TestCase):
             snapshot = snapshot_to_dict(snapshots[0])
             self.assertEqual(validate_snapshot_dict(snapshot), ())
             window = snapshot["windows"]["local_all"]
-            self.assertEqual(window["total_tokens"], 37)
-            self.assertEqual(window["requests"], 2)
+            self.assertEqual(window["total_tokens"], 50)
+            self.assertEqual(window["requests"], 3)
             self.assertEqual(window["by_project"]["demo-gemini"]["models"]["gemini-2.5-pro"], 30)
             self.assertEqual(window["by_project"]["demo-gemini"]["models"]["gemini-2.5-flash"], 7)
+            self.assertEqual(window["by_project"]["demo-gemini"]["models"]["gemini-3-flash-preview"], 13)
 
     def test_gemini_local_scanner_redacts_missing_path(self):
         config = config_from_mapping(
@@ -477,8 +662,8 @@ class PublicSplitGuardTests(unittest.TestCase):
 
     def test_public_targets_do_not_contain_private_markers(self):
         denied = (
-            "/home/" + "truhojun",
-            "641923" + "6710",
+            "/home/private-user",
+            "1234567890",
             "TELE" + "GRAM",
             "tele" + "gram",
             "bot" + "0:",

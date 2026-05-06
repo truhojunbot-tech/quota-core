@@ -1,208 +1,568 @@
-"""Reusable dashboard component helpers."""
+"""Dashboard components rendered from normalized quota snapshots."""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import html
 import time
 
-from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, SnapshotWindow
-from quota_core.dashboard.view_model import (
-    DashboardWindow,
-    ProviderDashboard,
-    build_dashboard,
-    build_provider_dashboard,
-    data_state_label,
-    iter_quota_windows,
-    next_reset_window,
-    pressure_windows,
-    window_is_quota,
-)
+from quota_core.dashboard.view_model import DashboardWindow, ProviderDashboard, build_dashboard
+from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotQuotaGroup, SnapshotWindow
 
-TOP_ROW_LIMIT = 12
-BRIEF_PROJECT_LIMIT = 5
-RESET_ROW_LIMIT = 8
-
-
-def badge(label: str, tone: str = "neutral") -> str:
-    """Render a small status badge."""
-
-    safe_label = html.escape(label)
-    safe_tone = html.escape(tone)
-    return f'<span class="qc-badge qc-badge-{safe_tone}">{safe_label}</span>'
-
-
-def provider_summary(snapshot: NormalizedSnapshot) -> str:
-    """Render provider-level summary."""
-
-    provider = build_provider_dashboard(snapshot)
-
-    source = html.escape(snapshot.source)
-    if snapshot.errors:
-        body = "".join(f"<p>{html.escape(error)}</p>" for error in snapshot.errors)
-        return f'<section class="qc-provider qc-provider-error"><h2>{source}</h2>{badge("error", "danger")}{body}</section>'
-    if not snapshot.windows:
-        return f'<section class="qc-provider qc-provider-empty"><h2>{source}</h2>{badge("empty", "muted")}</section>'
-
-    if provider.primary is None:
-        return f'<section class="qc-provider qc-provider-empty"><h2>{source}</h2>{badge("empty", "muted")}</section>'
-    primary = provider.primary
-    windows = provider_windows(provider)
-    warnings = "".join(f"<p class=\"qc-warning\">{html.escape(warning)}</p>" for warning in snapshot.warnings)
-    return (
-        '<section class="qc-provider">'
-        '<div class="qc-provider-head">'
-        f'<div><p class="qc-eyebrow">Provider</p><h2>{source}</h2></div>'
-        f'{badge(primary.window.cache_state, cache_tone(primary.window))}'
-        '</div>'
-        f'{provider_kpis(primary)}'
-        f'{warnings}'
-        f'{windows}'
-        '</section>'
-    )
+KST = timezone(timedelta(hours=9))
+TOP_ROWS = 8
 
 
 def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
-    """Render the legacy operational report first."""
-
     providers = build_dashboard(snapshots)
-    status = overall_status(providers)
-    cards = "".join(legacy_provider_report(provider) for provider in providers)
-    runtime = legacy_runtime_report(providers)
-    if not status and not cards and not runtime:
-        return ""
-    return f'{status}<section class="qc-legacy-report"><h2>Quota report</h2><div class="qc-legacy-grid">{cards}</div>{runtime}</section>'
+    if not providers:
+        return '<section class="panel"><h2>No snapshots</h2></section>'
+    sections = (
+        overall_status(providers),
+        runtime_usage_report(providers),
+        provider_panels(providers),
+        time_series_panel(providers),
+        quota_history_panel(providers),
+        detail_windows(providers),
+        data_state_panel(providers),
+    )
+    return "".join(section for section in sections if section)
+
+
+def provider_summary(snapshot: NormalizedSnapshot) -> str:
+    provider = build_dashboard([snapshot])[0]
+    return detail_provider_card(provider)
+
+
+def provider_panels(providers: tuple[ProviderDashboard, ...]) -> str:
+    return "".join(provider_panel(provider) for provider in providers)
 
 
 def overall_status(providers: tuple[ProviderDashboard, ...]) -> str:
-    """Render the dashboard-wide status summary above the legacy report."""
+    cards = "".join(overall_provider(provider) for provider in providers if provider.primary or provider.snapshot.errors)
+    return f'<section class="panel overview-panel"><h2>전체 현황</h2><div class="overview-grid">{cards}</div></section>' if cards else ""
 
-    active_providers = 0
-    quota_windows = 0
-    total_tokens = 0
-    total_requests = 0
-    warnings = 0
-    for provider in providers:
-        snapshot = provider.snapshot
-        warnings += len(snapshot.errors) + len(snapshot.warnings)
-        if provider.primary is None:
-            continue
-        active_providers += 1
-        quota_windows += sum(1 for item in provider.windows if item.is_quota)
-        total_tokens += provider.primary.window.total_tokens
-        total_requests += provider.primary.window.requests
-    if not providers:
+
+def overall_provider(provider: ProviderDashboard) -> str:
+    title = provider_title(provider.source, upper=True)
+    if provider.snapshot.errors:
+        return f'<article><h3>{html.escape(title)}</h3><p class="error-text">{html.escape(provider.snapshot.errors[0])}</p></article>'
+    rows = "".join(overall_window(item, provider.source) for item in provider.comparison if item.is_quota)
+    if not rows and provider.primary and provider.primary.is_quota:
+        rows = overall_window(provider.primary, provider.source)
+    return f'<article><h3>{html.escape(title)}</h3>{rows}</article>'
+
+
+def overall_window(item: DashboardWindow, source: str) -> str:
+    return (
+        '<div class="overview-window">'
+        f'<div class="row"><span>{html.escape(short_window_label(item.name))}</span><strong>{percent0(item.window.utilization)}{pace_badge(item.window)}</strong></div>'
+        f'<div class="mini-bar"><span class="fill-{html.escape(source)} fill-{html.escape(item.name)}" style="width:{clamped_pct(item.window.utilization):.1f}%"></span></div>'
+        f'<p>{html.escape(reset_hours(item.window))}</p>'
+        '</div>'
+    )
+
+
+def runtime_usage_report(providers: tuple[ProviderDashboard, ...]) -> str:
+    cards = "".join(runtime_provider(provider) for provider in providers if provider.primary or provider.windows)
+    if not cards:
         return ""
     return (
-        '<section class="qc-overall-status">'
-        '<div class="qc-overall-head">'
-        '<div><p class="qc-eyebrow">Operations</p><h2>Overall status</h2></div>'
-        f'{command_center(providers)}'
-        '</div>'
-        '<div class="qc-overall-metrics">'
-        f'{metric_tile("Providers", str(active_providers), "enabled")}'
-        f'{metric_tile("Quota windows", str(quota_windows), "live/cached")}'
-        f'{metric_tile("Shown tokens", compact_number(total_tokens), "selected windows")}'
-        f'{metric_tile("Requests", compact_number(total_requests), "selected windows")}'
-        f'{metric_tile("Notices", str(warnings), "warnings/errors")}'
-        '</div>'
+        '<section class="panel runtime-panel qc-runtime-report">'
+        '<h2>자동 런타임 LLM 사용량</h2>'
+        '<p class="panel-note">대상: runtime 태그가 붙은 실제 봇 세션만 집계</p>'
+        f'<div class="runtime-grid">{cards}</div>'
         '</section>'
     )
 
 
-def legacy_provider_report(provider: ProviderDashboard) -> str:
-    """Render one provider in the same shape as the original hourly report."""
+def runtime_provider(provider: ProviderDashboard) -> str:
+    windows = [item for item in provider.comparison if item.is_quota]
+    if not windows and provider.primary and provider.primary.is_quota:
+        windows = [provider.primary]
+    body = "".join(runtime_window(item) for item in windows if item)
+    legend = model_legend([item.window.runtime for item in windows if item])
+    return f'<article class="runtime-card"><h3>{html.escape(provider.source.title())} Runtime</h3>{legend}<div class="runtime-windows">{body}</div></article>'
 
-    title = html.escape(provider_report_title(provider.source))
-    if provider.snapshot.errors:
-        errors = "".join(f"<li>{html.escape(error)}</li>" for error in provider.snapshot.errors)
-        return f'<article class="qc-legacy-card"><h3>{title}</h3><ul class="qc-legacy-list">{errors}</ul></article>'
-    lines = []
-    for item in provider.comparison:
-        if not item.is_quota:
-            continue
-        lines.append(legacy_quota_line(item))
-    if not lines and provider.primary is not None and provider.primary.is_quota:
-        lines.append(legacy_quota_line(provider.primary))
-    app_window = next((item.window for item in provider.comparison if item.name in {"five_hour", "current_quota", "today"}), None)
-    apps = legacy_app_list(app_window.by_project if app_window else {})
+
+def runtime_window(item: DashboardWindow) -> str:
+    runtime = item.window.runtime
+    total = runtime.total_tokens
+    service_total = item.window.total_tokens
+    runtime_pct = total / service_total if service_total > 0 else 0.0
+    projects = runtime_project_rows(runtime.by_project, total)
+    tokens = runtime_usage_line(runtime, service_total)
     return (
-        '<article class="qc-legacy-card">'
-        f'<h3>{title}</h3>'
-        f'<div class="qc-legacy-lines">{"".join(lines)}</div>'
-        f'{apps}'
-        '</article>'
-    )
-
-
-def legacy_quota_line(item: DashboardWindow) -> str:
-    label = "5시간" if item.name == "five_hour" else "7일" if item.name == "seven_day" else window_label(item.name)
-    window = item.window
-    pace = pace_label(window)
-    pace_text = f'<span>{html.escape(pace)}</span>' if pace != "--" else ""
-    return (
-        '<div class="qc-legacy-quota-line">'
-        f'<span>{html.escape(label)}</span>'
-        f'<strong>{percent(window.utilization)} <em>(만기 {html.escape(reset_label(window))})</em></strong>'
-        f'{pace_text}'
+        '<div class="runtime-window">'
+        f'<h4>{html.escape(runtime_window_label(item.name))}</h4>'
+        f'<div class="runtime-bar"><span style="width:{clamped_pct(runtime_pct):.1f}%">{model_segments(runtime)}</span></div>'
+        f'<div class="row"><strong>{percent1(runtime_pct)}</strong><span>{percent1(item.window.utilization)} of quota</span></div>'
+        f'<p>{html.escape(tokens)}</p>'
+        f'{projects}'
         '</div>'
     )
 
 
-def legacy_app_list(rows: dict[str, AggregateBreakdown]) -> str:
-    if not rows:
+def provider_panel(provider: ProviderDashboard) -> str:
+    title = provider_title(provider.source)
+    if provider.snapshot.errors:
+        return panel(title, f'<p class="error-text">{html.escape(provider.snapshot.errors[0])}</p>')
+    quota_windows = [item for item in provider.comparison if item.is_quota]
+    if not quota_windows and provider.primary and provider.primary.is_quota:
+        quota_windows = [provider.primary]
+    usage_windows = provider_usage_windows(provider, quota_windows)
+    if not quota_windows and not usage_windows:
         return ""
-    items = "".join(
-        f'<li><span>{html.escape(display_name(name, kind="project"))}</span><strong>{aggregate.share_pct:.1f}%</strong></li>'
-        for name, aggregate in list(rows.items())[:8]
-        if aggregate.share_pct > 0
-    )
-    return f'<ol class="qc-legacy-list">{items}</ol>' if items else ""
+    blocks = []
+    if quota_windows:
+        legend = window_model_legend([item.window for item in quota_windows])
+        cards = "".join(quota_window_card(item, provider.source) for item in quota_windows)
+        blocks.append(f'{legend}<div class="qc-quota-split quota-grid-{len(quota_windows)}">{cards}</div>')
+    if usage_windows:
+        cards = "".join(usage_window_card(item) for item in usage_windows)
+        blocks.append(f'<div class="provider-subhead">로컬 사용량</div><div class="usage-grid">{cards}</div>')
+    return panel(f"{title} Quota", "".join(blocks), status_badge(provider.primary.window.cache_state if provider.primary else "unknown"))
 
 
-def legacy_runtime_report(providers: tuple[ProviderDashboard, ...]) -> str:
-    """Render runtime-only usage as one separate report block."""
+def provider_usage_windows(provider: ProviderDashboard, quota_windows: list[DashboardWindow]) -> list[DashboardWindow]:
+    quota_names = {item.name for item in quota_windows}
+    preferred = ["today", "seven_day", "this_month", "local_all"]
+    by_name = {item.name: item for item in provider.windows}
+    return [
+        by_name[name]
+        for name in preferred
+        if name in by_name
+        and name not in quota_names
+        and (by_name[name].is_usage or by_name[name].window.total_tokens > 0 or bool(by_name[name].window.by_project))
+    ]
 
-    total_tokens = 0
-    total_requests = 0
-    project_totals: dict[str, AggregateBreakdown] = {}
-    for provider in providers:
-        item = runtime_source_window(provider)
-        if item is None:
-            continue
-        runtime = item.window.runtime
-        total_tokens += runtime.total_tokens
-        total_requests += runtime.requests
-        for name, aggregate in runtime.by_project.items():
-            current = project_totals.get(name, AggregateBreakdown())
-            project_totals[name] = AggregateBreakdown(
-                total_tokens=current.total_tokens + aggregate.total_tokens,
-                requests=current.requests + aggregate.requests,
-            )
-    if not project_totals and total_tokens <= 0 and total_requests <= 0:
-        return ""
-    items = "".join(
-        f'<li><span>{html.escape(display_name(name, kind="project"))}</span><strong>{compact_number(aggregate.total_tokens)} tok · {aggregate.share_pct:.1f}%</strong></li>'
-        for name, aggregate in list(share_aggregates(project_totals).items())[:8]
-    )
+
+def quota_window_card(item: DashboardWindow, source: str) -> str:
+    window = item.window
+    project_section = ""
+    token_line = format_quota_tokens(window)
+    token_section = f'<p>{html.escape(token_line)}</p>' if token_line else ""
+    if window.by_project:
+        project_section = '<h4>Apps</h4>' + project_rows(window.by_project, window.total_tokens, max_rows=12)
     return (
-        '<article class="qc-legacy-runtime">'
-        '<h3>Runtime</h3>'
-        f'<p>{compact_number(total_tokens)} tokens · {total_requests:,} requests</p>'
-        f'<ol class="qc-legacy-list">{items}</ol>'
+        '<article class="quota-window">'
+        f'<h3>{html.escape(short_window_label(item.name))} 창</h3>'
+        f'<div class="quota-bar"><span class="fill-{html.escape(source)} fill-{html.escape(item.name)}" style="width:{clamped_pct(window.utilization):.1f}%">{model_segments_from_projects(window.by_project)}</span></div>'
+        f'<div class="row"><strong>{percent1(window.utilization)}{pace_badge(window)}</strong><span>{html.escape(reset_hours(window))}</span></div>'
+        f'{token_section}'
+        f'{quota_group_rows(window.quota_groups)}'
+        f'{project_section}'
         '</article>'
     )
 
 
-def runtime_source_window(provider: ProviderDashboard) -> DashboardWindow | None:
-    candidates = [
-        item
-        for item in provider.windows
-        if item.window.runtime.total_tokens > 0 or item.window.runtime.requests > 0 or item.window.runtime.by_project
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda item: (item.window.runtime.total_tokens, item.window.runtime.requests))
+def quota_group_rows(groups: dict[str, SnapshotQuotaGroup]) -> str:
+    if not groups:
+        return ""
+    rows = "".join(quota_group_row(group) for group in groups.values())
+    return '<div class="quota-group-list"><h4>그룹별 Request 한도</h4>' + rows + '</div>'
+
+
+def quota_group_row(group: SnapshotQuotaGroup) -> str:
+    return (
+        '<div class="quota-group-row">'
+        f'<span>{html.escape(group.label)}</span>'
+        '<div class="quota-group-bar">'
+        f'<i style="width:{clamped_pct(group.utilization):.1f}%;background:{quota_tone_color(group.utilization)}"></i>'
+        '</div>'
+        f'<strong>{percent0(group.utilization)}</strong>'
+        f'<em>{html.escape(reset_label(group.resets_at))}</em>'
+        '</div>'
+    )
+
+
+def usage_window_card(item: DashboardWindow) -> str:
+    window = item.window
+    return (
+        '<article class="usage-card">'
+        f'<h3>{html.escape(usage_window_label(item.name))}</h3>'
+        f'<strong>{compact_number(window.total_tokens)}</strong>'
+        f'{project_rows(window.by_project, window.total_tokens, max_rows=6)}'
+        '</article>'
+    )
+
+
+def time_series_panel(providers: tuple[ProviderDashboard, ...]) -> str:
+    cards = []
+    for provider in providers:
+        timeline = provider.snapshot.history.get("usage_timeline", {}) if isinstance(provider.snapshot.history, dict) else {}
+        if not isinstance(timeline, dict):
+            continue
+        dates = [str(value) for value in timeline.get("dates", []) if value]
+        daily_total_raw = timeline.get("daily_total", {})
+        datasets = timeline.get("datasets", [])
+        if not dates or not isinstance(daily_total_raw, dict):
+            continue
+        totals = [float(daily_total_raw.get(day, 0) or 0) for day in dates]
+        if not any(totals):
+            continue
+        cards.append(usage_timeline_card(provider.source, dates, totals, datasets, str(timeline.get("unit") or "tokens")))
+    if not cards:
+        return ""
+    return panel("시계열 사용량", '<div class="timeline-grid">' + "".join(cards) + "</div>")
+
+
+def quota_history_panel(providers: tuple[ProviderDashboard, ...]) -> str:
+    cards = []
+    for provider in providers:
+        history = provider.snapshot.history.get("quota_history", []) if isinstance(provider.snapshot.history, dict) else []
+        if not isinstance(history, list) or not history:
+            continue
+        cards.append(quota_history_card(provider.source, history))
+    if not cards:
+        return ""
+    return panel("Quota 시계열", '<div class="timeline-grid">' + "".join(cards) + "</div>")
+
+
+def quota_history_card(source: str, history: list[object]) -> str:
+    series = []
+    for key, label in (("5h_util", "5시간"), ("7d_util", "7일"), ("usage", "현재")):
+        values = quota_history_values(history, key)
+        if values and any(values):
+            series.append((label, values))
+    if not series:
+        return ""
+    rows = "".join(
+        '<section class="quota-history-row">'
+        f'<div class="row"><span>{html.escape(label)}</span><strong>{values[-1]:.1f}%</strong></div>'
+        f'{sparkline_svg(values, source)}'
+        '</section>'
+        for label, values in series
+    )
+    return f'<article class="timeline-card"><h3>{html.escape(provider_title(source))}</h3>{rows}</article>'
+
+
+def quota_history_values(history: list[object], key: str) -> list[float]:
+    values = [float(row.get(key, 0) or 0) for row in history if isinstance(row, dict) and key in row]
+    if key.endswith("_util") and values and max(values) <= 1.0:
+        return [value * 100 for value in values]
+    return values
+
+
+def usage_timeline_card(source: str, dates: list[str], totals: list[float], datasets: object, unit: str) -> str:
+    project_rows_html = ""
+    project_series: list[tuple[str, list[float]]] = []
+    if isinstance(datasets, list):
+        project_items = []
+        total = sum(totals)
+        for index, row in enumerate(datasets[:5]):
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("project") or "unknown")
+            color = project_color(index)
+            row_total = float(row.get("total_tokens") or row.get("total_cost") or 0)
+            share = row_total / total * 100 if total > 0 else 0.0
+            daily = row.get("daily", {})
+            project_values = [float(daily.get(day, 0) or 0) for day in dates] if isinstance(daily, dict) else []
+            if any(project_values):
+                project_series.append((name, project_values))
+            project_items.append(
+                '<li>'
+                f'<span class="timeline-project-name"><i style="background:{color}"></i>{html.escape(display_name(name, kind="project"))}</span>'
+                f'{mini_sparkline_svg(project_values, source, color)}'
+                f'<strong>{html.escape(format_history_value(row_total, unit))} · {share:.1f}%</strong>'
+                '</li>'
+            )
+        if project_items:
+            project_rows_html = '<ol class="timeline-projects">' + "".join(project_items) + '</ol>'
+    return (
+        '<article class="timeline-card">'
+        f'<div class="row"><h3>{html.escape(provider_title(source))}</h3><strong>{html.escape(format_history_value(sum(totals), unit))}</strong></div>'
+        f'{usage_multiline_svg(totals, project_series, source)}'
+        f'<p>{html.escape(dates[0])} - {html.escape(dates[-1])}</p>'
+        f'{project_rows_html}'
+        '</article>'
+    )
+
+
+def usage_multiline_svg(totals: list[float], project_series: list[tuple[str, list[float]]], source: str) -> str:
+    if not project_series:
+        return sparkline_svg(totals, source)
+    width = 360
+    height = 128
+    maximum = max([*totals, *(value for _, values in project_series for value in values)] or [1]) or 1
+    total_path = sparkline_points(totals, width=width, height=height, top=10, bottom=22, maximum=maximum)
+    project_lines = []
+    for index, (name, values) in enumerate(project_series[:5]):
+        path = sparkline_points(values, width=width, height=height, top=10, bottom=22, maximum=maximum)
+        color = project_color(index)
+        project_lines.append(
+            f'<polyline class="project-line" points="{path}" style="stroke:{color}"><title>{html.escape(display_name(name, kind="project"))}</title></polyline>'
+        )
+    return (
+        f'<svg class="sparkline project-line-chart sparkline-{html.escape(source)}" viewBox="0 0 {width} {height}" role="img" aria-label="project usage timeline">'
+        f'<polyline class="total-line" points="{total_path}"></polyline>'
+        f'{"".join(project_lines)}'
+        '</svg>'
+    )
+
+
+def sparkline_svg(values: list[float], source: str) -> str:
+    if not values:
+        return ""
+    width = 360
+    height = 88
+    top = 8
+    bottom = 18
+    maximum = max(values) or 1
+    if len(values) == 1:
+        points = [(0.0, height - bottom - (values[0] / maximum) * (height - top - bottom))]
+    else:
+        points = [
+            (index / (len(values) - 1) * width, height - bottom - (value / maximum) * (height - top - bottom))
+            for index, value in enumerate(values)
+        ]
+    point_attr = " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+    fill_path = point_attr + f" {width:.1f},{height - bottom:.1f} 0.0,{height - bottom:.1f}"
+    return (
+        f'<svg class="sparkline sparkline-{html.escape(source)}" viewBox="0 0 {width} {height}" role="img" aria-label="daily usage timeline">'
+        f'<polygon points="{fill_path}"></polygon>'
+        f'<polyline points="{point_attr}"></polyline>'
+        '</svg>'
+    )
+
+
+def mini_sparkline_svg(values: list[float], source: str, color: str) -> str:
+    if not values or not any(values):
+        return '<span class="mini-sparkline"></span>'
+    path = sparkline_points(values, width=72, height=18, top=2, bottom=3)
+    return (
+        f'<svg class="mini-sparkline sparkline-{html.escape(source)}" viewBox="0 0 72 18" aria-hidden="true">'
+        f'<polyline points="{path}" style="stroke:{color}"></polyline>'
+        '</svg>'
+    )
+
+
+def sparkline_points(values: list[float], *, width: int, height: int, top: int, bottom: int, maximum: float | None = None) -> str:
+    maximum = maximum or max(values) or 1
+    if len(values) == 1:
+        points = [(0.0, height - bottom - (values[0] / maximum) * (height - top - bottom))]
+    else:
+        points = [
+            (index / (len(values) - 1) * width, height - bottom - (value / maximum) * (height - top - bottom))
+            for index, value in enumerate(values)
+        ]
+    return " ".join(f"{x:.1f},{y:.1f}" for x, y in points)
+
+
+def format_history_value(value: float, unit: str) -> str:
+    if unit == "usd":
+        if value >= 100:
+            return f"${value:,.0f}"
+        return f"${value:,.2f}"
+    return compact_number(value)
+
+
+def project_color(index: int) -> str:
+    palette = ["#38bdf8", "#f97316", "#2dd4bf", "#facc15", "#c084fc"]
+    return palette[index % len(palette)]
+
+
+def detail_windows(providers: tuple[ProviderDashboard, ...]) -> str:
+    cards = "".join(detail_provider_card(provider) for provider in providers)
+    return f'<details class="panel detail-panel"><summary>Provider Details</summary><div class="detail-grid">{cards}</div></details>' if cards else ""
+
+
+def detail_provider_card(provider: ProviderDashboard) -> str:
+    windows = provider.comparison + provider.details
+    body = "".join(detail_window(item) for item in windows)
+    return f'<article class="detail-card"><h3>{html.escape(provider_title(provider.source))}</h3>{body}</article>'
+
+
+def detail_window(item: DashboardWindow) -> str:
+    window = item.window
+    utilization = percent1(window.utilization) if item.is_quota else "local history"
+    return (
+        '<section class="detail-window">'
+        f'<h4>{html.escape(window_label(item.name))}</h4>'
+        '<dl>'
+        f'{metric("Utilization", utilization)}'
+        f'{metric("Tokens", compact_number(window.total_tokens))}'
+        f'{metric("Requests", f"{window.requests:,}")}'
+        f'{metric("Window range", window_range(window) if item.is_quota else "local history")}'
+        f'{metric("Concentration", concentration_label(window) if not item.is_quota else "quota window")}'
+        f'{metric("Top project", top_label(window.by_project, "project"))}'
+        f'{metric("Top model", top_label(window.by_model, "model"))}'
+        '</dl>'
+        '<h4>Apps</h4>'
+        f'{project_rows(window.by_project, window.total_tokens, max_rows=5)}'
+        f'{model_rows(window.by_model)}'
+        '</section>'
+    )
+
+
+def data_state_panel(providers: tuple[ProviderDashboard, ...]) -> str:
+    rows = []
+    for provider in providers:
+        for warning in provider.snapshot.warnings:
+            rows.append(f'<li><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(warning)}</span></li>')
+        for error in provider.snapshot.errors:
+            rows.append(f'<li class="error"><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(error)}</span></li>')
+    if not rows:
+        rows.append('<li><strong>All providers</strong><span>No quota pressure or warnings in the current snapshot</span></li>')
+    return panel("Data State", f'<ol class="state-list">{"".join(rows)}</ol>')
+
+
+def panel(title: str, body: str, right: str = "") -> str:
+    return f'<section class="panel"><div class="panel-head"><h2>{html.escape(title)}</h2>{right}</div>{body}</section>'
+
+
+def status_badge(state: str) -> str:
+    label = state or "unknown"
+    tone = "available" if label == "live" else "watch" if label == "cached" else "limited" if label == "stale" else "unknown"
+    return f'<span class="limit-badge limit-{tone}">{html.escape(label)}</span>'
+
+
+def project_rows(rows: dict[str, AggregateBreakdown], total_tokens: int, *, max_rows: int = TOP_ROWS, include_requests: bool = False, empty: str = "데이터 없음") -> str:
+    if not rows:
+        return f'<p class="empty-list">{html.escape(empty)}</p>'
+    normalized = share_aggregates(rows) if total_tokens > 0 else rows
+    items = []
+    for name, aggregate in list(normalized.items())[:max_rows]:
+        share = aggregate.share_pct
+        right = f"{share:.1f}%"
+        if include_requests and aggregate.requests:
+            right += f" · {aggregate.requests:,} req"
+        width = max(0.0, min(100.0, share))
+        segments = model_segments_from_aggregate(aggregate)
+        items.append(
+            '<li>'
+            f'<span>{html.escape(display_name(name, kind="project"))}</span>'
+            f'<div class="project-bar"><i style="width:{width:.1f}%">{segments}</i></div>'
+            f'<strong>{html.escape(right)}</strong>'
+            '</li>'
+        )
+    return f'<ol class="project-list">{"".join(items)}</ol>'
+
+
+def runtime_project_rows(rows: dict[str, AggregateBreakdown], total_tokens: int) -> str:
+    if not rows:
+        return '<p class="empty-list">데이터 없음</p>'
+    normalized = share_aggregates(rows) if total_tokens > 0 else rows
+    items = "".join(
+        '<li>'
+        f'<span>{html.escape(display_name(name, kind="project"))}</span>'
+        f'<strong>{aggregate.share_pct:.1f}%{f" · {aggregate.requests:,} req" if aggregate.requests else ""}</strong>'
+        '</li>'
+        for name, aggregate in list(normalized.items())[:3]
+    )
+    return f'<ol class="runtime-project-list">{items}</ol>'
+
+
+def runtime_usage_line(runtime: RuntimeBreakdown, service_total: int) -> str:
+    if runtime.total_tokens <= 0 and runtime.requests <= 0:
+        return "runtime 데이터 없음"
+    if runtime.total_tokens <= 0:
+        return f"0 tokens · {runtime.requests:,} req"
+    request_suffix = f" · {runtime.requests:,} req" if runtime.requests else ""
+    return f"{compact_number(runtime.total_tokens)} / {compact_number(service_total)} tokens{request_suffix}"
+
+
+def model_rows(rows: dict[str, AggregateBreakdown]) -> str:
+    if not rows:
+        return ""
+    items = "".join(f'<li><span>{html.escape(display_name(name, kind="model"))}</span><strong>{aggregate.share_pct:.1f}%</strong></li>' for name, aggregate in list(rows.items())[:5])
+    return f'<h4>Models</h4><ol class="model-list">{items}</ol>'
+
+
+def model_legend(runtimes: list[RuntimeBreakdown]) -> str:
+    totals: dict[str, int] = {}
+    for runtime in runtimes:
+        merge_model_totals(totals, runtime.by_model)
+        for aggregate in runtime.by_project.values():
+            for model, tokens in aggregate.models.items():
+                totals[model] = totals.get(model, 0) + tokens
+    return legend_from_totals(totals)
+
+
+def window_model_legend(windows: list[SnapshotWindow]) -> str:
+    totals: dict[str, int] = {}
+    for window in windows:
+        merge_model_totals(totals, window.by_model)
+        for aggregate in window.by_project.values():
+            for model, tokens in aggregate.models.items():
+                totals[model] = totals.get(model, 0) + tokens
+    return legend_from_totals(totals)
+
+
+def merge_model_totals(totals: dict[str, int], rows: dict[str, AggregateBreakdown]) -> None:
+    for model, aggregate in rows.items():
+        totals[model] = totals.get(model, 0) + aggregate.total_tokens
+
+
+def legend_from_totals(totals: dict[str, int]) -> str:
+    if not totals:
+        return ""
+    items = "".join(
+        f'<span><i style="background:{model_color(model)}"></i>{html.escape(display_name(model, kind="model"))}</span>'
+        for model, _ in sorted(totals.items(), key=lambda item: item[1], reverse=True)[:6]
+    )
+    return f'<div class="model-legend">{items}</div>'
+
+
+def model_segments(runtime: RuntimeBreakdown) -> str:
+    totals: dict[str, int] = {}
+    merge_model_totals(totals, runtime.by_model)
+    for aggregate in runtime.by_project.values():
+        for model, tokens in aggregate.models.items():
+            totals[model] = totals.get(model, 0) + tokens
+    total = sum(totals.values())
+    if total <= 0:
+        return ""
+    return "".join(segment(model, tokens / total * 100) for model, tokens in sorted(totals.items(), key=lambda item: item[1], reverse=True))
+
+
+def model_segments_from_projects(rows: dict[str, AggregateBreakdown]) -> str:
+    totals: dict[str, int] = {}
+    for aggregate in rows.values():
+        for model, tokens in aggregate.models.items():
+            totals[model] = totals.get(model, 0) + tokens
+    total = sum(totals.values())
+    if total <= 0:
+        return ""
+    return "".join(segment(model, tokens / total * 100) for model, tokens in sorted(totals.items(), key=lambda item: item[1], reverse=True))
+
+
+def model_segments_from_aggregate(aggregate: AggregateBreakdown) -> str:
+    total = sum(aggregate.models.values())
+    if total <= 0:
+        return ""
+    left = 0.0
+    pieces = []
+    for model, tokens in sorted(aggregate.models.items(), key=lambda item: item[1], reverse=True):
+        segment_width = tokens / total * 100
+        pieces.append(f'<b style="left:{left:.3f}%;width:{segment_width:.3f}%;background:{model_color(model)}"></b>')
+        left += segment_width
+    return "".join(pieces)
+
+
+def segment(model: str, width: float) -> str:
+    return f'<b style="width:{max(0.0, min(100.0, width)):.3f}%;background:{model_color(model)}"></b>'
+
+
+def model_color(name: str) -> str:
+    known = {
+        "haiku-4-5": "#3b82f6",
+        "claude-haiku-4-5-20251001": "#3b82f6",
+        "sonnet-4-6": "#f97316",
+        "claude-sonnet-4-6": "#f97316",
+        "opus-4-6": "#10b981",
+        "claude-opus-4-6": "#10b981",
+        "gemini-2.5-pro": "#0ea5e9",
+        "gemini-2.5-flash": "#8b5cf6",
+    }
+    normalized = name.replace("claude-", "").replace("-20251001", "")
+    if name in known:
+        return known[name]
+    if normalized in known:
+        return known[normalized]
+    palette = ["#60a5fa", "#fb7185", "#34d399", "#fbbf24", "#a78bfa", "#22d3ee", "#f97316", "#4ade80"]
+    return palette[sum(ord(char) for char in name) % len(palette)]
 
 
 def share_aggregates(rows: dict[str, AggregateBreakdown]) -> dict[str, AggregateBreakdown]:
@@ -214,669 +574,259 @@ def share_aggregates(rows: dict[str, AggregateBreakdown]) -> dict[str, Aggregate
             total_tokens=aggregate.total_tokens,
             requests=aggregate.requests,
             share_pct=aggregate.total_tokens / total * 100,
+            models=aggregate.models,
+            model_requests=aggregate.model_requests,
         )
         for name, aggregate in sorted(rows.items(), key=lambda item: item[1].total_tokens, reverse=True)
     }
 
 
-def provider_report_title(source: str) -> str:
-    titles = {
-        "claude": "Claude Max",
-        "codex": "Codex (ChatGPT Plus)",
-        "gemini": "Gemini Code Assist",
-    }
-    return titles.get(source, source.title())
+def metric(label: str, value: str) -> str:
+    return f'<div><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>'
 
 
-def provider_windows(provider: ProviderDashboard) -> str:
-    """Render provider windows, pairing short and weekly quota views when present."""
-
-    panels = []
-    paired_names = {item.name for item in provider.comparison}
-    if provider.comparison:
-        paired = "".join(window_panel(item, project_title="Apps") for item in provider.comparison)
-        panels.append(f'<div class="qc-quota-split">{paired}</div>')
-    for item in provider.details:
-        if item.name in paired_names:
-            continue
-        primary_name = provider.primary.name if provider.primary else ""
-        panels.append(window_panel(item, compact=item.name != primary_name))
-    return "".join(panels)
+def provider_title(source: str, *, upper: bool = False) -> str:
+    titles = {"claude": "Claude Max", "codex": "Codex (ChatGPT Plus)", "gemini": "Gemini (Google)"}
+    title = titles.get(source, source.title())
+    return title.upper() if upper else title
 
 
-def window_panel(item: DashboardWindow, *, compact: bool = False, project_title: str = "Projects") -> str:
-    """Render one normalized quota/session window."""
-
-    name = item.name
-    window = item.window
-    title = html.escape(window_label(name))
-    extra_class = " qc-window-compact" if compact else ""
-    bar = usage_bar(window.utilization) if item.is_quota else local_meter(window)
-    return (
-        f'<article class="qc-window{extra_class}">'
-        f'<header><div><p class="qc-eyebrow">Window</p><h3>{title}</h3></div>{badge(window.cache_state, cache_tone(window))}</header>'
-        f'{bar}'
-        f'{window_meta(window)}'
-        f'{window_context(name, window)}'
-        f'{aggregate_table(project_title, window.by_project, kind="project", empty_label="No app usage in this window")}'
-        f'{aggregate_table("Models", window.by_model, kind="model")}'
-        '</article>'
-    )
+def short_window_label(name: str) -> str:
+    return "5시간" if name == "five_hour" else "7일" if name == "seven_day" else "현재" if name == "current_quota" else window_label(name)
 
 
-def usage_bar(utilization: float) -> str:
-    """Render utilization bar."""
-
-    pct = max(0.0, min(100.0, utilization * 100))
-    tone = "hot" if pct >= 85 else "warm" if pct >= 65 else "cool"
-    return '<div class="qc-bar qc-bar-%s" aria-label="usage"><span style="width: %.1f%%"></span></div>' % (tone, pct)
+def runtime_window_label(name: str) -> str:
+    return "현재 quota window" if name == "current_quota" else short_window_label(name)
 
 
-def local_meter(window: SnapshotWindow) -> str:
-    """Render a local-history meter without pretending it is quota utilization."""
-
-    leader = next(iter(window.by_project.values()), AggregateBreakdown())
-    share = max(0.0, min(100.0, leader.share_pct))
-    return (
-        '<div class="qc-local-meter" aria-label="local history">'
-        f'<span style="width: {share:.1f}%"></span>'
-        f'<em>top project {share:.1f}% share</em>'
-        '</div>'
-    )
+def usage_window_label(name: str) -> str:
+    return {"today": "오늘 사용량 (KST)", "seven_day": "7일 전체 사용량", "this_month": "이번 달 전체 사용량", "local_all": "전체 사용량"}.get(name, window_label(name))
 
 
-def command_center(providers: tuple[ProviderDashboard, ...]) -> str:
-    """Render the most important operating state in one compact block."""
-
-    pressure = pressure_windows(providers)
-    highest = pressure[0] if pressure else None
-    next_reset = next_reset_window(providers)
-    data_state = data_state_label(providers)
-    if highest is None:
-        pressure_text = "No live quota pressure"
-    else:
-        source, item = highest
-        pressure_text = f"{source.title()} {window_label(item.name)} {percent(item.window.utilization)}"
-    if next_reset is None:
-        reset_text = "No quota reset scheduled"
-    else:
-        source, item = next_reset
-        reset_text = f"{source.title()} {window_label(item.name)} resets {reset_label(item.window)}"
-    return (
-        '<div class="qc-command-center">'
-        f'<div><span>Highest pressure</span><strong>{html.escape(pressure_text)}</strong></div>'
-        f'<div><span>Next reset</span><strong>{html.escape(reset_text)}</strong></div>'
-        f'<div><span>Data state</span><strong>{html.escape(data_state)}</strong></div>'
-        '</div>'
-    )
+def window_label(name: str) -> str:
+    return name.replace("_", " ").title()
 
 
-def quota_matrix(providers: tuple[ProviderDashboard, ...]) -> str:
-    """Render a compact 5h/7d comparison table across providers."""
+def display_name(name: str, *, kind: str) -> str:
+    if kind == "model":
+        return name.split("/")[-1].replace("claude-", "")
+    return name
 
-    rows = []
-    for provider in providers:
-        for item in provider.windows:
-            if not item.is_quota or item.name not in {"five_hour", "seven_day", "current_quota", "today"}:
-                continue
-            window = item.window
-            top_project = top_aggregate_label(window.by_project, kind="project")
-            rows.append(
-                "<tr>"
-                f"<td>{html.escape(provider.source.title())}</td>"
-                f"<td>{html.escape(window_label(item.name))}</td>"
-                f'<td><span class="qc-pressure qc-pressure-{pressure_tone(window.utilization)}">{percent(window.utilization)}</span></td>'
-                f"<td>{compact_number(window.total_tokens)}</td>"
-                f"<td>{html.escape(reset_label(window))}</td>"
-                f"<td>{html.escape(pace_label(window))}</td>"
-                f"<td>{html.escape(top_project)}</td>"
-                f"<td>{badge(window.cache_state, cache_tone(window))}</td>"
-                "</tr>"
-            )
+
+def top_label(rows: dict[str, AggregateBreakdown], kind: str) -> str:
     if not rows:
-        return ""
-    return (
-        '<section class="qc-matrix">'
-        '<div class="qc-section-head"><h3>Quota matrix</h3><p class="qc-table-note">5h and 7d quota windows</p></div>'
-        '<table class="qc-table qc-matrix-table"><thead><tr>'
-        '<th>Provider</th><th>Window</th><th>Used</th><th>Tokens</th><th>Reset</th><th>Pace</th><th>Top project</th><th>State</th>'
-        f'</tr></thead><tbody>{"".join(rows)}</tbody></table>'
-        '</section>'
-    )
-
-
-def reset_schedule(providers: tuple[ProviderDashboard, ...]) -> str:
-    """Render upcoming quota reset order."""
-
-    rows = []
-    for source, name, window in sorted(
-        ((source, item.name, item.window) for source, item in iter_quota_windows(providers) if item.window.resets_at),
-        key=lambda item: item[2].resets_at or 0,
-    )[:RESET_ROW_LIMIT]:
-        rows.append(
-            '<li>'
-            f'<strong>{html.escape(source.title())} {html.escape(window_label(name))}</strong>'
-            f'<span>{html.escape(reset_label(window))} · {html.escape(window_range(window))} · {percent(window.utilization)}</span>'
-            '</li>'
-        )
-    if not rows:
-        return ""
-    return f'<section class="qc-reset-schedule"><h3>Reset schedule</h3><ol>{"".join(rows)}</ol></section>'
-
-
-def window_context(name: str, window: SnapshotWindow) -> str:
-    """Render extra context that helps explain a window beyond the main KPIs."""
-
-    quota = is_quota_window(name, window)
-    context = [
-        ("Window range", window_range(window) if quota else "local history"),
-        ("Sampled", sampled_label(window)),
-        ("Top project", top_aggregate_label(window.by_project, kind="project")),
-        ("Top model", top_aggregate_label(window.by_model, kind="model")),
-    ]
-    return '<dl class="qc-window-context">' + "".join(metric_block(label, value) for label, value in context) + '</dl>'
-
-
-def top_aggregate_label(rows: dict[str, AggregateBreakdown], *, kind: str) -> str:
-    item = next(iter(rows.items()), None)
-    if item is None:
         return "--"
-    name, aggregate = item
+    name, aggregate = next(iter(rows.items()))
     return f"{display_name(name, kind=kind)} {aggregate.share_pct:.1f}%"
+
+
+def concentration_label(window: SnapshotWindow) -> str:
+    top = next(iter(window.by_project.values()), None)
+    if top is None:
+        return "no local history"
+    if top.share_pct >= 75:
+        return f"top-heavy {top.share_pct:.0f}%"
+    if top.share_pct >= 50:
+        return f"focused {top.share_pct:.0f}%"
+    return "distributed"
+
+
+def clamped_pct(utilization: float) -> float:
+    return max(0.0, min(100.0, utilization * 100))
+
+
+def percent0(utilization: float) -> str:
+    return f"{clamped_pct(utilization):.0f}%"
+
+
+def percent1(utilization: float) -> str:
+    return f"{clamped_pct(utilization):.1f}%"
+
+
+def pace_badge(window: SnapshotWindow) -> str:
+    label = pace_label(window)
+    if not label:
+        return ""
+    tone = "hot" if "과속" in label else "cool"
+    return f' <em class="pace-{tone}">{html.escape(label)}</em>'
+
+
+def pace_label(window: SnapshotWindow) -> str:
+    if not window.resets_at or not window.window_start or not window.utilization:
+        return ""
+    window_sec = window.resets_at - window.window_start
+    if window_sec <= 0:
+        return ""
+    elapsed = time.time() - window.window_start
+    if elapsed <= 0 or elapsed > window_sec:
+        return ""
+    diff = window.utilization * 100 - elapsed / window_sec * 100
+    if diff > 3:
+        return f"▲+{diff:.0f}%p 과속"
+    if diff < -3:
+        return f"▼{abs(diff):.0f}%p 여유"
+    return ""
+
+
+def reset_hours(window: SnapshotWindow) -> str:
+    if not window.resets_at:
+        return ""
+    diff = window.resets_at - time.time()
+    if diff < 0:
+        return "리셋됨"
+    if diff < 3600:
+        return f"{diff / 60:.0f}분 후 리셋"
+    return f"{diff / 3600:.1f}시간 후 리셋"
+
+
+def reset_label(resets_at: int | None, *, suffix: str = " 후") -> str:
+    if not resets_at:
+        return "-"
+    diff = resets_at - time.time()
+    if diff < 0:
+        return "리셋됨"
+    if diff < 3600:
+        return f"{diff / 60:.0f}분{suffix}"
+    return f"{diff / 3600:.1f}h{suffix}"
+
+
+def quota_tone_color(utilization: float) -> str:
+    pct = clamped_pct(utilization)
+    if pct >= 90:
+        return "#f87171"
+    if pct >= 50:
+        return "#f59e0b"
+    return "#22c55e"
+
+
+def format_quota_tokens(window: SnapshotWindow) -> str:
+    if window.total_tokens <= 0:
+        return ""
+    return f"{compact_number(window.total_tokens)} tokens"
 
 
 def window_range(window: SnapshotWindow) -> str:
     if not window.window_start or not window.resets_at:
         return "--"
-    start = datetime.fromtimestamp(window.window_start).strftime("%b %-d %H:%M")
-    end = datetime.fromtimestamp(window.resets_at).strftime("%b %-d %H:%M")
+    start = datetime.fromtimestamp(window.window_start, tz=KST).strftime("%b %-d %H:%M")
+    end = datetime.fromtimestamp(window.resets_at, tz=KST).strftime("%b %-d %H:%M")
     return f"{start} to {end}"
 
 
-def sampled_label(window: SnapshotWindow) -> str:
-    if not window.window_end:
-        return "--"
-    return datetime.fromtimestamp(window.window_end).strftime("%b %-d %H:%M")
-
-
-def pressure_tone(utilization: float) -> str:
-    pct = utilization * 100
-    if pct >= 85:
-        return "hot"
-    if pct >= 65:
-        return "warm"
-    return "cool"
-
-
-def aggregate_table(title: str, rows: dict[str, AggregateBreakdown], *, kind: str, empty_label: str = "") -> str:
-    """Render project/model aggregate table."""
-
-    if not rows:
-        if empty_label:
-            safe_title = html.escape(title)
-            safe_empty = html.escape(empty_label)
-            return (
-                '<section class="qc-table-wrap">'
-                f'<div class="qc-section-head"><h4>{safe_title}</h4></div>'
-                f'<p class="qc-empty-list">{safe_empty}</p>'
-                '</section>'
-            )
-        return ""
-    limited_rows = list(rows.items())[:TOP_ROW_LIMIT]
-    body = "".join(_aggregate_row(name, aggregate, kind=kind) for name, aggregate in limited_rows)
-    overflow = len(rows) - len(limited_rows)
-    footer = f'<p class="qc-table-note">+{overflow} more</p>' if overflow > 0 else ""
-    safe_title = html.escape(title)
-    return (
-        '<section class="qc-table-wrap">'
-        f'<div class="qc-section-head"><h4>{safe_title}</h4>{footer}</div>'
-        '<table class="qc-table"><thead><tr><th>Name</th><th>Tokens</th><th>Requests</th><th>Share</th></tr></thead>'
-        f'<tbody>{body}</tbody></table></section>'
-    )
+def compact_number(value: int | float) -> str:
+    value = float(value or 0)
+    for suffix, divisor in (("B", 1_000_000_000), ("M", 1_000_000), ("K", 1_000)):
+        if abs(value) >= divisor:
+            return f"{value / divisor:.1f}{suffix}"
+    return str(int(value))
 
 
 def stylesheet() -> str:
-    """Return dashboard CSS."""
-
     return """
-* { box-sizing: border-box; }
-body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #18212f; background: #eef1f4; }
-main { max-width: 1380px; margin: 0 auto; padding: 22px; }
-h1 { margin: 0 0 16px; font-size: 24px; font-weight: 760; }
-.qc-eyebrow { margin: 0 0 4px; color: #697586; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
-.qc-overview { display: grid; grid-template-columns: 1fr; gap: 14px; align-items: start; margin-bottom: 18px; }
-.qc-overall-status, .qc-legacy-report, .qc-provider, .qc-attention, .qc-briefing, .qc-matrix, .qc-reset-schedule { background: #fff; border: 1px solid #d9e0e8; border-radius: 8px; box-shadow: 0 1px 2px rgba(18, 26, 38, .04); }
-.qc-overall-status { padding: 16px; margin-bottom: 14px; }
-.qc-overall-head { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: center; }
-.qc-overall-head h2 { margin: 0; font-size: 20px; }
-.qc-overall-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; margin-top: 14px; border-top: 1px solid #e5eaf0; }
-.qc-overall-metrics .qc-metric:first-child { border-left: 0; }
-.qc-legacy-report { padding: 16px; margin-bottom: 18px; }
-.qc-legacy-report h2 { margin: 0 0 12px; font-size: 20px; }
-.qc-legacy-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.qc-legacy-card, .qc-legacy-runtime { min-width: 0; border: 1px solid #e3e8ef; border-radius: 6px; padding: 14px; background: #fcfdfe; }
-.qc-legacy-card h3, .qc-legacy-runtime h3 { margin: 0 0 10px; font-size: 16px; }
-.qc-legacy-lines { display: grid; gap: 8px; }
-.qc-legacy-quota-line { display: grid; grid-template-columns: 56px 1fr auto; align-items: baseline; gap: 8px; padding: 7px 0; border-bottom: 1px solid #edf1f5; }
-.qc-legacy-quota-line > span { color: #536173; }
-.qc-legacy-quota-line strong { text-align: right; }
-.qc-legacy-quota-line em { color: #536173; font-style: normal; font-weight: 500; }
-.qc-legacy-list { margin: 10px 0 0; padding: 0; list-style: none; }
-.qc-legacy-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 4px 0; color: #536173; }
-.qc-legacy-list span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qc-legacy-list strong { color: #18212f; white-space: nowrap; }
-.qc-legacy-runtime { margin-top: 12px; }
-.qc-legacy-runtime p { margin: 0; color: #536173; font-weight: 700; }
-.qc-overview-copy { display: grid; grid-template-columns: 220px 1fr; gap: 16px; align-items: center; padding: 18px; }
-.qc-overview-title h2 { margin: 0; font-size: 22px; }
-.qc-command-center { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.qc-command-center div { border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; background: #f9fafb; }
-.qc-command-center span { display: block; color: #697586; font-size: 12px; }
-.qc-command-center strong { display: block; margin-top: 4px; font-size: 14px; overflow-wrap: anywhere; }
-.qc-overview-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; align-self: start; overflow: hidden; }
-.qc-metric { min-width: 0; padding: 16px; border-left: 1px solid #e5eaf0; }
-.qc-metric:first-child { border-left: 0; }
-.qc-metric dt { margin: 0; color: #697586; font-size: 12px; }
-.qc-metric dd { margin: 5px 0 2px; font-size: 24px; font-weight: 760; }
-.qc-metric small { color: #7c8796; }
-.qc-provider-strip { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.qc-provider-strip article { padding: 14px; }
-.qc-provider-strip h3 { margin: 0 0 10px; font-size: 16px; }
-.qc-strip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 8px; color: #536173; }
-.qc-strip-row strong { color: #18212f; text-align: right; overflow-wrap: anywhere; }
-.qc-strip-window { margin-top: 10px; }
-.qc-strip-window .qc-strip-row { margin-top: 0; }
-.qc-strip-bar { height: 8px; margin-top: 6px; border-radius: 999px; overflow: hidden; background: #e5eaf0; }
-.qc-strip-bar span { display: block; height: 100%; }
-.qc-strip-bar-cool span { background: #287f71; }
-.qc-strip-bar-warm span { background: #c17a1b; }
-.qc-strip-bar-hot span { background: #c2413a; }
-.qc-matrix { grid-column: 1 / -1; padding: 14px; overflow-x: auto; }
-.qc-matrix h3, .qc-reset-schedule h3 { margin: 0; font-size: 16px; }
-.qc-matrix-table { min-width: 1040px; table-layout: auto; }
-.qc-matrix-table th:first-child, .qc-matrix-table td:first-child { width: auto; }
-.qc-matrix-table th, .qc-matrix-table td { white-space: nowrap; }
-.qc-matrix-table th:nth-child(7), .qc-matrix-table td:nth-child(7) { min-width: 240px; white-space: normal; overflow-wrap: anywhere; }
-.qc-matrix-table th:nth-child(8), .qc-matrix-table td:nth-child(8) { width: 92px; text-align: right; }
-.qc-pressure { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; font-weight: 720; }
-.qc-pressure-cool { background: #e4f2ef; color: #176355; }
-.qc-pressure-warm { background: #fff1d6; color: #7a4b00; }
-.qc-pressure-hot { background: #ffe5e5; color: #9b1c1c; }
-.qc-reset-schedule { grid-column: 1 / -1; padding: 14px; }
-.qc-reset-schedule ol { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
-.qc-reset-schedule li { border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; background: #f9fafb; min-width: 0; }
-.qc-reset-schedule strong, .qc-reset-schedule span { display: block; overflow-wrap: anywhere; }
-.qc-reset-schedule span { margin-top: 4px; color: #536173; font-size: 12px; }
-.qc-attention { grid-column: 1 / -1; padding: 14px; }
-.qc-attention h3, .qc-briefing h3 { margin: 0; font-size: 16px; }
-.qc-attention ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; list-style: none; margin: 12px 0 0; padding: 0; }
-.qc-attention li { min-width: 0; border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; background: #f9fafb; }
-.qc-attention strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qc-attention span { display: block; margin-top: 4px; color: #536173; font-size: 12px; }
-.qc-risk-high { border-color: #f0b4af !important; background: #fff5f5 !important; }
-.qc-risk-medium { border-color: #ead29d !important; background: #fffaf0 !important; }
-.qc-risk-low { border-color: #c8d9d4 !important; background: #f2fbf7 !important; }
-.qc-briefing { grid-column: 1 / -1; padding: 14px; }
-.qc-brief-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
-.qc-brief-card { border: 1px solid #e3e8ef; border-radius: 6px; overflow: hidden; }
-.qc-brief-card header { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 12px; background: #f7f9fb; border-bottom: 1px solid #e3e8ef; }
-.qc-brief-card h4 { margin: 0; text-transform: capitalize; }
-.qc-brief-lines { margin: 0; padding: 10px 12px; }
-.qc-brief-lines div { display: grid; grid-template-columns: 82px 1fr; gap: 8px; padding: 4px 0; font-size: 13px; }
-.qc-brief-lines dt { color: #697586; }
-.qc-brief-lines dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
-.qc-brief-projects { margin: 0; padding: 0 12px 12px 28px; color: #536173; font-size: 13px; }
-.qc-brief-projects li { padding: 2px 0; }
-.qc-provider { padding: 18px; margin-bottom: 18px; }
-.qc-provider-head, .qc-window header, .qc-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.qc-provider h2, .qc-window h3, .qc-table-wrap h4 { margin: 0; }
-.qc-provider h2 { font-size: 22px; text-transform: capitalize; }
-.qc-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin: 16px 0; }
-.qc-kpi { min-width: 0; border: 1px solid #e3e8ef; border-radius: 6px; padding: 12px; background: #f9fafb; }
-.qc-kpi dt { color: #697586; font-size: 12px; }
-.qc-kpi dd { margin: 5px 0 0; font-weight: 720; overflow-wrap: anywhere; }
-.qc-window { border-top: 1px solid #e5eaf0; padding-top: 16px; margin-top: 16px; }
-.qc-window-compact { padding-top: 14px; }
-.qc-quota-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
-.qc-quota-split .qc-window { min-width: 0; margin-top: 0; padding: 14px; border: 1px solid #e3e8ef; border-radius: 8px; background: #fcfdfe; }
-.qc-badge { display: inline-flex; align-items: center; min-height: 22px; padding: 0 8px; border-radius: 999px; font-size: 12px; font-weight: 650; background: #eef2f5; color: #334155; white-space: nowrap; }
-.qc-badge-success { background: #e5f4ea; color: #16633b; }
-.qc-badge-warning { background: #fff1d6; color: #7a4b00; }
-.qc-badge-danger { background: #ffe5e5; color: #9b1c1c; }
-.qc-badge-muted { background: #f1f3f5; color: #6b7280; }
-.qc-bar { height: 9px; background: #e5eaf0; border-radius: 999px; overflow: hidden; margin: 14px 0; }
-.qc-bar span { display: block; height: 100%; }
-.qc-bar-cool span { background: #287f71; }
-.qc-bar-warm span { background: #c17a1b; }
-.qc-bar-hot span { background: #c2413a; }
-.qc-local-meter { position: relative; height: 26px; background: #eef2f5; border-radius: 6px; overflow: hidden; margin: 14px 0; }
-.qc-local-meter span { display: block; height: 100%; background: #c8d7e1; }
-.qc-local-meter em { position: absolute; inset: 0; display: flex; align-items: center; padding: 0 10px; color: #334155; font-size: 12px; font-style: normal; font-weight: 650; }
-.qc-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
-.qc-metrics div { background: #f9fafb; border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; }
-.qc-metrics dt { font-size: 12px; color: #697586; }
-.qc-metrics dd { margin: 4px 0 0; font-weight: 700; overflow-wrap: anywhere; }
-.qc-window-context { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
-.qc-window-context div { background: #fff; border: 1px solid #e3e8ef; border-radius: 6px; padding: 10px; }
-.qc-window-context dt { font-size: 12px; color: #697586; }
-.qc-window-context dd { margin: 4px 0 0; font-weight: 650; overflow-wrap: anywhere; }
-.qc-table-wrap { margin-top: 16px; }
-.qc-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.qc-table th, .qc-table td { text-align: left; border-bottom: 1px solid #e5eaf0; padding: 8px 10px; font-size: 13px; vertical-align: middle; }
-.qc-table th { color: #697586; font-weight: 700; }
-.qc-table th:first-child, .qc-table td:first-child { width: 46%; }
-.qc-name { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.qc-share { display: grid; grid-template-columns: 52px 1fr; align-items: center; gap: 8px; }
-.qc-share-bar { height: 6px; border-radius: 999px; background: #e5eaf0; overflow: hidden; }
-.qc-share-bar span { display: block; height: 100%; background: #4d6f91; }
-.qc-table-note { margin: 0; color: #697586; font-size: 12px; }
-.qc-empty-list { margin: 8px 0 0; padding: 10px; border: 1px dashed #ccd5df; border-radius: 6px; color: #697586; font-size: 13px; background: #f9fafb; }
-.qc-warning { margin: 12px 0 0; color: #7a4b00; }
-@media (max-width: 900px) {
-  main { padding: 16px; }
-    .qc-overall-head, .qc-overview-copy, .qc-legacy-grid, .qc-provider-strip, .qc-brief-grid, .qc-attention ol, .qc-reset-schedule ol, .qc-quota-split { grid-template-columns: 1fr; }
-        .qc-command-center { grid-template-columns: 1fr; }
-        .qc-overall-metrics, .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 620px) {
-    .qc-overall-metrics, .qc-overview-metrics, .qc-kpis, .qc-metrics, .qc-window-context { grid-template-columns: 1fr; }
-  .qc-table th:nth-child(3), .qc-table td:nth-child(3) { display: none; }
-  .qc-table th:first-child, .qc-table td:first-child { width: 54%; }
-}
+:root { --bg:#0b0c0f; --card:#15151b; --card2:#101217; --card3:#18191f; --border:#2b2b34; --border-soft:#22232b; --text:#eee9df; --muted:#a09a8f; --subtle:#756f66; --accent:#2dd4bf; --ok:#34d399; --warn:#f4b860; --fail:#fb7185; }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font-family:'Segoe UI', system-ui, sans-serif; font-size:14px; color-scheme:dark; }
+header { background:#121318; border-bottom:1px solid var(--border); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; gap:12px; box-shadow:0 1px 0 rgba(255,255,255,.03); }
+header h1 { margin:0; font-size:18px; font-weight:700; }
+main { max-width:1400px; margin:0 auto; padding:20px 24px; }
+.updated { color:var(--muted); font-size:12px; }
+.panel { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; margin-bottom:16px; box-shadow:0 12px 28px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.03); }
+.detail-panel summary { cursor:pointer; color:var(--muted); font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
+.detail-panel .detail-grid { margin-top:14px; }
+.panel-head { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; }
+.panel h2 { margin:0; color:#c9c2b6; font-size:13px; font-weight:750; text-transform:uppercase; letter-spacing:.5px; }
+.panel-note, .panel p { color:var(--muted); font-size:12px; }
+.overview-grid, .runtime-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+.overview-grid h3 { margin:0 0 8px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.5px; }
+.overview-window { margin-top:10px; }
+.row { display:flex; align-items:baseline; justify-content:space-between; gap:8px; font-size:12px; }
+.row strong { color:#fffaf1; }
+.row span { color:var(--muted); }
+.mini-bar, .quota-bar, .runtime-bar, .project-bar { background:#24252c; border-radius:4px; overflow:hidden; position:relative; }
+.mini-bar { height:6px; margin-top:3px; }
+.mini-bar span { display:block; height:100%; min-width:0; }
+.quota-bar > span { display:flex; height:100%; min-width:0; }
+.overview-window p { margin:4px 0 0; color:var(--muted); font-size:11px; }
+.runtime-card, .quota-window, .usage-card, .detail-card { background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:14px; min-width:0; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+.runtime-card h3, .quota-window h3, .usage-card h3, .detail-card h3 { margin:0 0 10px; font-size:12px; color:#fffaf1; }
+.runtime-windows, .qc-quota-split { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.runtime-card:last-child .runtime-windows { grid-template-columns:1fr; }
+.quota-grid-1 { grid-template-columns:minmax(0,1fr); }
+.provider-subhead { margin:14px 0 8px; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
+.runtime-window h4, .quota-window h4, .detail-window h4 { margin:12px 0 6px; color:var(--muted); font-size:12px; font-weight:650; }
+.runtime-bar { height:20px; margin-bottom:4px; }
+.runtime-bar > span { display:flex; height:100%; min-width:0; border-radius:4px; overflow:hidden; }
+.runtime-bar b, .quota-bar b { display:block; height:100%; }
+.quota-bar { height:20px; margin:8px 0 5px; }
+.quota-bar.compact { height:12px; }
+.quota-group-list { border-top:1px solid var(--border); margin-top:10px; padding-top:8px; }
+.quota-group-list h4 { margin:0 0 6px; color:var(--muted); font-size:11px; font-weight:650; }
+.quota-group-row { display:grid; grid-template-columns:80px 60px 32px minmax(56px,auto); align-items:center; gap:8px; margin-bottom:4px; font-size:11px; }
+.quota-group-row > span { color:#fff; font-size:10px; font-weight:650; white-space:nowrap; }
+.quota-group-row strong { color:#fff; font-size:10px; }
+.quota-group-row em { color:var(--muted); font-size:10px; font-style:normal; white-space:nowrap; }
+.quota-group-bar { background:var(--border); border-radius:2px; height:5px; overflow:hidden; }
+.quota-group-bar i { display:block; height:100%; }
+.fill-claude, .fill-five_hour { background:#8b7cf6; }
+.fill-claude.fill-seven_day { background:#2dd4bf; }
+.fill-codex.fill-five_hour { background:#f97316; }
+.fill-codex.fill-seven_day { background:#f59e0b; }
+.fill-gemini { background:#eab308; }
+.pace-hot { color:var(--warn); font-style:normal; font-size:11px; }
+.pace-cool { color:#45d6a3; font-style:normal; font-size:11px; }
+.model-legend { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; color:var(--muted); font-size:11px; }
+.model-legend span { display:inline-flex; align-items:center; gap:5px; min-width:0; }
+.model-legend i { width:8px; height:8px; border-radius:2px; }
+.project-list, .model-list, .state-list { margin:8px 0 0; padding:0; list-style:none; }
+.project-list li { display:grid; grid-template-columns:130px minmax(80px,1fr) 112px; align-items:center; gap:6px; margin-bottom:4px; font-size:11px; }
+.project-list span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:650; color:#fffaf1; }
+.project-list strong, .model-list strong { color:var(--muted); text-align:right; font-weight:600; white-space:nowrap; }
+.project-bar { height:8px; }
+.project-bar i { display:block; height:100%; background:var(--accent); position:relative; }
+.project-bar b { position:absolute; top:0; height:100%; }
+.runtime-project-list { display:grid; gap:6px; margin:10px 0 0; padding:0; list-style:none; }
+.runtime-project-list li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:baseline; font-size:11px; }
+.runtime-project-list span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#fffaf1; font-weight:650; }
+.runtime-project-list strong { color:var(--muted); white-space:nowrap; font-weight:600; }
+.empty-list { margin:6px 0 0; color:var(--muted); font-size:11px; }
+.usage-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:20px; margin-top:8px; }
+.usage-card > strong { display:block; margin-bottom:8px; font-size:20px; color:#fff; }
+.timeline-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+.timeline-card { background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:14px; min-width:0; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
+.timeline-card h3 { margin:0; color:#fffaf1; font-size:12px; }
+.timeline-card p { margin:6px 0 0; color:var(--muted); font-size:11px; }
+.quota-history-row { margin-top:10px; }
+.quota-history-row .sparkline { height:58px; margin-top:6px; }
+.sparkline { display:block; width:100%; height:88px; margin-top:10px; overflow:visible; }
+.project-line-chart { height:128px; }
+.sparkline polygon { fill:rgba(139,124,246,.13); }
+.sparkline polyline { fill:none; stroke:#8b7cf6; stroke-width:3; stroke-linejoin:round; stroke-linecap:round; }
+.project-line-chart .total-line { stroke:rgba(160,154,143,.38); stroke-width:2; }
+.project-line-chart .project-line { fill:none; stroke-width:2.4; stroke-linejoin:round; stroke-linecap:round; opacity:.95; }
+.sparkline-codex polygon { fill:rgba(249,115,22,.14); }
+.sparkline-codex polyline { stroke:#f97316; }
+.sparkline-gemini polygon { fill:rgba(234,179,8,.14); }
+.sparkline-gemini polyline { stroke:#eab308; }
+.timeline-projects { margin:10px 0 0; padding:0; list-style:none; }
+.timeline-projects li { display:grid; grid-template-columns:minmax(0,1fr) 72px auto; gap:10px; padding:5px 0; border-top:1px solid var(--border-soft); font-size:11px; align-items:center; }
+.timeline-project-name { display:flex; align-items:center; gap:7px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#fffaf1; font-weight:650; }
+.timeline-project-name i { width:8px; height:8px; border-radius:2px; flex:0 0 auto; }
+.timeline-projects strong { color:var(--muted); white-space:nowrap; font-weight:600; }
+.mini-sparkline { display:block; width:72px; height:18px; }
+.mini-sparkline polyline { fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.detail-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+.detail-window { border-top:1px solid var(--border-soft); padding-top:10px; margin-top:10px; }
+dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:0; }
+dt { color:var(--muted); font-size:11px; }
+dd { margin:2px 0 0; color:#fffaf1; font-weight:650; overflow-wrap:anywhere; }
+.model-list li, .state-list li { display:flex; justify-content:space-between; gap:10px; padding:5px 0; border-bottom:1px solid var(--border-soft); }
+.state-list span { color:var(--muted); }
+.error-text, .state-list .error span { color:var(--fail); }
+.limit-badge { display:inline-block; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.3px; }
+.limit-available { background:rgba(52,211,153,.14); color:#5ee0aa; }
+.limit-watch { background:rgba(244,184,96,.15); color:#f4b860; }
+.limit-limited { background:rgba(251,113,133,.16); color:#fb7185; }
+.limit-unknown { background:rgba(148,163,184,.15); color:#94a3b8; }
+@media (max-width: 980px) { .overview-grid, .runtime-grid, .detail-grid, .usage-grid, .timeline-grid { grid-template-columns:1fr; } .runtime-windows, .qc-quota-split { grid-template-columns:1fr; } }
+@media (max-width: 640px) { header { padding:14px 16px; } main { padding:16px; } .project-list li, .timeline-projects li { grid-template-columns:minmax(0,1fr); } .project-list strong { text-align:left; } .mini-sparkline { display:none; } dl { grid-template-columns:1fr; } }
 """.strip()
-
-
-def is_quota_window(name: str, window: SnapshotWindow) -> bool:
-    return window_is_quota(name, window)
-
-
-def provider_strip(provider: ProviderDashboard) -> str:
-    """Render a compact provider status card."""
-
-    if provider.primary is None:
-        return ""
-    source = html.escape(provider.source.title())
-    rows = provider_strip_rows(provider)
-    fallback_meter = "" if provider.comparison else local_meter(provider.primary.window)
-    return (
-        '<article>'
-        f'<h3>{source}</h3>'
-        f'{fallback_meter}'
-        f'{rows}'
-        '</article>'
-    )
-
-
-def provider_strip_rows(provider: ProviderDashboard) -> str:
-    """Render compact provider rows without hiding the short quota window."""
-
-    rows = []
-    for item in provider.comparison:
-        window = item.window
-        if item.is_quota:
-            value = f"{percent(window.utilization)} · {compact_number(window.total_tokens)} · {quota_reset_text(window)}"
-        else:
-            value = f"local history · {compact_number(window.total_tokens)}"
-        rows.append(strip_window_row(window_label(item.name), value, window))
-    if rows:
-        return "".join(rows)
-    if provider.primary is None:
-        return ""
-    quota = provider.primary.is_quota
-    fallback_window = provider.primary.window
-    status = percent(fallback_window.utilization) if quota else "local history"
-    token_label = "Used" if quota else "Tokens"
-    return strip_row(window_label(provider.primary.name), status) + strip_row(token_label, compact_number(fallback_window.total_tokens))
-
-
-def strip_row(label: str, value: str) -> str:
-    return f'<div class="qc-strip-row"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
-
-
-def strip_window_row(label: str, value: str, window: SnapshotWindow) -> str:
-    pct = max(0.0, min(100.0, window.utilization * 100))
-    tone = pressure_tone(window.utilization)
-    return (
-        '<div class="qc-strip-window">'
-        f'<div class="qc-strip-row"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
-        f'<div class="qc-strip-bar qc-strip-bar-{html.escape(tone)}" aria-label="{html.escape(label)} usage"><span style="width: {pct:.1f}%"></span></div>'
-        '</div>'
-    )
-
-
-def provider_kpis(item: DashboardWindow) -> str:
-    """Render provider KPI tiles."""
-
-    window = item.window
-    return (
-        '<dl class="qc-kpis">'
-        f'{kpi("Window", window_label(item.name))}'
-        f'{kpi("Utilization", percent(window.utilization) if item.is_quota else "local history")}'
-        f'{kpi("Tokens", compact_number(window.total_tokens))}'
-        f'{kpi("Requests", f"{window.requests:,}")}'
-        f'{kpi("Reset", reset_label(window))}'
-        '</dl>'
-    )
-
-
-def window_meta(window: SnapshotWindow) -> str:
-    """Render window metrics."""
-
-    quota = window.resets_at is not None or window.window_start is not None or window.utilization > 0
-    return (
-        '<dl class="qc-metrics">'
-        f'{metric_block("Tokens", compact_number(window.total_tokens))}'
-        f'{metric_block("Requests", f"{window.requests:,}")}'
-        f'{metric_block("Utilization", percent(window.utilization) if quota else "local history")}'
-        f'{metric_block("Pace", pace_label(window) if quota else concentration_label(window))}'
-        '</dl>'
-    )
-
-
-def attention_panel(providers: tuple[ProviderDashboard, ...]) -> str:
-    items: list[tuple[str, str, str]] = []
-    for provider in providers:
-        source = provider.source.title()
-        for error in provider.snapshot.errors:
-            items.append(("high", source, error))
-        for warning in provider.snapshot.warnings:
-            items.append(("medium", source, warning))
-        for item in provider.windows:
-            window = item.window
-            if item.is_quota:
-                if window.utilization >= 0.85:
-                    items.append(("high", source, f"{window_label(item.name)} at {percent(window.utilization)}"))
-                elif window.utilization >= 0.65:
-                    items.append(("medium", source, f"{window_label(item.name)} at {percent(window.utilization)}"))
-            top_project = next(iter(window.by_project.items()), None)
-            if top_project and top_project[1].share_pct >= 50:
-                items.append(("medium", source, f"{display_name(top_project[0], kind='project')} owns {top_project[1].share_pct:.1f}%"))
-    if not items:
-        items.append(("low", "All providers", "No quota pressure or warnings in the current snapshot"))
-    rows = "".join(
-        f'<li class="qc-risk-{html.escape(tone)}"><strong>{html.escape(title)}</strong><span>{html.escape(detail)}</span></li>'
-        for tone, title, detail in items[:6]
-    )
-    return f'<section class="qc-attention"><h3>Attention</h3><ol>{rows}</ol></section>'
-
-
-def operations_briefing(providers: tuple[ProviderDashboard, ...]) -> str:
-    cards = "".join(briefing_card(provider) for provider in providers)
-    return f'<section class="qc-briefing"><h3>Operations briefing</h3><div class="qc-brief-grid">{cards}</div></section>'
-
-
-def briefing_card(provider: ProviderDashboard) -> str:
-    source = html.escape(provider.source)
-    if provider.snapshot.errors:
-        errors = "".join(f"<li>{html.escape(error)}</li>" for error in provider.snapshot.errors)
-        return f'<article class="qc-brief-card"><header><h4>{source}</h4>{badge("error", "danger")}</header><ul class="qc-brief-projects">{errors}</ul></article>'
-    if not provider.windows:
-        return f'<article class="qc-brief-card"><header><h4>{source}</h4>{badge("empty", "muted")}</header></article>'
-
-    lines = []
-    ordered = list(provider.comparison) + [item for item in provider.details if item.name == "local_all"]
-    for item in ordered:
-        label = window_label(item.name)
-        value = quota_brief(item.window) if item.is_quota else local_brief(item.window)
-        lines.append(f'<div><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>')
-    if not lines:
-        primary = provider.primary
-        if primary is not None:
-            lines.append(f'<div><dt>{html.escape(window_label(primary.name))}</dt><dd>{html.escape(local_brief(primary.window))}</dd></div>')
-
-    primary = provider.primary
-    if primary is None:
-        return f'<article class="qc-brief-card"><header><h4>{source}</h4>{badge("empty", "muted")}</header></article>'
-    projects = "".join(
-        f'<li>{html.escape(display_name(name, kind="project"))}: {aggregate.share_pct:.1f}%</li>'
-        for name, aggregate in list(primary.window.by_project.items())[:BRIEF_PROJECT_LIMIT]
-    )
-    projects_block = f'<ol class="qc-brief-projects">{projects}</ol>' if projects else ""
-    return (
-        '<article class="qc-brief-card">'
-        f'<header><h4>{source}</h4>{badge(primary.window.cache_state, cache_tone(primary.window))}</header>'
-        f'<dl class="qc-brief-lines">{"".join(lines)}</dl>'
-        f'{projects_block}'
-        '</article>'
-    )
-
-
-def quota_brief(window: SnapshotWindow) -> str:
-    pace = pace_label(window)
-    suffix = f", {pace}" if pace != "--" else ""
-    return f"{percent(window.utilization)} · {quota_reset_text(window)} · {compact_number(window.total_tokens)} tokens{suffix}"
-
-
-def quota_reset_text(window: SnapshotWindow) -> str:
-    label = reset_label(window)
-    if label == "--":
-        return "no reset"
-    if label == "reset":
-        return "reset now"
-    return f"reset {label}"
-
-
-def local_brief(window: SnapshotWindow) -> str:
-    return f"{compact_number(window.total_tokens)} tokens · {window.requests:,} requests · {concentration_label(window)}"
-
-
-def concentration_label(window: SnapshotWindow) -> str:
-    top_project = next(iter(window.by_project.values()), None)
-    if top_project is None:
-        return "no project mix"
-    if top_project.share_pct >= 50:
-        return f"top-heavy {top_project.share_pct:.0f}%"
-    if top_project.share_pct >= 25:
-        return f"focused {top_project.share_pct:.0f}%"
-    return f"spread {top_project.share_pct:.0f}% top"
-
-
-def kpi(label: str, value: str) -> str:
-    return f'<div class="qc-kpi"><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>'
-
-
-def metric_block(label: str, value: str) -> str:
-    return f'<div><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>'
-
-
-def metric_tile(label: str, value: str, detail: str) -> str:
-    return f'<dl class="qc-metric"><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd><small>{html.escape(detail)}</small></dl>'
-
-
-def _aggregate_row(name: str, aggregate: AggregateBreakdown, *, kind: str) -> str:
-    label = display_name(name, kind=kind)
-    safe_name = html.escape(label)
-    raw_name = html.escape(name)
-    share = max(0.0, min(100.0, aggregate.share_pct))
-    return (
-        "<tr>"
-        f'<td><span class="qc-name" title="{raw_name}">{safe_name}</span></td>'
-        f"<td>{compact_number(aggregate.total_tokens)}</td>"
-        f"<td>{aggregate.requests:,}</td>"
-        f'<td><span class="qc-share"><span>{aggregate.share_pct:.1f}%</span><span class="qc-share-bar"><span style="width: {share:.1f}%"></span></span></span></td>'
-        "</tr>"
-    )
-
-
-def cache_tone(window: SnapshotWindow) -> str:
-    if window.stale:
-        return "warning"
-    if window.cache_state == "live":
-        return "success"
-    if window.cache_state == "stale":
-        return "warning"
-    return "neutral"
-
-
-def window_label(name: str) -> str:
-    labels = {
-        "five_hour": "5 hour",
-        "seven_day": "7 day",
-        "local_all": "Local all",
-        "current_quota": "Current quota",
-        "this_month": "This month",
-    }
-    return labels.get(name, name.replace("_", " ").title())
-
-
-def compact_number(value: int) -> str:
-    abs_value = abs(value)
-    if abs_value >= 1_000_000_000:
-        return f"{value / 1_000_000_000:.1f}B"
-    if abs_value >= 1_000_000:
-        return f"{value / 1_000_000:.1f}M"
-    if abs_value >= 1_000:
-        return f"{value / 1_000:.1f}K"
-    return f"{value:,}"
-
-
-def percent(utilization: float) -> str:
-    return f"{utilization * 100:.1f}%"
-
-
-def reset_label(window: SnapshotWindow) -> str:
-    if not window.resets_at:
-        return "--"
-    remaining = int(window.resets_at - time.time())
-    if remaining <= 0:
-        return "reset"
-    if remaining < 3600:
-        return f"{remaining // 60}m"
-    hours, minutes = divmod(remaining // 60, 60)
-    if hours < 48:
-        return f"{hours}h {minutes}m" if minutes else f"{hours}h"
-    return datetime.fromtimestamp(window.resets_at).strftime("%b %-d")
-
-
-def pace_label(window: SnapshotWindow) -> str:
-    if not window.window_start or not window.resets_at or window.resets_at <= window.window_start:
-        return "--"
-    elapsed = time.time() - window.window_start
-    duration = window.resets_at - window.window_start
-    if elapsed <= 0 or elapsed > duration:
-        return "--"
-    expected = elapsed / duration
-    delta = window.utilization - expected
-    if delta > 0.03:
-        return f"+{delta * 100:.0f}pt fast"
-    if delta < -0.03:
-        return f"{delta * 100:.0f}pt spare"
-    return "on pace"
-
-
-def display_name(name: str, *, kind: str) -> str:
-    if kind != "project":
-        return name
-    normalized = name.replace("\\", "/")
-    if "/" in normalized:
-        parts = [part for part in normalized.split("/") if part]
-        return parts[-1] if parts else name
-    if not normalized.startswith("-"):
-        return normalized
-    parts = [part for part in normalized.split("-") if part]
-    for marker in ("instances", "repos", "work", "projects"):
-        if marker in parts:
-            index = parts.index(marker) + 1
-            if index < len(parts):
-                return "-".join(parts[index:])
-    return "-".join(parts[-2:]) if len(parts) >= 2 else normalized

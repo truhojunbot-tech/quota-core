@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from quota_core.adapters.projects import finalize_project_aggregates, merge_project_breakdown, normalize_project_name
 from quota_core.config import ProviderConfig
 from quota_core.snapshot import (
     AggregateBreakdown,
@@ -88,7 +89,7 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     skipped_large_files = 0
 
     for jsonl_file in sorted(projects_dir.rglob("*.jsonl")):
-        project_name = jsonl_file.parent.name or "unknown"
+        project_name = normalize_project_name(jsonl_file.parent.name or "unknown")
         try:
             if jsonl_file.stat().st_size > MAX_LOCAL_SCAN_FILE_BYTES:
                 skipped_large_files += 1
@@ -130,16 +131,7 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     if skipped_large_files:
         warnings = (f"claude skipped {skipped_large_files} oversized local files",)
 
-    by_project = {
-        project: AggregateBreakdown(
-            total_tokens=aggregate.total_tokens,
-            requests=aggregate.requests,
-            share_pct=round(aggregate.total_tokens / total_tokens * 100, 1) if total_tokens else 0.0,
-            models=aggregate.models,
-            model_requests=aggregate.model_requests,
-        )
-        for project, aggregate in sorted(projects.items(), key=lambda item: -item[1].total_tokens)
-    }
+    by_project = finalize_project_aggregates(projects, total_tokens)
     window = SnapshotWindow(
         window_start=None,
         window_end=sampled_at,
@@ -170,14 +162,15 @@ def _project_aggregates(raw: Any, total_tokens: int) -> dict[str, AggregateBreak
             share_pct = round(tokens / total_tokens * 100, 1) if total_tokens else 0.0
         models = _int_map(value.get("models", {}))
         model_requests = _int_map(value.get("model_requests", {}))
-        aggregates[str(project)] = AggregateBreakdown(
-            total_tokens=tokens,
+        merge_project_breakdown(
+            aggregates,
+            project,
+            tokens=tokens,
             requests=requests,
-            share_pct=float(share_pct or 0.0),
             models=models,
             model_requests=model_requests,
         )
-    return dict(sorted(aggregates.items(), key=lambda item: -item[1].total_tokens))
+    return finalize_project_aggregates(aggregates, total_tokens)
 
 
 def _model_aggregates(projects: dict[str, AggregateBreakdown], total_tokens: int) -> dict[str, AggregateBreakdown]:

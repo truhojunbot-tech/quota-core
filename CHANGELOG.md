@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.13 - 2026-04-29
+
+Original dashboard structure restore.
+
+- Restores the dark provider-column `전체 현황` quota board from the original dashboard.
+- Shows each provider's quota windows with usage bars, reset timing, and Korean pace labels.
+- Restores the dark `자동 런타임 LLM 사용량` board as a separate runtime-only section.
+- Adds browser auto-refresh so regenerated dashboards update without manual reload.
+- Rebuilds the public dashboard around the original GUI order: overview, runtime, provider quota panels, Gemini usage, details, and data state.
+
 ## 0.1.12 - 2026-04-29
 
 Overall status restore.

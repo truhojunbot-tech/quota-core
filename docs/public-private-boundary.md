@@ -156,6 +156,30 @@ Public runtime helpers must not:
 
 Private ops owns the actual bot registry and wrapper installation.
 
+## Session Analytics Boundary
+
+Claude session analytics belongs in public core when it analyzes public-safe transcript structure.
+
+Public core may own:
+- Claude transcript streaming parser for `~/.claude/projects`-style JSONL files
+- Request dedupe by `requestId` and `message.id`
+- Resumed transcript dedupe by `uuid`
+- Subagent transcript discovery and attribution
+- Skill, slash command, prompt, cache-break, and active-time analysis
+- Normalized session analytics schema
+- Synthetic fixtures covering split assistant blocks, replayed history, and subagents
+
+Private ops may own:
+- Private project aliases applied after public normalization
+- Runtime bot registry used to classify session usage as human or runtime
+- Remote transcript source configuration
+- Session analytics cache schedule and dashboard refresh policy
+- Operational alert rules based on expensive prompts or cache breaks
+
+Public core must not depend on the official Claude `session-report` plugin at runtime. The plugin can be used as a reference implementation and compatibility oracle, but the reusable parser should live behind public `quota_core` APIs.
+
+The live dashboard may expose a private `Claude Sessions` tab, but that tab must consume normalized session analytics JSON. It must not parse raw Claude transcript files in frontend code.
+
 ## Split Readiness Checks
 
 Before repo split, public core must pass these checks:

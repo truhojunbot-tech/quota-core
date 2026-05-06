@@ -30,6 +30,17 @@ class RuntimeBreakdown:
 
 
 @dataclass(frozen=True)
+class SnapshotQuotaGroup:
+    """Provider quota group sharing one limit/reset window."""
+
+    label: str
+    utilization: float = 0.0
+    resets_at: int | None = None
+    token_type: str = ""
+    models: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SnapshotWindow:
     """Normalized provider window."""
 
@@ -41,6 +52,7 @@ class SnapshotWindow:
     requests: int = 0
     by_project: dict[str, AggregateBreakdown] = field(default_factory=dict)
     by_model: dict[str, AggregateBreakdown] = field(default_factory=dict)
+    quota_groups: dict[str, SnapshotQuotaGroup] = field(default_factory=dict)
     runtime: RuntimeBreakdown = field(default_factory=RuntimeBreakdown)
     cache_state: CacheState = "unknown"
     stale: bool = False
@@ -55,6 +67,7 @@ class NormalizedSnapshot:
     windows: dict[str, SnapshotWindow] = field(default_factory=dict)
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    history: dict[str, Any] = field(default_factory=dict)
 
 
 def empty_snapshot(source: str, sampled_at: int) -> NormalizedSnapshot:
@@ -86,6 +99,18 @@ def runtime_to_dict(runtime: RuntimeBreakdown) -> dict[str, Any]:
     }
 
 
+def quota_group_to_dict(group: SnapshotQuotaGroup) -> dict[str, Any]:
+    """Convert a quota group to public JSON shape."""
+
+    return {
+        "label": group.label,
+        "utilization": group.utilization,
+        "resets_at": group.resets_at,
+        "token_type": group.token_type,
+        "models": list(group.models),
+    }
+
+
 def window_to_dict(window: SnapshotWindow) -> dict[str, Any]:
     """Convert a snapshot window to public JSON shape."""
 
@@ -98,6 +123,7 @@ def window_to_dict(window: SnapshotWindow) -> dict[str, Any]:
         "requests": window.requests,
         "by_project": {key: aggregate_to_dict(value) for key, value in window.by_project.items()},
         "by_model": {key: aggregate_to_dict(value) for key, value in window.by_model.items()},
+        "quota_groups": {key: quota_group_to_dict(value) for key, value in window.quota_groups.items()},
         "runtime": runtime_to_dict(window.runtime),
         "cache_state": window.cache_state,
         "stale": window.stale,
@@ -113,6 +139,7 @@ def snapshot_to_dict(snapshot: NormalizedSnapshot) -> dict[str, Any]:
         "windows": {key: window_to_dict(value) for key, value in snapshot.windows.items()},
         "errors": list(snapshot.errors),
         "warnings": list(snapshot.warnings),
+        "history": dict(snapshot.history),
     }
 
 
@@ -139,6 +166,19 @@ def runtime_from_dict(data: dict[str, Any]) -> RuntimeBreakdown:
     )
 
 
+def quota_group_from_dict(data: dict[str, Any]) -> SnapshotQuotaGroup:
+    """Build a quota group from public JSON shape."""
+
+    models = data.get("models", [])
+    return SnapshotQuotaGroup(
+        label=str(data.get("label") or ""),
+        utilization=float(data.get("utilization") or 0.0),
+        resets_at=data.get("resets_at"),
+        token_type=str(data.get("token_type") or ""),
+        models=tuple(str(model) for model in models if model) if isinstance(models, list) else (),
+    )
+
+
 def window_from_dict(data: dict[str, Any]) -> SnapshotWindow:
     """Build a snapshot window from public JSON shape."""
 
@@ -154,6 +194,11 @@ def window_from_dict(data: dict[str, Any]) -> SnapshotWindow:
         requests=int(data.get("requests") or 0),
         by_project=_aggregate_map(data.get("by_project", {})),
         by_model=_aggregate_map(data.get("by_model", {})),
+        quota_groups={
+            str(name): quota_group_from_dict(group)
+            for name, group in data.get("quota_groups", {}).items()
+            if isinstance(group, dict)
+        } if isinstance(data.get("quota_groups", {}), dict) else {},
         runtime=runtime_from_dict(data.get("runtime", {})) if isinstance(data.get("runtime", {}), dict) else RuntimeBreakdown(),
         cache_state=cache_state,  # type: ignore[arg-type]
         stale=bool(data.get("stale", False)),
@@ -175,6 +220,7 @@ def snapshot_from_dict(data: dict[str, Any]) -> NormalizedSnapshot:
         windows=windows,
         errors=tuple(str(error) for error in data.get("errors", []) if error),
         warnings=tuple(str(warning) for warning in data.get("warnings", []) if warning),
+        history=data.get("history", {}) if isinstance(data.get("history", {}), dict) else {},
     )
 
 
@@ -186,6 +232,8 @@ def validate_snapshot_dict(snapshot: dict[str, Any]) -> tuple[str, ...]:
         errors.append("source must be a non-empty string")
     if not isinstance(snapshot.get("sampled_at"), int):
         errors.append("sampled_at must be an integer unix timestamp")
+    if "history" in snapshot and not isinstance(snapshot.get("history"), dict):
+        errors.append("history must be an object")
 
     windows = snapshot.get("windows")
     if not isinstance(windows, dict):
@@ -208,6 +256,22 @@ def validate_snapshot_dict(snapshot: dict[str, Any]) -> tuple[str, ...]:
             errors.append(f"{prefix}.total_tokens must be an integer")
         if not isinstance(window.get("requests", 0), int):
             errors.append(f"{prefix}.requests must be an integer")
+        quota_groups = window.get("quota_groups", {})
+        if not isinstance(quota_groups, dict):
+            errors.append(f"{prefix}.quota_groups must be an object")
+        else:
+            for group_name, group in quota_groups.items():
+                group_prefix = f"{prefix}.quota_groups.{group_name}"
+                if not isinstance(group, dict):
+                    errors.append(f"{group_prefix} must be an object")
+                    continue
+                if not isinstance(group.get("label", ""), str):
+                    errors.append(f"{group_prefix}.label must be a string")
+                if not isinstance(group.get("utilization", 0.0), (int, float)):
+                    errors.append(f"{group_prefix}.utilization must be numeric")
+                _validate_optional_int(group, "resets_at", group_prefix, errors)
+                if not isinstance(group.get("models", []), list):
+                    errors.append(f"{group_prefix}.models must be a list")
         cache_state = window.get("cache_state", "unknown")
         if cache_state not in {"live", "cached", "stale", "unknown"}:
             errors.append(f"{prefix}.cache_state must be live, cached, stale, or unknown")

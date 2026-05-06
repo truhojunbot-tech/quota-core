@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from quota_core.adapters.projects import finalize_project_aggregates, merge_project_breakdown, normalize_project_name
 from quota_core.config import ProviderConfig
 from quota_core.snapshot import (
     AggregateBreakdown,
@@ -96,7 +97,7 @@ def scan_codex_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnaps
         tokens = _coerce_int(tokens_used)
         if tokens <= 0:
             continue
-        project_name = Path(str(cwd or "unknown")).name or "unknown"
+        project_name = normalize_project_name(str(cwd or "unknown"))
         model_name = str(model or "unknown").split("/")[-1]
         total_tokens += tokens
         requests += 1
@@ -112,16 +113,7 @@ def scan_codex_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnaps
             model_requests=model_requests,
         )
 
-    by_project = {
-        project: AggregateBreakdown(
-            total_tokens=aggregate.total_tokens,
-            requests=aggregate.requests,
-            share_pct=round(aggregate.total_tokens / total_tokens * 100, 1) if total_tokens else 0.0,
-            models=aggregate.models,
-            model_requests=aggregate.model_requests,
-        )
-        for project, aggregate in sorted(projects.items(), key=lambda item: -item[1].total_tokens)
-    }
+    by_project = finalize_project_aggregates(projects, total_tokens)
     window = SnapshotWindow(
         window_start=None,
         window_end=sampled_at,
@@ -156,14 +148,15 @@ def _project_aggregates(raw: Any, total_tokens: int) -> dict[str, AggregateBreak
         share_pct = value.get("share_pct")
         if share_pct is None:
             share_pct = round(tokens / total_tokens * 100, 1) if total_tokens else 0.0
-        aggregates[str(project)] = AggregateBreakdown(
-            total_tokens=tokens,
+        merge_project_breakdown(
+            aggregates,
+            project,
+            tokens=tokens,
             requests=requests,
-            share_pct=float(share_pct or 0.0),
             models=_int_map(value.get("models", {})),
             model_requests=_int_map(value.get("model_requests", {})),
         )
-    return dict(sorted(aggregates.items(), key=lambda item: -item[1].total_tokens))
+    return finalize_project_aggregates(aggregates, total_tokens)
 
 
 def _model_aggregates(projects: dict[str, AggregateBreakdown], total_tokens: int) -> dict[str, AggregateBreakdown]:

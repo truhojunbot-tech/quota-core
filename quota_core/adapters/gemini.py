@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from quota_core.adapters.projects import finalize_project_aggregates, merge_project_breakdown, normalize_project_name
 from quota_core.config import ProviderConfig
 from quota_core.snapshot import (
     AggregateBreakdown,
     NormalizedSnapshot,
     RuntimeBreakdown,
+    SnapshotQuotaGroup,
     SnapshotWindow,
 )
 
@@ -36,6 +38,7 @@ def normalize_gemini_usage(payload: dict[str, Any]) -> NormalizedSnapshot:
             sampled_at=sampled_at,
             cache_state=_quota_cache_state(payload.get("quota"), sampled_at),
             runtime_raw=payload.get("runtime_current_quota"),
+            quota_groups=_gemini_quota_groups(payload.get("quota_by_model", {})),
         )
 
     for name in ("minute", "today", "seven_day", "this_month"):
@@ -69,18 +72,15 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     requests = 0
     projects: dict[str, AggregateBreakdown] = {}
     skipped_large_files = 0
-    for session_file in sorted(tmp_dir.rglob("session-*.json")):
+    for session_file in _session_files(tmp_dir):
         try:
             if session_file.stat().st_size > MAX_LOCAL_SCAN_FILE_BYTES:
                 skipped_large_files += 1
                 continue
         except OSError:
             continue
-        record = _load_session_file(session_file)
-        if record is None:
-            continue
-        project_name = _project_name(tmp_dir, session_file)
-        for message in record.get("messages", []):
+        project_name = normalize_project_name(_project_name(tmp_dir, session_file))
+        for message in _iter_session_messages(session_file):
             if not isinstance(message, dict) or message.get("type") != "gemini":
                 continue
             tokens, model = _message_tokens(message)
@@ -101,16 +101,7 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
                 model_requests=model_requests,
             )
 
-    by_project = {
-        project: AggregateBreakdown(
-            total_tokens=aggregate.total_tokens,
-            requests=aggregate.requests,
-            share_pct=round(aggregate.total_tokens / total_tokens * 100, 1) if total_tokens else 0.0,
-            models=aggregate.models,
-            model_requests=aggregate.model_requests,
-        )
-        for project, aggregate in sorted(projects.items(), key=lambda item: -item[1].total_tokens)
-    }
+    by_project = finalize_project_aggregates(projects, total_tokens)
     warnings = ()
     if skipped_large_files:
         warnings = (f"gemini skipped {skipped_large_files} oversized local files",)
@@ -130,6 +121,10 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     return NormalizedSnapshot(source="gemini", sampled_at=sampled_at, windows={"local_all": window}, warnings=warnings)
 
 
+def _session_files(tmp_dir: Path) -> list[Path]:
+    return sorted([*tmp_dir.rglob("session-*.json"), *tmp_dir.rglob("session-*.jsonl")])
+
+
 def _load_session_file(path: Path) -> dict[str, Any] | None:
     try:
         record = json.loads(path.read_text(errors="replace"))
@@ -138,12 +133,62 @@ def _load_session_file(path: Path) -> dict[str, Any] | None:
     return record if isinstance(record, dict) else None
 
 
+def _iter_session_messages(path: Path) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    messages: list[dict[str, Any]] = []
+    if path.suffix == ".jsonl":
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except OSError:
+            return []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(message, dict):
+                continue
+            key = str(message.get("id") or f"{message.get('timestamp')}:{message.get('type')}:{message.get('content', '')[:80]}")
+            if key in seen:
+                continue
+            seen.add(key)
+            messages.append(message)
+        return messages
+    record = _load_session_file(path)
+    if record is None:
+        return []
+    for message in record.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+        key = str(message.get("id") or f"{message.get('timestamp')}:{message.get('type')}:{message.get('content', '')[:80]}")
+        if key in seen:
+            continue
+        seen.add(key)
+        messages.append(message)
+    return messages
+
+
 def _project_name(tmp_dir: Path, session_file: Path) -> str:
     try:
         relative = session_file.relative_to(tmp_dir)
     except ValueError:
-        return session_file.parent.name or "unknown"
-    return relative.parts[0] if relative.parts else "unknown"
+        project_dir = session_file.parents[1] if len(session_file.parents) > 1 else session_file.parent
+        return _project_root_name(project_dir) or session_file.parent.name or "unknown"
+    if not relative.parts:
+        return "unknown"
+    project_dir = tmp_dir / relative.parts[0]
+    return _project_root_name(project_dir) or relative.parts[0]
+
+
+def _project_root_name(project_dir: Path) -> str | None:
+    marker = project_dir / ".project_root"
+    try:
+        value = marker.read_text(errors="replace").strip()
+    except OSError:
+        return None
+    return value or None
 
 
 def _message_tokens(message: dict[str, Any]) -> tuple[int, str]:
@@ -161,6 +206,7 @@ def _window_from_bucket(
     sampled_at: int,
     cache_state: str,
     runtime_raw: Any = None,
+    quota_groups: dict[str, SnapshotQuotaGroup] | None = None,
 ) -> SnapshotWindow:
     total_tokens = int(raw.get("total") or raw.get("total_tokens") or 0)
     requests = int(raw.get("requests") or 0)
@@ -180,10 +226,51 @@ def _window_from_bucket(
         requests=requests,
         by_project=by_project,
         by_model=_model_aggregates(by_project, total_tokens),
+        quota_groups=quota_groups or {},
         runtime=runtime,
         cache_state=cache_state,  # type: ignore[arg-type]
         stale=stale,
     )
+
+
+def _gemini_quota_groups(raw: Any) -> dict[str, SnapshotQuotaGroup]:
+    if not isinstance(raw, dict):
+        return {}
+    groups = {
+        "flash": (
+            "Flash 그룹",
+            (
+                "gemini-2.5-flash",
+                "gemini-3-flash-preview",
+                "gemini-2.5-flash-lite",
+                "gemini-3.1-flash-lite-preview",
+            ),
+        ),
+        "pro": (
+            "Pro 그룹",
+            (
+                "gemini-2.5-pro",
+                "gemini-3-pro-preview",
+                "gemini-3.1-pro-preview",
+            ),
+        ),
+    }
+    result: dict[str, SnapshotQuotaGroup] = {}
+    for key, (label, models) in groups.items():
+        rows = [raw.get(model) for model in models if isinstance(raw.get(model), dict)]
+        if not rows:
+            continue
+        utilization = max(float(row.get("utilization") or 0.0) for row in rows)
+        resets_at = next((_optional_int(row.get("resets_at")) for row in rows if _optional_int(row.get("resets_at"))), None)
+        token_type = next((str(row.get("token_type") or "") for row in rows if row.get("token_type")), "")
+        result[key] = SnapshotQuotaGroup(
+            label=label,
+            utilization=utilization,
+            resets_at=resets_at,
+            token_type=token_type,
+            models=tuple(model for model in models if model in raw),
+        )
+    return result
 
 
 def _runtime_breakdown(raw: Any, provider_total_tokens: int) -> RuntimeBreakdown:
@@ -212,14 +299,15 @@ def _project_aggregates(raw: Any, total_tokens: int) -> dict[str, AggregateBreak
         share_pct = value.get("share_pct")
         if share_pct is None:
             share_pct = round(tokens / total_tokens * 100, 1) if total_tokens else 0.0
-        aggregates[str(project)] = AggregateBreakdown(
-            total_tokens=tokens,
+        merge_project_breakdown(
+            aggregates,
+            project,
+            tokens=tokens,
             requests=requests,
-            share_pct=float(share_pct or 0.0),
             models=_int_map(value.get("models", {})),
             model_requests=_int_map(value.get("model_requests", {})),
         )
-    return dict(sorted(aggregates.items(), key=lambda item: -item[1].total_tokens))
+    return finalize_project_aggregates(aggregates, total_tokens)
 
 
 def _model_aggregates(projects: dict[str, AggregateBreakdown], total_tokens: int) -> dict[str, AggregateBreakdown]:
