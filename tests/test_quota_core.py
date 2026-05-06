@@ -13,6 +13,7 @@ from quota_core.adapters.projects import normalize_project_name
 from quota_core.adapters.gemini import normalize_gemini_usage
 from quota_core.config import config_from_mapping, load_config, validate_config, write_default_config
 from quota_core.runtime import runtime_env
+from quota_core.session import build_empty_session_report, normalize_session_report_query, validate_session_report_dict
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
 from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
 from quota_core.dashboard.renderer import render_page
@@ -640,6 +641,54 @@ class SnapshotTests(unittest.TestCase):
         snapshot = snapshot_to_dict(scan_config(config)[0])
         self.assertEqual(snapshot["warnings"], ["gemini tmp_dir does not exist"])
         self.assertNotIn("/tmp/quota-core-private-gemini-tmp", json.dumps(snapshot))
+
+
+class SessionReportContractTests(unittest.TestCase):
+    def test_session_report_window_query_wins_over_since(self):
+        query = normalize_session_report_query(
+            window="5h",
+            since="24h",
+            redaction="summary",
+            now=1770000000,
+            quota_windows={"five_hour": {"resets_at": 1770003600, "window_seconds": 5 * 3600}},
+        )
+        self.assertEqual(query.redaction, "summary")
+        self.assertEqual(query.window.kind, "quota")
+        self.assertEqual(query.window.name, "five_hour")
+        self.assertEqual(query.window.window_start, 1769985600)
+        self.assertEqual(query.window.window_end, 1770000000)
+        self.assertEqual(query.window.window_source, "quota_resets_at")
+
+    def test_session_report_defaults_to_preview_redaction(self):
+        query = normalize_session_report_query(since="24h", now=1770000000)
+        self.assertEqual(query.redaction, "preview")
+        self.assertEqual(query.window.kind, "rolling")
+        self.assertEqual(query.window.name, "24h")
+        self.assertEqual(query.window.window_start, 1769913600)
+        self.assertEqual(query.window.window_end, 1770000000)
+        self.assertEqual(query.window.window_source, "rolling_since")
+
+    def test_empty_session_report_has_required_schema_keys(self):
+        report = build_empty_session_report(generated_at=1770000000)
+        self.assertEqual(validate_session_report_dict(report), ())
+        self.assertEqual(report["source"], "claude")
+        self.assertEqual(report["cache_state"], "live")
+        self.assertEqual(report["redaction"], "preview")
+        self.assertEqual(report["totals"]["total_tokens"], 0)
+        self.assertEqual(report["runtime_attribution"]["by_class"], [])
+        self.assertEqual(report["reconciliation"]["session_total_tokens"], 0)
+        for key in (
+            "by_project",
+            "by_model",
+            "by_subagent",
+            "by_skill",
+            "by_slash_command",
+            "expensive_prompts",
+            "cache_breaks",
+            "warnings",
+            "errors",
+        ):
+            self.assertEqual(report[key], [])
 
 
 class PublicSplitGuardTests(unittest.TestCase):
