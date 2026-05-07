@@ -209,8 +209,12 @@ def claude_session_panel(providers: tuple[ProviderDashboard, ...]) -> str:
         f'<p class="panel-note">window: {html.escape(str(window.get("name") or "unknown"))} · {html.escape(str(report.get("cache_state") or "unknown"))}</p>',
         session_decision_panel(report),
         session_rows("Top Projects", report.get("by_project", []), max_rows=4),
+        session_rows("Model Mix", report.get("by_model", []), max_rows=4),
         expensive_prompt_rows(report.get("expensive_prompts", [])),
         cache_break_rows(report.get("cache_breaks", [])),
+        session_rows("Burst Hours", report.get("hourly_bursts", []), max_rows=4),
+        session_rows("Top Sessions", report.get("top_sessions", []), max_rows=4),
+        cache_efficiency_card(report.get("cache_efficiency", [])),
     ]
     return panel("Claude Sessions", '<div class="session-grid">' + "".join(section for section in sections if section) + "</div>", status_badge(str(report.get("cache_state") or "unknown")))
 
@@ -353,6 +357,21 @@ def cache_break_rows(rows: object) -> str:
         right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
         items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
     return f'<article class="session-card"><h3>Fresh Cache Creates</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def cache_efficiency_card(rows: object) -> str:
+    if not isinstance(rows, list) or not rows:
+        return ""
+    items = []
+    for row in rows[:4]:
+        if not isinstance(row, dict):
+            continue
+        label = prompt_row_label(row)
+        total = compact_number(int(row.get("total_tokens") or 0))
+        cache_hit = float(row.get("cache_hit_pct") or 0)
+        create = compact_number(int(row.get("cache_creation_input_tokens") or 0))
+        items.append(f'<li><span>{html.escape(label)}</span><strong>{html.escape(total)} · {cache_hit:.1f}% hit · {html.escape(create)} create</strong></li>')
+    return f'<article class="session-card"><h3>Cache Efficiency</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
 def first_dict(rows: object) -> dict[str, object] | None:

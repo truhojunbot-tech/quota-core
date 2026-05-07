@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -114,6 +114,8 @@ class ClaudeSessionScanner:
         self.by_subagent: dict[str, Aggregate] = defaultdict(Aggregate)
         self.by_skill: dict[str, Aggregate] = defaultdict(Aggregate)
         self.by_slash_command: dict[str, Aggregate] = defaultdict(Aggregate)
+        self.by_hour: dict[str, Aggregate] = defaultdict(Aggregate)
+        self.by_session: dict[str, Aggregate] = defaultdict(Aggregate)
         self.runtime_by_class: dict[str, Aggregate] = defaultdict(Aggregate)
         self.expensive_prompts: dict[str, dict[str, Any]] = {}
         self.cache_breaks: dict[str, dict[str, Any]] = {}
@@ -138,6 +140,9 @@ class ClaudeSessionScanner:
             by_subagent=self._rows(self.by_subagent),
             by_skill=self._rows(self.by_skill),
             by_slash_command=self._rows(self.by_slash_command),
+            hourly_bursts=self._rows(self.by_hour)[:12],
+            top_sessions=self._rows(self.by_session)[:12],
+            cache_efficiency=cache_efficiency_rows(self.expensive_prompts, self.totals.total_tokens)[:12],
             expensive_prompts=sorted(diagnostic_rows(self.expensive_prompts), key=lambda row: -int(row["total_tokens"]))[:20],
             cache_breaks=sorted(diagnostic_rows(self.cache_breaks), key=lambda row: -int(row["tokens"]))[:20],
             runtime_attribution=self._runtime_attribution(),
@@ -192,7 +197,7 @@ class ClaudeSessionScanner:
                     continue
                 self.seen_api_keys.add(key)
                 model = extract_model(record)
-                self._add_usage(project, model, usage, runtime_classification(record), context, timestamp)
+                self._add_usage(project, transcript_label(root, transcript, project), model, usage, runtime_classification(record), context, timestamp)
 
     def _in_window(self, timestamp: int | None) -> bool:
         selected = self.query.window
@@ -210,6 +215,7 @@ class ClaudeSessionScanner:
     def _add_usage(
         self,
         project: str,
+        session_label: str,
         model: str,
         usage: Usage,
         runtime_class: str,
@@ -218,6 +224,9 @@ class ClaudeSessionScanner:
     ) -> None:
         self.totals.add(usage, model)
         self.by_project[project].add(usage, model)
+        self.by_session[session_label].add(usage, model)
+        if timestamp is not None:
+            self.by_hour[hour_bucket(timestamp)].add(usage, model)
         model_key = model or "unknown"
         self.by_model[model_key].add(usage, model_key)
         if context.subagent_type:
@@ -251,6 +260,8 @@ class ClaudeSessionScanner:
             row["_prompt_hashes"].add(prompt_hash)
             row["total_tokens"] = int(row["total_tokens"]) + total
             row["api_calls"] = int(row["api_calls"]) + 1
+            row["cache_read_input_tokens"] = int(row.get("cache_read_input_tokens") or 0) + usage["cache_read_input_tokens"]
+            row["cache_creation_input_tokens"] = int(row.get("cache_creation_input_tokens") or 0) + usage["cache_creation_input_tokens"]
         if usage["cache_creation_input_tokens"] > 0 and usage["cache_creation_input_tokens"] >= usage["cache_read_input_tokens"]:
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
             family_key = prompt_family_key(project, context.text, prompt_hash)
@@ -456,6 +467,39 @@ def diagnostic_rows(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         cleaned["prompt_variants"] = len(hashes) if isinstance(hashes, set) else 1
         result.append(cleaned)
     return result
+
+
+def cache_efficiency_rows(rows: dict[str, dict[str, Any]], total_tokens: int) -> list[dict[str, Any]]:
+    result = []
+    for row in diagnostic_rows(rows):
+        cache_read = int(row.get("cache_read_input_tokens") or 0)
+        cache_create = int(row.get("cache_creation_input_tokens") or 0)
+        cache_total = cache_read + cache_create
+        result.append(
+            {
+                "project": row.get("project"),
+                "prompt_preview": row.get("prompt_preview"),
+                "total_tokens": row.get("total_tokens", 0),
+                "api_calls": row.get("api_calls", 0),
+                "prompt_variants": row.get("prompt_variants", 0),
+                "cache_read_input_tokens": cache_read,
+                "cache_creation_input_tokens": cache_create,
+                "cache_hit_pct": round(cache_read / cache_total * 100, 1) if cache_total else 0.0,
+                "share_pct": round(int(row.get("total_tokens") or 0) / total_tokens * 100, 1) if total_tokens else 0.0,
+            }
+        )
+    return sorted(result, key=lambda item: (-int(item["total_tokens"]), float(item["cache_hit_pct"])))
+
+
+def hour_bucket(timestamp: int) -> str:
+    return datetime.fromtimestamp(timestamp, timezone.utc).strftime("%m-%d %H:00Z")
+
+
+def transcript_label(root: Path, transcript: Path, project: str) -> str:
+    stem = transcript.stem or "session"
+    if re.fullmatch(r"[0-9a-fA-F-]{16,}", stem):
+        stem = "session:" + stem[:8]
+    return f"{project}/{stem}"
 
 
 def redact_prompt(prompt: str, redaction: str) -> tuple[str, str]:
