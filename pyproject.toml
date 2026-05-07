@@ -32,7 +32,6 @@ packages = [
   "quota_core",
   "quota_core.adapters",
   "quota_core.dashboard",
-  "quota_core.session",
 ]
 
 [tool.setuptools.package-data]
