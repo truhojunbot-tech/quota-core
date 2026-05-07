@@ -21,6 +21,7 @@ def dashboard_overview(snapshots: list[NormalizedSnapshot]) -> str:
         overall_status(providers),
         runtime_usage_report(providers),
         provider_panels(providers),
+        claude_session_panel(providers),
         time_series_panel(providers),
         quota_history_panel(providers),
         detail_windows(providers),
@@ -185,6 +186,80 @@ def usage_window_card(item: DashboardWindow) -> str:
         f'{project_rows(window.by_project, window.total_tokens, max_rows=6)}'
         '</article>'
     )
+
+
+def claude_session_panel(providers: tuple[ProviderDashboard, ...]) -> str:
+    provider = next((item for item in providers if item.source == "claude"), None)
+    if provider is None or not isinstance(provider.snapshot.history, dict):
+        return ""
+    report = provider.snapshot.history.get("claude_session_report")
+    if not isinstance(report, dict):
+        return ""
+    totals = report.get("totals", {}) if isinstance(report.get("totals"), dict) else {}
+    window = report.get("window", {}) if isinstance(report.get("window"), dict) else {}
+    blocks = [
+        session_metric("Total", compact_number(int(totals.get("total_tokens") or 0))),
+        session_metric("Input", compact_number(int(totals.get("input_tokens") or 0))),
+        session_metric("Output", compact_number(int(totals.get("output_tokens") or 0))),
+        session_metric("Cache Read", compact_number(int(totals.get("cache_read_input_tokens") or 0))),
+        session_metric("Cache Create", compact_number(int(totals.get("cache_creation_input_tokens") or 0))),
+        session_metric("Cache Hit", f'{float(totals.get("cache_hit_pct") or 0):.1f}%'),
+    ]
+    sections = [
+        f'<div class="session-metrics">{"".join(blocks)}</div>',
+        f'<p class="panel-note">window: {html.escape(str(window.get("name") or "unknown"))} · {html.escape(str(report.get("cache_state") or "unknown"))}</p>',
+        session_rows("Projects", report.get("by_project", [])),
+        session_rows("Subagents", report.get("by_subagent", [])),
+        session_rows("Skills", report.get("by_skill", [])),
+        session_rows("Slash Commands", report.get("by_slash_command", [])),
+        expensive_prompt_rows(report.get("expensive_prompts", [])),
+        cache_break_rows(report.get("cache_breaks", [])),
+    ]
+    return panel("Claude Sessions", '<div class="session-grid">' + "".join(section for section in sections if section) + "</div>", status_badge(str(report.get("cache_state") or "unknown")))
+
+
+def session_metric(label: str, value: str) -> str:
+    return f'<div class="session-metric"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
+
+
+def session_rows(title: str, rows: object) -> str:
+    if not isinstance(rows, list) or not rows:
+        return ""
+    items = []
+    for row in rows[:6]:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("display_name") or row.get("name") or "unknown")
+        share = float(row.get("share_pct") or 0)
+        tokens = compact_number(int(row.get("total_tokens") or 0))
+        items.append(f'<li><span>{html.escape(name)}</span><strong>{share:.1f}% · {html.escape(tokens)}</strong></li>')
+    return f'<article class="session-card"><h3>{html.escape(title)}</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def expensive_prompt_rows(rows: object) -> str:
+    if not isinstance(rows, list) or not rows:
+        return ""
+    items = []
+    for row in rows[:5]:
+        if not isinstance(row, dict):
+            continue
+        preview = str(row.get("prompt_preview") or row.get("prompt_hash") or "redacted")
+        tokens = compact_number(int(row.get("total_tokens") or 0))
+        items.append(f'<li><span>{html.escape(preview)}</span><strong>{html.escape(tokens)}</strong></li>')
+    return f'<article class="session-card session-card-wide"><h3>Expensive Prompts</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def cache_break_rows(rows: object) -> str:
+    if not isinstance(rows, list) or not rows:
+        return ""
+    items = []
+    for row in rows[:5]:
+        if not isinstance(row, dict):
+            continue
+        reason = str(row.get("reason") or "cache break")
+        tokens = compact_number(int(row.get("tokens") or 0))
+        items.append(f'<li><span>{html.escape(reason)}</span><strong>{html.escape(tokens)}</strong></li>')
+    return f'<article class="session-card session-card-wide"><h3>Cache Breaks</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
 def time_series_panel(providers: tuple[ProviderDashboard, ...]) -> str:
@@ -592,7 +667,15 @@ def provider_title(source: str, *, upper: bool = False) -> str:
 
 
 def short_window_label(name: str) -> str:
-    return "5시간" if name == "five_hour" else "7일" if name == "seven_day" else "현재" if name == "current_quota" else window_label(name)
+    labels = {
+        "five_hour": "5시간",
+        "seven_day": "7일",
+        "current_quota": "현재",
+        "current_session": "현재 세션",
+        "current_week": "이번 주",
+        "current_week_sonnet": "이번 주 Sonnet",
+    }
+    return labels.get(name, window_label(name))
 
 
 def runtime_window_label(name: str) -> str:
@@ -791,6 +874,13 @@ main { max-width:1400px; margin:0 auto; padding:20px 24px; }
 .empty-list { margin:6px 0 0; color:var(--muted); font-size:11px; }
 .usage-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:20px; margin-top:8px; }
 .usage-card > strong { display:block; margin-bottom:8px; font-size:20px; color:#fff; }
+.session-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+.session-metrics { grid-column:1 / -1; display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; }
+.session-metric, .session-card { background:var(--card2); border:1px solid var(--border-soft); border-radius:8px; padding:10px; min-width:0; }
+.session-metric span { display:block; color:var(--muted); font-size:11px; }
+.session-metric strong { display:block; margin-top:3px; color:#fffaf1; font-size:16px; }
+.session-card h3 { margin:0 0 8px; color:#fffaf1; font-size:12px; }
+.session-card-wide { grid-column:span 2; }
 .timeline-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
 .timeline-card { background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:14px; min-width:0; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
 .timeline-card h3 { margin:0; color:#fffaf1; font-size:12px; }
@@ -827,6 +917,6 @@ dd { margin:2px 0 0; color:#fffaf1; font-weight:650; overflow-wrap:anywhere; }
 .limit-watch { background:rgba(244,184,96,.15); color:#f4b860; }
 .limit-limited { background:rgba(251,113,133,.16); color:#fb7185; }
 .limit-unknown { background:rgba(148,163,184,.15); color:#94a3b8; }
-@media (max-width: 980px) { .overview-grid, .runtime-grid, .detail-grid, .usage-grid, .timeline-grid { grid-template-columns:1fr; } .runtime-windows, .qc-quota-split { grid-template-columns:1fr; } }
+@media (max-width: 980px) { .overview-grid, .runtime-grid, .detail-grid, .usage-grid, .timeline-grid, .session-grid, .session-metrics { grid-template-columns:1fr; } .runtime-windows, .qc-quota-split { grid-template-columns:1fr; } .session-card-wide { grid-column:auto; } }
 @media (max-width: 640px) { header { padding:14px 16px; } main { padding:16px; } .project-list li, .timeline-projects li { grid-template-columns:minmax(0,1fr); } .project-list strong { text-align:left; } .mini-sparkline { display:none; } dl { grid-template-columns:1fr; } }
 """.strip()

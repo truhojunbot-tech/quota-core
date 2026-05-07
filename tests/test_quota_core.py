@@ -9,11 +9,12 @@ import unittest
 from pathlib import Path
 
 from quota_core.adapters.claude import normalize_claude_quota
+from quota_core.adapters.codex import normalize_codex_quota
 from quota_core.adapters.projects import normalize_project_name
 from quota_core.adapters.gemini import normalize_gemini_usage
 from quota_core.config import config_from_mapping, load_config, validate_config, write_default_config
 from quota_core.runtime import runtime_env
-from quota_core.session import build_empty_session_report, normalize_session_report_query, validate_session_report_dict
+from quota_core.session import analyze_claude_sessions, build_empty_session_report, normalize_session_report_query, validate_session_report_dict
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
 from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
 from quota_core.dashboard.renderer import render_page
@@ -111,6 +112,81 @@ class SnapshotTests(unittest.TestCase):
         snapshot = snapshot_to_dict(normalize_claude_quota(payload))
         self.assertEqual(validate_snapshot_dict(snapshot), ())
         self.assertEqual(snapshot["windows"]["five_hour"]["runtime"]["total_tokens"], 200)
+
+    def test_claude_usage_payload_accepts_explicit_cache_state(self):
+        payload = {
+            "fetched_at": 1778166600,
+            "cache_state": "cached",
+            "current_session": {
+                "utilization": 0.06,
+                "resets_at": 1778180340,
+                "window_seconds": 5 * 3600,
+                "tokens_used": 0,
+                "by_project": {},
+            },
+            "current_week": {
+                "utilization": 0.14,
+                "resets_at": 1778731200,
+                "window_seconds": 7 * 24 * 3600,
+                "tokens_used": 0,
+                "by_project": {},
+            },
+            "current_week_sonnet": {
+                "utilization": 0.09,
+                "resets_at": 1778731200,
+                "window_seconds": 7 * 24 * 3600,
+                "tokens_used": 0,
+                "by_project": {},
+            },
+        }
+        snapshot = snapshot_to_dict(normalize_claude_quota(payload))
+        self.assertEqual(validate_snapshot_dict(snapshot), ())
+        self.assertEqual(snapshot["windows"]["current_session"]["cache_state"], "cached")
+        self.assertEqual(snapshot["windows"]["current_week"]["utilization"], 0.14)
+        self.assertEqual(snapshot["windows"]["current_week_sonnet"]["utilization"], 0.09)
+
+    def test_codex_stale_payload_normalizes_cache_state(self):
+        payload = {
+            "fetched_at": 1770000000,
+            "stale": True,
+            "five_hour": {
+                "utilization": 0.01,
+                "resets_at": 1770003600,
+                "tokens_used": 0,
+            },
+            "seven_day": {
+                "utilization": 0.0,
+                "resets_at": 1770604800,
+                "tokens_used": 72090696,
+                "by_project": {
+                    "alpha-engine": {
+                        "tokens": 71461699,
+                        "models": {"gpt-5.4-mini": 71461699},
+                    }
+                },
+            },
+        }
+        snapshot = snapshot_to_dict(normalize_codex_quota(payload))
+        self.assertEqual(validate_snapshot_dict(snapshot), ())
+        self.assertEqual(snapshot["windows"]["five_hour"]["cache_state"], "stale")
+        self.assertTrue(snapshot["windows"]["seven_day"]["stale"])
+        self.assertEqual(snapshot["windows"]["seven_day"]["total_tokens"], 72090696)
+
+    def test_codex_payload_accepts_explicit_cache_state(self):
+        payload = {
+            "fetched_at": 1770000000,
+            "cache_state": "cached",
+            "five_hour": {
+                "utilization": 0.16,
+                "resets_at": 1770003600,
+                "tokens_used": 10,
+            },
+        }
+
+        snapshot = snapshot_to_dict(normalize_codex_quota(payload))
+
+        self.assertEqual(snapshot["windows"]["five_hour"]["cache_state"], "cached")
+        self.assertFalse(snapshot["windows"]["five_hour"]["stale"])
 
     def test_agent_crew_worktree_projects_merge_with_parent_project(self):
         payload = {
@@ -689,6 +765,83 @@ class SessionReportContractTests(unittest.TestCase):
             "errors",
         ):
             self.assertEqual(report[key], [])
+
+    def test_claude_session_parser_dedupes_and_attributes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "demo-project"
+            project_dir.mkdir()
+            rows = [
+                {
+                    "timestamp": "2026-05-07T00:00:00Z",
+                    "message": {"role": "user", "content": "/investigate why cache exploded"},
+                },
+                {
+                    "timestamp": "2026-05-07T00:00:01Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "tool_use", "name": "Skill", "input": {"name": "systematic-debugging"}},
+                            {"type": "tool_use", "name": "Task", "input": {"subagent_type": "Explore"}},
+                        ],
+                    },
+                },
+                {
+                    "timestamp": "2026-05-07T00:00:02Z",
+                    "requestId": "req-1",
+                    "message": {
+                        "id": "msg-1",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {
+                            "input_tokens": 10,
+                            "output_tokens": 20,
+                            "cache_read_input_tokens": 30,
+                            "cache_creation_input_tokens": 40,
+                        },
+                    },
+                },
+                {
+                    "timestamp": "2026-05-07T00:00:02Z",
+                    "requestId": "req-1",
+                    "message": {
+                        "id": "msg-1-split-block",
+                        "model": "claude-sonnet-4-6",
+                        "usage": {
+                            "input_tokens": 10,
+                            "output_tokens": 20,
+                            "cache_read_input_tokens": 30,
+                            "cache_creation_input_tokens": 40,
+                        },
+                    },
+                },
+            ]
+            (project_dir / "session.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+            report = analyze_claude_sessions([temp_dir], since="24h", redaction="preview", now=1778169600, quota_scanner_total_tokens=120)
+
+        self.assertEqual(validate_session_report_dict(report), ())
+        self.assertEqual(report["totals"]["total_tokens"], 100)
+        self.assertEqual(report["totals"]["api_calls"], 1)
+        self.assertEqual(report["totals"]["deduped_api_calls"], 1)
+        self.assertEqual(report["totals"]["cache_hit_pct"], 42.9)
+        self.assertEqual(report["by_project"][0]["name"], "demo-project")
+        self.assertEqual(report["by_model"][0]["name"], "claude-sonnet-4-6")
+        self.assertEqual(report["by_subagent"][0]["name"], "Explore")
+        self.assertEqual(report["by_skill"][0]["name"], "systematic-debugging")
+        self.assertEqual(report["by_slash_command"][0]["name"], "/investigate")
+        self.assertIn("cache_creation_spike", report["cache_breaks"][0]["reason"])
+        self.assertIn("/investigate why cache", report["expensive_prompts"][0]["prompt_preview"])
+        self.assertEqual(report["reconciliation"]["quota_scanner_total_tokens"], 120)
+
+    def test_dashboard_renders_claude_session_report(self):
+        report = build_empty_session_report(generated_at=1770000000)
+        report["totals"].update({"total_tokens": 300, "input_tokens": 100, "output_tokens": 80, "cache_read_input_tokens": 90, "cache_creation_input_tokens": 30, "cache_hit_pct": 75.0})
+        report["by_project"] = [{"name": "demo-project", "display_name": "demo-project", "total_tokens": 300, "share_pct": 100.0}]
+        report["expensive_prompts"] = [{"prompt_preview": "expensive prompt", "total_tokens": 300}]
+        snapshot = NormalizedSnapshot(source="claude", sampled_at=1770000000, history={"claude_session_report": report})
+        page = render_page([snapshot])
+        self.assertIn("Claude Sessions", page)
+        self.assertIn("demo-project", page)
+        self.assertIn("expensive prompt", page)
 
 
 class PublicSplitGuardTests(unittest.TestCase):

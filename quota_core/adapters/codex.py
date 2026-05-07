@@ -30,6 +30,7 @@ def normalize_codex_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
         return NormalizedSnapshot(source="codex", sampled_at=sampled_at, errors=(str(error),))
 
     windows: dict[str, SnapshotWindow] = {}
+    cache_state = _cache_state(payload)
     for window_name, window_seconds in WINDOW_SECONDS.items():
         raw_window = payload.get(window_name)
         if not isinstance(raw_window, dict):
@@ -56,10 +57,21 @@ def normalize_codex_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
                 by_project=runtime_by_project,
                 by_model=_model_aggregates(runtime_by_project, runtime_total),
             ),
-            cache_state="live",
-            stale=False,
+            cache_state=cache_state,
+            stale=cache_state == "stale",
         )
-    return NormalizedSnapshot(source="codex", sampled_at=sampled_at, windows=windows)
+    warnings = ()
+    if cache_state == "stale":
+        warnings = ("codex rate-limit telemetry is stale",)
+    elif cache_state == "cached":
+        warnings = ("codex rate-limit telemetry is cached",)
+    return NormalizedSnapshot(source="codex", sampled_at=sampled_at, windows=windows, warnings=warnings)
+
+def _cache_state(payload: dict[str, Any]) -> str:
+    state = payload.get("cache_state")
+    if state in {"live", "cached", "stale", "unknown"}:
+        return str(state)
+    return "stale" if payload.get("stale") else "live"
 
 
 def scan_codex_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnapshot:
