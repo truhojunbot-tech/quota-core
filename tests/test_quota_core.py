@@ -944,7 +944,7 @@ priority: 3
 
     def test_dashboard_renders_claude_session_report(self):
         report = build_empty_session_report(generated_at=1770000000)
-        report["totals"].update({"total_tokens": 300, "input_tokens": 10, "output_tokens": 80, "cache_read_input_tokens": 90, "cache_creation_input_tokens": 120, "cache_hit_pct": 42.9})
+        report["totals"].update({"total_tokens": 300, "input_tokens": 10, "output_tokens": 80, "cache_read_input_tokens": 90, "cache_creation_input_tokens": 120, "cache_hit_pct": 42.9, "active_seconds": 3660})
         report["by_project"] = [{"name": "demo-project", "display_name": "demo-project", "total_tokens": 300, "share_pct": 100.0}]
         report["expensive_prompts"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "api_calls": 3, "prompt_variants": 2}]
         report["cache_breaks"] = [{"project": "demo-project", "prompt_preview": "cache prompt", "tokens": 120, "api_calls": 2, "prompt_variants": 2}]
@@ -952,14 +952,20 @@ priority: 3
         page = render_page([snapshot])
         self.assertIn("Claude Sessions", page)
         self.assertIn("demo-project", page)
-        self.assertIn("Action Signals", page)
-        self.assertIn("Cut first: demo-project · expensive prompt", page)
+        self.assertIn("First Cut", page)
+        self.assertIn("demo-project · expensive prompt", page)
         self.assertIn("100.0% of session · 3 calls · 2 prompts", page)
-        self.assertIn("Cache break hotspot: demo-project · cache prompt", page)
+        self.assertIn("Cache Hotspot", page)
+        self.assertIn("demo-project · cache prompt", page)
         self.assertIn("100.0% of cache create · 120", page)
+        self.assertIn("Blast Radius", page)
+        self.assertIn("active 1h 1m", page)
+        self.assertIn("Fresh-cache churn", page)
         self.assertIn("expensive prompt", page)
+        self.assertIn("Prompt Families", page)
         self.assertIn("300 · 3 calls · 2 prompts", page)
         self.assertIn("cache prompt", page)
+        self.assertIn("Fresh Cache Creates", page)
         self.assertIn("120 · 2 calls · 2 prompts", page)
 
 

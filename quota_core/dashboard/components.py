@@ -199,8 +199,7 @@ def claude_session_panel(providers: tuple[ProviderDashboard, ...]) -> str:
     window = report.get("window", {}) if isinstance(report.get("window"), dict) else {}
     blocks = [
         session_metric("Total", compact_number(int(totals.get("total_tokens") or 0))),
-        session_metric("Input", compact_number(int(totals.get("input_tokens") or 0))),
-        session_metric("Output", compact_number(int(totals.get("output_tokens") or 0))),
+        session_metric("Active", format_duration(int(totals.get("active_seconds") or 0))),
         session_metric("Cache Read", compact_number(int(totals.get("cache_read_input_tokens") or 0))),
         session_metric("Cache Create", compact_number(int(totals.get("cache_creation_input_tokens") or 0))),
         session_metric("Cache Hit", f'{float(totals.get("cache_hit_pct") or 0):.1f}%'),
@@ -208,11 +207,8 @@ def claude_session_panel(providers: tuple[ProviderDashboard, ...]) -> str:
     sections = [
         f'<div class="session-metrics">{"".join(blocks)}</div>',
         f'<p class="panel-note">window: {html.escape(str(window.get("name") or "unknown"))} · {html.escape(str(report.get("cache_state") or "unknown"))}</p>',
-        session_insight_rows(report),
-        session_rows("Projects", report.get("by_project", [])),
-        session_rows("Subagents", report.get("by_subagent", [])),
-        session_rows("Skills", report.get("by_skill", [])),
-        session_rows("Slash Commands", report.get("by_slash_command", [])),
+        session_decision_panel(report),
+        session_rows("Top Projects", report.get("by_project", []), max_rows=4),
         expensive_prompt_rows(report.get("expensive_prompts", [])),
         cache_break_rows(report.get("cache_breaks", [])),
     ]
@@ -223,11 +219,11 @@ def session_metric(label: str, value: str) -> str:
     return f'<div class="session-metric"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
 
 
-def session_rows(title: str, rows: object) -> str:
+def session_rows(title: str, rows: object, *, max_rows: int = 6) -> str:
     if not isinstance(rows, list) or not rows:
         return ""
     items = []
-    for row in rows[:6]:
+    for row in rows[:max_rows]:
         if not isinstance(row, dict):
             continue
         name = str(row.get("display_name") or row.get("name") or "unknown")
@@ -237,13 +233,13 @@ def session_rows(title: str, rows: object) -> str:
     return f'<article class="session-card"><h3>{html.escape(title)}</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
-def session_insight_rows(report: dict[str, object]) -> str:
+def session_decision_panel(report: dict[str, object]) -> str:
     totals = report.get("totals", {}) if isinstance(report.get("totals"), dict) else {}
     total_tokens = int(totals.get("total_tokens") or 0)
     cache_read = int(totals.get("cache_read_input_tokens") or 0)
     cache_create = int(totals.get("cache_creation_input_tokens") or 0)
     cache_hit = float(totals.get("cache_hit_pct") or 0)
-    items = []
+    cards = []
     expensive = first_dict(report.get("expensive_prompts"))
     if expensive:
         label = prompt_row_label(expensive)
@@ -253,30 +249,51 @@ def session_insight_rows(report: dict[str, object]) -> str:
         detail = f"{pct(tokens, total_tokens)} of session · {calls} calls"
         if variants > 1:
             detail += f" · {variants} prompts"
-        items.append(f'<li><span>Cut first: {html.escape(label)}</span><strong>{html.escape(detail)}</strong></li>')
+        cards.append(signal_card("First Cut", label, detail, "Throttle or dedupe this loop first."))
     cache_break = first_dict(report.get("cache_breaks"))
     if cache_break:
         label = prompt_row_label(cache_break)
         tokens = int(cache_break.get("tokens") or 0)
         detail = f"{pct(tokens, cache_create)} of cache create · {html.escape(compact_number(tokens))}"
-        items.append(f'<li><span>Cache break hotspot: {html.escape(label)}</span><strong>{html.escape(detail)}</strong></li>')
+        cards.append(signal_card("Cache Hotspot", label, detail, "Stabilize this prompt family if cache-create spikes."))
     if cache_read or cache_create:
         if cache_hit >= 90 and cache_read > cache_create * 5:
-            label = "Mostly cached-context burn, not fresh prompt churn"
+            label = "Cached-context burn"
+            action = "Cache is working; reduce context size or call frequency."
         elif cache_create > cache_read:
-            label = "Cache creation dominates; prompts are changing too often"
+            label = "Fresh-cache churn"
+            action = "Prompt shape is moving too often; stabilize system/context blocks."
         else:
-            label = "Cache posture is mixed; inspect fresh-create hotspots"
+            label = "Mixed cache posture"
+            action = "Inspect cache-create hotspots before tuning context size."
         detail = f"{compact_number(cache_read)} read / {compact_number(cache_create)} create · {cache_hit:.1f}% hit"
-        items.append(f'<li><span>{html.escape(label)}</span><strong>{html.escape(detail)}</strong></li>')
-    return f'<article class="session-card session-card-wide"><h3>Action Signals</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+        cards.append(signal_card("Cache Posture", label, detail, action))
+    top_project = first_dict(report.get("by_project"))
+    if top_project:
+        name = str(top_project.get("display_name") or top_project.get("name") or "unknown")
+        share = float(top_project.get("share_pct") or 0)
+        tokens = compact_number(int(top_project.get("total_tokens") or 0))
+        active = format_duration(int(totals.get("active_seconds") or 0))
+        cards.append(signal_card("Blast Radius", name, f"{share:.1f}% · {tokens} · active {active}", "Focus quota controls on this project first."))
+    return f'<section class="session-signals">{"".join(cards)}</section>' if cards else ""
+
+
+def signal_card(title: str, value: str, detail: str, action: str) -> str:
+    return (
+        '<article class="session-signal">'
+        f'<h3>{html.escape(title)}</h3>'
+        f'<strong>{html.escape(value)}</strong>'
+        f'<span>{html.escape(detail)}</span>'
+        f'<p>{html.escape(action)}</p>'
+        '</article>'
+    )
 
 
 def expensive_prompt_rows(rows: object) -> str:
     if not isinstance(rows, list) or not rows:
         return ""
     items = []
-    for row in rows[:5]:
+    for row in rows[:4]:
         if not isinstance(row, dict):
             continue
         preview = str(row.get("prompt_preview") or row.get("prompt_hash") or "redacted")
@@ -287,14 +304,14 @@ def expensive_prompt_rows(rows: object) -> str:
         variant_text = f" · {variants} prompts" if variants > 1 else ""
         right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
         items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
-    return f'<article class="session-card session-card-wide"><h3>Expensive Prompts</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+    return f'<article class="session-card"><h3>Prompt Families</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
 def cache_break_rows(rows: object) -> str:
     if not isinstance(rows, list) or not rows:
         return ""
     items = []
-    for row in rows[:5]:
+    for row in rows[:4]:
         if not isinstance(row, dict):
             continue
         preview = str(row.get("prompt_preview") or row.get("reason") or row.get("prompt_hash") or "cache break")
@@ -305,7 +322,7 @@ def cache_break_rows(rows: object) -> str:
         variant_text = f" · {variants} prompts" if variants > 1 else ""
         right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
         items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
-    return f'<article class="session-card session-card-wide"><h3>Cache Breaks</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+    return f'<article class="session-card"><h3>Fresh Cache Creates</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
 def first_dict(rows: object) -> dict[str, object] | None:
@@ -322,6 +339,17 @@ def prompt_row_label(row: dict[str, object]) -> str:
 
 def pct(value: int, total: int) -> str:
     return f"{value / total * 100:.1f}%" if total else "0.0%"
+
+
+def format_duration(seconds: int) -> str:
+    if seconds <= 0:
+        return "0m"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    remainder = minutes % 60
+    return f"{hours}h {remainder}m" if remainder else f"{hours}h"
 
 
 def time_series_panel(providers: tuple[ProviderDashboard, ...]) -> str:
@@ -929,19 +957,25 @@ main { max-width:1400px; margin:0 auto; padding:20px 24px; }
 .project-bar { height:8px; }
 .project-bar i { display:block; height:100%; background:var(--accent); position:relative; }
 .project-bar b { position:absolute; top:0; height:100%; }
-.runtime-project-list { display:grid; gap:6px; margin:10px 0 0; padding:0; list-style:none; }
-.runtime-project-list li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:baseline; font-size:11px; }
+.runtime-project-list { display:grid; gap:7px; margin:10px 0 0; padding:0; list-style:none; }
+.runtime-project-list li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:baseline; font-size:11px; }
 .runtime-project-list span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#fffaf1; font-weight:650; }
 .runtime-project-list strong { color:var(--muted); white-space:nowrap; font-weight:600; }
 .empty-list { margin:6px 0 0; color:var(--muted); font-size:11px; }
 .usage-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:20px; margin-top:8px; }
 .usage-card > strong { display:block; margin-bottom:8px; font-size:20px; color:#fff; }
-.session-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
-.session-metrics { grid-column:1 / -1; display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; }
+.session-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; align-items:start; }
+.session-metrics { grid-column:1 / -1; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:10px; }
 .session-metric, .session-card { background:var(--card2); border:1px solid var(--border-soft); border-radius:8px; padding:10px; min-width:0; }
 .session-metric span { display:block; color:var(--muted); font-size:11px; }
 .session-metric strong { display:block; margin-top:3px; color:#fffaf1; font-size:16px; }
 .session-card h3 { margin:0 0 8px; color:#fffaf1; font-size:12px; }
+.session-signals { grid-column:1 / -1; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.session-signal { background:linear-gradient(180deg,rgba(139,124,246,.12),rgba(17,19,25,.72)); border:1px solid rgba(139,124,246,.24); border-radius:8px; padding:12px; min-width:0; }
+.session-signal h3 { margin:0 0 8px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
+.session-signal strong { display:block; color:#fffaf1; font-size:13px; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.session-signal span { display:block; margin-top:6px; color:#d7d0c4; font-size:11px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.session-signal p { margin:8px 0 0; color:var(--muted); font-size:11px; line-height:1.35; }
 .session-card-wide { grid-column:span 2; }
 .timeline-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
 .timeline-card { background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:14px; min-width:0; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
@@ -979,6 +1013,6 @@ dd { margin:2px 0 0; color:#fffaf1; font-weight:650; overflow-wrap:anywhere; }
 .limit-watch { background:rgba(244,184,96,.15); color:#f4b860; }
 .limit-limited { background:rgba(251,113,133,.16); color:#fb7185; }
 .limit-unknown { background:rgba(148,163,184,.15); color:#94a3b8; }
-@media (max-width: 980px) { .overview-grid, .runtime-grid, .detail-grid, .usage-grid, .timeline-grid, .session-grid, .session-metrics { grid-template-columns:1fr; } .runtime-windows, .qc-quota-split { grid-template-columns:1fr; } .session-card-wide { grid-column:auto; } }
+@media (max-width: 980px) { .overview-grid, .runtime-grid, .detail-grid, .usage-grid, .timeline-grid, .session-grid, .session-metrics, .session-signals { grid-template-columns:1fr; } .runtime-windows, .qc-quota-split { grid-template-columns:1fr; } .session-card-wide { grid-column:auto; } }
 @media (max-width: 640px) { header { padding:14px 16px; } main { padding:16px; } .project-list li, .timeline-projects li { grid-template-columns:minmax(0,1fr); } .project-list strong { text-align:left; } .mini-sparkline { display:none; } dl { grid-template-columns:1fr; } }
 """.strip()
