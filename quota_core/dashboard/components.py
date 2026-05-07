@@ -247,7 +247,9 @@ def expensive_prompt_rows(rows: object) -> str:
         tokens = compact_number(int(row.get("total_tokens") or 0))
         project = str(row.get("project") or "unknown")
         calls = int(row.get("api_calls") or 0)
-        right = f"{tokens}{f' · {calls} calls' if calls else ''}"
+        variants = int(row.get("prompt_variants") or 0)
+        variant_text = f" · {variants} prompts" if variants > 1 else ""
+        right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
         items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
     return f'<article class="session-card session-card-wide"><h3>Expensive Prompts</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
@@ -263,7 +265,9 @@ def cache_break_rows(rows: object) -> str:
         project = str(row.get("project") or "unknown")
         tokens = compact_number(int(row.get("tokens") or 0))
         calls = int(row.get("api_calls") or 0)
-        right = f"{tokens}{f' · {calls} calls' if calls else ''}"
+        variants = int(row.get("prompt_variants") or 0)
+        variant_text = f" · {variants} prompts" if variants > 1 else ""
+        right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
         items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
     return f'<article class="session-card session-card-wide"><h3>Cache Breaks</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 

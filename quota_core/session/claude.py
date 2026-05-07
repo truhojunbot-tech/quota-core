@@ -138,8 +138,8 @@ class ClaudeSessionScanner:
             by_subagent=self._rows(self.by_subagent),
             by_skill=self._rows(self.by_skill),
             by_slash_command=self._rows(self.by_slash_command),
-            expensive_prompts=sorted(self.expensive_prompts.values(), key=lambda row: -int(row["total_tokens"]))[:20],
-            cache_breaks=sorted(self.cache_breaks.values(), key=lambda row: -int(row["tokens"]))[:20],
+            expensive_prompts=sorted(diagnostic_rows(self.expensive_prompts), key=lambda row: -int(row["total_tokens"]))[:20],
+            cache_breaks=sorted(diagnostic_rows(self.cache_breaks), key=lambda row: -int(row["tokens"]))[:20],
             runtime_attribution=self._runtime_attribution(),
             reconciliation=self._reconciliation(),
             warnings=self.warnings,
@@ -230,12 +230,15 @@ class ClaudeSessionScanner:
         total = usage_total(usage)
         if context.text:
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
-            row = self.expensive_prompts.get(prompt_hash)
+            family_key = prompt_family_key(project, context.text, prompt_hash)
+            row = self.expensive_prompts.get(family_key)
             if row is None:
                 row = {
                     "project": project,
                     "prompt_preview": preview,
                     "prompt_hash": prompt_hash,
+                    "prompt_family": family_key,
+                    "_prompt_hashes": set(),
                     "timestamp": timestamp,
                     "total_tokens": 0,
                     "api_calls": 0,
@@ -244,12 +247,14 @@ class ClaudeSessionScanner:
                     "skill": context.skill,
                     "redaction": self.query.redaction,
                 }
-                self.expensive_prompts[prompt_hash] = row
+                self.expensive_prompts[family_key] = row
+            row["_prompt_hashes"].add(prompt_hash)
             row["total_tokens"] = int(row["total_tokens"]) + total
             row["api_calls"] = int(row["api_calls"]) + 1
         if usage["cache_creation_input_tokens"] > 0 and usage["cache_creation_input_tokens"] >= usage["cache_read_input_tokens"]:
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
-            row = self.cache_breaks.get(prompt_hash)
+            family_key = prompt_family_key(project, context.text, prompt_hash)
+            row = self.cache_breaks.get(family_key)
             if row is None:
                 row = {
                     "project": project,
@@ -258,9 +263,12 @@ class ClaudeSessionScanner:
                     "tokens": 0,
                     "api_calls": 0,
                     "prompt_hash": prompt_hash,
+                    "prompt_family": family_key,
+                    "_prompt_hashes": set(),
                     "prompt_preview": preview,
                 }
-                self.cache_breaks[prompt_hash] = row
+                self.cache_breaks[family_key] = row
+            row["_prompt_hashes"].add(prompt_hash)
             row["tokens"] = int(row["tokens"]) + usage["cache_creation_input_tokens"]
             row["api_calls"] = int(row["api_calls"]) + 1
 
@@ -440,6 +448,16 @@ def aggregate_row(name: str, aggregate: Aggregate, total_tokens: int) -> dict[st
     }
 
 
+def diagnostic_rows(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for row in rows.values():
+        cleaned = dict(row)
+        hashes = cleaned.pop("_prompt_hashes", set())
+        cleaned["prompt_variants"] = len(hashes) if isinstance(hashes, set) else 1
+        result.append(cleaned)
+    return result
+
+
 def redact_prompt(prompt: str, redaction: str) -> tuple[str, str]:
     digest = "sha256:" + hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()
     normalized = normalize_prompt_preview(prompt)
@@ -453,6 +471,8 @@ def redact_prompt(prompt: str, redaction: str) -> tuple[str, str]:
 
 def normalize_prompt_preview(prompt: str) -> str:
     compact = " ".join(prompt.split())
+    if compact == "Poll agent_crew for next task and execute it.":
+        return "Agent Crew task polling"
     if compact.startswith("=== AGENT_CREW TASK ==="):
         task_id = agent_crew_value(prompt, compact, "task_id")
         task_type = agent_crew_value(prompt, compact, "task_type")
@@ -462,8 +482,6 @@ def normalize_prompt_preview(prompt: str) -> str:
             label += f" {task_type}"
         if branch:
             label += f" {branch}"
-        if task_id:
-            label += f" ({task_id})"
         return label
     channel_marker = '<channel source="plugin:' + "tele" + "gram:" + "tele" + "gram" + '"'
     if compact.startswith(channel_marker):
@@ -471,6 +489,17 @@ def normalize_prompt_preview(prompt: str) -> str:
         label = "Tele" + "gram"
         return f"{label}: {message}" if message else f"{label} message"
     return compact
+
+
+def prompt_family_key(project: str, prompt: str, prompt_hash: str) -> str:
+    compact = " ".join(prompt.split())
+    if compact == "Poll agent_crew for next task and execute it.":
+        return f"{project}:agent-crew:poll"
+    if compact.startswith("=== AGENT_CREW TASK ==="):
+        task_type = agent_crew_value(prompt, compact, "task_type") or "task"
+        branch = agent_crew_value(prompt, compact, "branch") or "no-branch"
+        return f"{project}:agent-crew:{task_type}:{branch}"
+    return f"{project}:{prompt_hash}"
 
 
 def agent_crew_value(prompt: str, compact: str, field: str) -> str | None:
