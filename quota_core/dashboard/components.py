@@ -245,7 +245,10 @@ def expensive_prompt_rows(rows: object) -> str:
             continue
         preview = str(row.get("prompt_preview") or row.get("prompt_hash") or "redacted")
         tokens = compact_number(int(row.get("total_tokens") or 0))
-        items.append(f'<li><span>{html.escape(preview)}</span><strong>{html.escape(tokens)}</strong></li>')
+        project = str(row.get("project") or "unknown")
+        calls = int(row.get("api_calls") or 0)
+        right = f"{tokens}{f' · {calls} calls' if calls else ''}"
+        items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
     return f'<article class="session-card session-card-wide"><h3>Expensive Prompts</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
@@ -256,9 +259,12 @@ def cache_break_rows(rows: object) -> str:
     for row in rows[:5]:
         if not isinstance(row, dict):
             continue
-        reason = str(row.get("reason") or "cache break")
+        preview = str(row.get("prompt_preview") or row.get("reason") or row.get("prompt_hash") or "cache break")
+        project = str(row.get("project") or "unknown")
         tokens = compact_number(int(row.get("tokens") or 0))
-        items.append(f'<li><span>{html.escape(reason)}</span><strong>{html.escape(tokens)}</strong></li>')
+        calls = int(row.get("api_calls") or 0)
+        right = f"{tokens}{f' · {calls} calls' if calls else ''}"
+        items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
     return f'<article class="session-card session-card-wide"><h3>Cache Breaks</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 

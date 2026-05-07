@@ -15,6 +15,7 @@ from quota_core.adapters.gemini import normalize_gemini_usage
 from quota_core.config import config_from_mapping, load_config, validate_config, write_default_config
 from quota_core.runtime import runtime_env
 from quota_core.session import analyze_claude_sessions, build_empty_session_report, normalize_session_report_query, validate_session_report_dict
+from quota_core.session.claude import normalize_prompt_preview
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
 from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
 from quota_core.dashboard.renderer import render_page
@@ -832,16 +833,83 @@ class SessionReportContractTests(unittest.TestCase):
         self.assertIn("/investigate why cache", report["expensive_prompts"][0]["prompt_preview"])
         self.assertEqual(report["reconciliation"]["quota_scanner_total_tokens"], 120)
 
+    def test_claude_session_parser_aggregates_prompt_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "demo-project"
+            project_dir.mkdir()
+            prompt = """
+=== AGENT_CREW TASK ===
+task_id: impl-abc123
+task_type: implement
+branch: main
+priority: 3
+context: {"instructions": "Write tests first"}
+""".strip()
+            rows = [
+                {"timestamp": "2026-05-07T00:00:00Z", "message": {"role": "user", "content": prompt}},
+                {
+                    "timestamp": "2026-05-07T00:00:01Z",
+                    "requestId": "req-1",
+                    "message": {
+                        "model": "claude-sonnet-4-6",
+                        "usage": {
+                            "input_tokens": 10,
+                            "output_tokens": 20,
+                            "cache_read_input_tokens": 0,
+                            "cache_creation_input_tokens": 40,
+                        },
+                    },
+                },
+                {
+                    "timestamp": "2026-05-07T00:00:02Z",
+                    "requestId": "req-2",
+                    "message": {
+                        "model": "claude-sonnet-4-6",
+                        "usage": {
+                            "input_tokens": 1,
+                            "output_tokens": 2,
+                            "cache_read_input_tokens": 0,
+                            "cache_creation_input_tokens": 4,
+                        },
+                    },
+                },
+            ]
+            (project_dir / "session.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+            report = analyze_claude_sessions([temp_dir], since="24h", redaction="preview", now=1778169600)
+
+        self.assertEqual(len(report["expensive_prompts"]), 1)
+        self.assertEqual(report["expensive_prompts"][0]["total_tokens"], 77)
+        self.assertEqual(report["expensive_prompts"][0]["api_calls"], 2)
+        self.assertEqual(report["expensive_prompts"][0]["prompt_preview"], "Agent Crew implement main (impl-abc123)")
+        self.assertEqual(len(report["cache_breaks"]), 1)
+        self.assertEqual(report["cache_breaks"][0]["tokens"], 44)
+        self.assertEqual(report["cache_breaks"][0]["api_calls"], 2)
+
+    def test_claude_session_prompt_preview_handles_empty_agent_crew_branch(self):
+        prompt = """
+=== AGENT_CREW TASK ===
+task_id: claude-b8c39e06
+task_type: discuss
+branch:
+priority: 3
+""".strip()
+        self.assertEqual(normalize_prompt_preview(prompt), "Agent Crew discuss (claude-b8c39e06)")
+
     def test_dashboard_renders_claude_session_report(self):
         report = build_empty_session_report(generated_at=1770000000)
         report["totals"].update({"total_tokens": 300, "input_tokens": 100, "output_tokens": 80, "cache_read_input_tokens": 90, "cache_creation_input_tokens": 30, "cache_hit_pct": 75.0})
         report["by_project"] = [{"name": "demo-project", "display_name": "demo-project", "total_tokens": 300, "share_pct": 100.0}]
-        report["expensive_prompts"] = [{"prompt_preview": "expensive prompt", "total_tokens": 300}]
+        report["expensive_prompts"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "api_calls": 3}]
+        report["cache_breaks"] = [{"project": "demo-project", "prompt_preview": "cache prompt", "tokens": 120, "api_calls": 2}]
         snapshot = NormalizedSnapshot(source="claude", sampled_at=1770000000, history={"claude_session_report": report})
         page = render_page([snapshot])
         self.assertIn("Claude Sessions", page)
         self.assertIn("demo-project", page)
         self.assertIn("expensive prompt", page)
+        self.assertIn("300 · 3 calls", page)
+        self.assertIn("cache prompt", page)
+        self.assertIn("120 · 2 calls", page)
 
 
 class PublicSplitGuardTests(unittest.TestCase):

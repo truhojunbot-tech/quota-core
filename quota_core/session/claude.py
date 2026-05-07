@@ -115,8 +115,8 @@ class ClaudeSessionScanner:
         self.by_skill: dict[str, Aggregate] = defaultdict(Aggregate)
         self.by_slash_command: dict[str, Aggregate] = defaultdict(Aggregate)
         self.runtime_by_class: dict[str, Aggregate] = defaultdict(Aggregate)
-        self.expensive_prompts: list[dict[str, Any]] = []
-        self.cache_breaks: list[dict[str, Any]] = []
+        self.expensive_prompts: dict[str, dict[str, Any]] = {}
+        self.cache_breaks: dict[str, dict[str, Any]] = {}
         self.seen_api_keys: set[str] = set()
         self.duplicate_records = 0
         self.skipped_oversized_files = 0
@@ -138,8 +138,8 @@ class ClaudeSessionScanner:
             by_subagent=self._rows(self.by_subagent),
             by_skill=self._rows(self.by_skill),
             by_slash_command=self._rows(self.by_slash_command),
-            expensive_prompts=sorted(self.expensive_prompts, key=lambda row: -int(row["total_tokens"]))[:20],
-            cache_breaks=sorted(self.cache_breaks, key=lambda row: -int(row["tokens"]))[:20],
+            expensive_prompts=sorted(self.expensive_prompts.values(), key=lambda row: -int(row["total_tokens"]))[:20],
+            cache_breaks=sorted(self.cache_breaks.values(), key=lambda row: -int(row["tokens"]))[:20],
             runtime_attribution=self._runtime_attribution(),
             reconciliation=self._reconciliation(),
             warnings=self.warnings,
@@ -230,32 +230,39 @@ class ClaudeSessionScanner:
         total = usage_total(usage)
         if context.text:
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
-            self.expensive_prompts.append(
-                {
+            row = self.expensive_prompts.get(prompt_hash)
+            if row is None:
+                row = {
                     "project": project,
                     "prompt_preview": preview,
                     "prompt_hash": prompt_hash,
                     "timestamp": timestamp,
-                    "total_tokens": total,
-                    "api_calls": 1,
+                    "total_tokens": 0,
+                    "api_calls": 0,
                     "subagent_type": context.subagent_type,
                     "slash_command": context.slash_command,
                     "skill": context.skill,
                     "redaction": self.query.redaction,
                 }
-            )
+                self.expensive_prompts[prompt_hash] = row
+            row["total_tokens"] = int(row["total_tokens"]) + total
+            row["api_calls"] = int(row["api_calls"]) + 1
         if usage["cache_creation_input_tokens"] > 0 and usage["cache_creation_input_tokens"] >= usage["cache_read_input_tokens"]:
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
-            self.cache_breaks.append(
-                {
+            row = self.cache_breaks.get(prompt_hash)
+            if row is None:
+                row = {
                     "project": project,
                     "timestamp": timestamp,
                     "reason": "cache_creation_spike_after_prompt_change",
-                    "tokens": usage["cache_creation_input_tokens"],
+                    "tokens": 0,
+                    "api_calls": 0,
                     "prompt_hash": prompt_hash,
                     "prompt_preview": preview,
                 }
-            )
+                self.cache_breaks[prompt_hash] = row
+            row["tokens"] = int(row["tokens"]) + usage["cache_creation_input_tokens"]
+            row["api_calls"] = int(row["api_calls"]) + 1
 
     def _totals(self) -> dict[str, Any]:
         cache_total = self.totals.cache_read_input_tokens + self.totals.cache_creation_input_tokens
@@ -435,12 +442,50 @@ def aggregate_row(name: str, aggregate: Aggregate, total_tokens: int) -> dict[st
 
 def redact_prompt(prompt: str, redaction: str) -> tuple[str, str]:
     digest = "sha256:" + hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()
+    normalized = normalize_prompt_preview(prompt)
     if redaction == "none":
         return prompt, digest
     if redaction == "summary":
-        return " ".join(prompt.split()[:12]), digest
-    compact = " ".join(prompt.split())
+        return " ".join(normalized.split()[:12]), digest
+    compact = " ".join(normalized.split())
     return (compact[:157] + "...") if len(compact) > 160 else compact, digest
+
+
+def normalize_prompt_preview(prompt: str) -> str:
+    compact = " ".join(prompt.split())
+    if compact.startswith("=== AGENT_CREW TASK ==="):
+        task_id = agent_crew_value(prompt, compact, "task_id")
+        task_type = agent_crew_value(prompt, compact, "task_type")
+        branch = agent_crew_value(prompt, compact, "branch")
+        label = "Agent Crew"
+        if task_type:
+            label += f" {task_type}"
+        if branch:
+            label += f" {branch}"
+        if task_id:
+            label += f" ({task_id})"
+        return label
+    channel_marker = '<channel source="plugin:' + "tele" + "gram:" + "tele" + "gram" + '"'
+    if compact.startswith(channel_marker):
+        message = regex_group(r">\s*(.*?)\s*</channel>", compact)
+        label = "Tele" + "gram"
+        return f"{label}: {message}" if message else f"{label} message"
+    return compact
+
+
+def agent_crew_value(prompt: str, compact: str, field: str) -> str | None:
+    line_match = re.search(rf"(?m)^[ \t]*{re.escape(field)}:[ \t]*(.*?)[ \t]*$", prompt)
+    value = line_match.group(1).strip() if line_match else None
+    if not value:
+        value = regex_group(rf"\b{re.escape(field)}:\s*([^\s]+)", compact)
+    if value in {"priority:", "context:", "description:", "result_url:"}:
+        return None
+    return value
+
+
+def regex_group(pattern: str, value: str) -> str | None:
+    match = re.search(pattern, value)
+    return match.group(1) if match else None
 
 
 def active_seconds(timestamps: list[int], gap_seconds: int) -> int:
