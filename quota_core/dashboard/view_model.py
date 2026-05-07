@@ -118,7 +118,7 @@ def _dashboard_window(name: str, window: SnapshotWindow) -> DashboardWindow:
         kind = "usage"
     else:
         kind = "local"
-    role: WindowRole = "weekly" if name == "seven_day" else "short" if name in {"five_hour", "current_quota", "today"} else "detail"
+    role: WindowRole = "weekly" if name in {"seven_day", "current_week", "current_week_sonnet"} else "short" if name in {"five_hour", "current_quota", "current_session", "today"} else "detail"
     return DashboardWindow(name=name, window=window, kind=kind, role=role)
 
 
@@ -126,16 +126,16 @@ def _comparison_window_names(windows: dict[str, DashboardWindow]) -> tuple[str, 
     short_name = next(
         (
             name
-            for name in ("five_hour", "current_quota", "today")
+            for name in ("current_session", "five_hour", "current_quota", "today")
             if name in windows and _is_report_window(windows[name])
         ),
         None,
     )
-    has_week = "seven_day" in windows and windows["seven_day"].is_quota
-    if short_name and has_week:
-        return (short_name, "seven_day")
-    if has_week:
-        return ("seven_day",)
+    week_name = next((name for name in ("current_week", "seven_day") if name in windows and windows[name].is_quota), None)
+    if short_name and week_name:
+        return (short_name, week_name)
+    if week_name:
+        return (week_name,)
     return (short_name,) if short_name else ()
 
 
@@ -144,7 +144,7 @@ def _is_report_window(window: DashboardWindow) -> bool:
 
 
 def _primary_window(windows: tuple[DashboardWindow, ...]) -> DashboardWindow | None:
-    quota_windows = [window for window in windows if window.is_quota and window.name in {"five_hour", "current_quota", "seven_day", "today"}]
+    quota_windows = [window for window in windows if window.is_quota and window.name in {"current_session", "current_week", "current_week_sonnet", "five_hour", "current_quota", "seven_day", "today"}]
     if quota_windows:
         return max(quota_windows, key=lambda item: item.window.utilization)
     for window in windows:

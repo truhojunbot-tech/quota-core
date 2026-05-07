@@ -1,15 +1,16 @@
-"""FastAPI dashboard app factory skeleton."""
+"""FastAPI dashboard app factory."""
 
 from __future__ import annotations
 
+from typing import Any, Callable
+
 from quota_core.session import build_empty_session_report
 
+SessionReportProvider = Callable[..., dict[str, Any]]
 
-def create_app():
-    """Create the dashboard app.
 
-    FastAPI wiring will be implemented when dashboard extraction begins.
-    """
+def create_app(*, claude_session_report_provider: SessionReportProvider | None = None):
+    """Create the dashboard app."""
 
     try:
         from fastapi import FastAPI
@@ -24,6 +25,8 @@ def create_app():
 
     @app.get("/api/claude_session_report")
     def claude_session_report(window: str | None = None, since: str | None = None, redaction: str | None = None):
+        if claude_session_report_provider is not None:
+            return claude_session_report_provider(window=window, since=since, redaction=redaction)
         return build_empty_session_report(window=window, since=since, redaction=redaction)
 
     return app

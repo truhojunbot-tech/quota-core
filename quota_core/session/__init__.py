@@ -1,5 +1,6 @@
 """Public Claude session analytics contract helpers."""
 
+from .claude import analyze_claude_sessions
 from .report import (
     SessionReportQuery,
     SessionReportWindow,
@@ -10,6 +11,7 @@ from .report import (
 )
 
 __all__ = [
+    "analyze_claude_sessions",
     "SessionReportQuery",
     "SessionReportWindow",
     "build_empty_session_report",

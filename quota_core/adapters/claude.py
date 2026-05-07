@@ -18,8 +18,12 @@ from quota_core.snapshot import (
 WINDOW_SECONDS = {
     "five_hour": 5 * 3600,
     "seven_day": 7 * 24 * 3600,
+    "current_session": 5 * 3600,
+    "current_week": 7 * 24 * 3600,
+    "current_week_sonnet": 7 * 24 * 3600,
 }
 MAX_LOCAL_SCAN_FILE_BYTES = 50 * 1024 * 1024
+VALID_CACHE_STATES = {"live", "cached", "stale", "unknown"}
 
 
 def normalize_claude_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
@@ -31,10 +35,11 @@ def normalize_claude_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
         return NormalizedSnapshot(source="claude", sampled_at=sampled_at, errors=(str(error),))
 
     windows: dict[str, SnapshotWindow] = {}
-    for window_name, window_seconds in WINDOW_SECONDS.items():
+    for window_name, default_window_seconds in WINDOW_SECONDS.items():
         raw_window = payload.get(window_name)
         if not isinstance(raw_window, dict):
             continue
+        window_seconds = int(raw_window.get("window_seconds") or default_window_seconds)
         resets_at = _optional_int(raw_window.get("resets_at"))
         window_start = resets_at - window_seconds if resets_at is not None else None
         window_end = min(sampled_at, resets_at) if sampled_at and resets_at is not None else sampled_at or resets_at
@@ -43,6 +48,7 @@ def normalize_claude_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
         runtime_requests = int(raw_window.get("runtime_requests") or 0)
         by_project = _project_aggregates(raw_window.get("by_project", {}), total_tokens)
         runtime_by_project = _project_aggregates(raw_window.get("runtime_by_project", {}), runtime_total)
+        cache_state = _cache_state(raw_window, payload)
         windows[window_name] = SnapshotWindow(
             window_start=window_start,
             window_end=window_end,
@@ -58,8 +64,8 @@ def normalize_claude_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
                 by_project=runtime_by_project,
                 by_model=_model_aggregates(runtime_by_project, runtime_total),
             ),
-            cache_state="live",
-            stale=False,
+            cache_state=cache_state,  # type: ignore[arg-type]
+            stale=cache_state == "stale",
         )
     return NormalizedSnapshot(source="claude", sampled_at=sampled_at, windows=windows)
 
@@ -171,6 +177,15 @@ def _project_aggregates(raw: Any, total_tokens: int) -> dict[str, AggregateBreak
             model_requests=model_requests,
         )
     return finalize_project_aggregates(aggregates, total_tokens)
+
+
+def _cache_state(raw_window: dict[str, Any], payload: dict[str, Any]) -> str:
+    state = raw_window.get("cache_state") or payload.get("cache_state")
+    if state in VALID_CACHE_STATES:
+        return str(state)
+    if raw_window.get("stale") or payload.get("stale"):
+        return "stale"
+    return "live"
 
 
 def _model_aggregates(projects: dict[str, AggregateBreakdown], total_tokens: int) -> dict[str, AggregateBreakdown]:
