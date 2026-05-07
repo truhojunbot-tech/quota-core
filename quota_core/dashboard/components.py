@@ -208,6 +208,7 @@ def claude_session_panel(providers: tuple[ProviderDashboard, ...]) -> str:
     sections = [
         f'<div class="session-metrics">{"".join(blocks)}</div>',
         f'<p class="panel-note">window: {html.escape(str(window.get("name") or "unknown"))} · {html.escape(str(report.get("cache_state") or "unknown"))}</p>',
+        session_insight_rows(report),
         session_rows("Projects", report.get("by_project", [])),
         session_rows("Subagents", report.get("by_subagent", [])),
         session_rows("Skills", report.get("by_skill", [])),
@@ -234,6 +235,41 @@ def session_rows(title: str, rows: object) -> str:
         tokens = compact_number(int(row.get("total_tokens") or 0))
         items.append(f'<li><span>{html.escape(name)}</span><strong>{share:.1f}% · {html.escape(tokens)}</strong></li>')
     return f'<article class="session-card"><h3>{html.escape(title)}</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def session_insight_rows(report: dict[str, object]) -> str:
+    totals = report.get("totals", {}) if isinstance(report.get("totals"), dict) else {}
+    total_tokens = int(totals.get("total_tokens") or 0)
+    cache_read = int(totals.get("cache_read_input_tokens") or 0)
+    cache_create = int(totals.get("cache_creation_input_tokens") or 0)
+    cache_hit = float(totals.get("cache_hit_pct") or 0)
+    items = []
+    expensive = first_dict(report.get("expensive_prompts"))
+    if expensive:
+        label = prompt_row_label(expensive)
+        tokens = int(expensive.get("total_tokens") or 0)
+        calls = int(expensive.get("api_calls") or 0)
+        variants = int(expensive.get("prompt_variants") or 0)
+        detail = f"{pct(tokens, total_tokens)} of session · {calls} calls"
+        if variants > 1:
+            detail += f" · {variants} prompts"
+        items.append(f'<li><span>Cut first: {html.escape(label)}</span><strong>{html.escape(detail)}</strong></li>')
+    cache_break = first_dict(report.get("cache_breaks"))
+    if cache_break:
+        label = prompt_row_label(cache_break)
+        tokens = int(cache_break.get("tokens") or 0)
+        detail = f"{pct(tokens, cache_create)} of cache create · {html.escape(compact_number(tokens))}"
+        items.append(f'<li><span>Cache break hotspot: {html.escape(label)}</span><strong>{html.escape(detail)}</strong></li>')
+    if cache_read or cache_create:
+        if cache_hit >= 90 and cache_read > cache_create * 5:
+            label = "Mostly cached-context burn, not fresh prompt churn"
+        elif cache_create > cache_read:
+            label = "Cache creation dominates; prompts are changing too often"
+        else:
+            label = "Cache posture is mixed; inspect fresh-create hotspots"
+        detail = f"{compact_number(cache_read)} read / {compact_number(cache_create)} create · {cache_hit:.1f}% hit"
+        items.append(f'<li><span>{html.escape(label)}</span><strong>{html.escape(detail)}</strong></li>')
+    return f'<article class="session-card session-card-wide"><h3>Action Signals</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
 def expensive_prompt_rows(rows: object) -> str:
@@ -270,6 +306,22 @@ def cache_break_rows(rows: object) -> str:
         right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
         items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
     return f'<article class="session-card session-card-wide"><h3>Cache Breaks</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def first_dict(rows: object) -> dict[str, object] | None:
+    if not isinstance(rows, list):
+        return None
+    return next((row for row in rows if isinstance(row, dict)), None)
+
+
+def prompt_row_label(row: dict[str, object]) -> str:
+    project = str(row.get("project") or "unknown")
+    preview = str(row.get("prompt_preview") or row.get("reason") or row.get("prompt_hash") or "unknown")
+    return f"{project} · {preview}"
+
+
+def pct(value: int, total: int) -> str:
+    return f"{value / total * 100:.1f}%" if total else "0.0%"
 
 
 def time_series_panel(providers: tuple[ProviderDashboard, ...]) -> str:
