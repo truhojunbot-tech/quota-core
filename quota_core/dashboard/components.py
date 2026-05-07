@@ -249,42 +249,72 @@ def session_decision_panel(report: dict[str, object]) -> str:
         detail = f"{pct(tokens, total_tokens)} of session · {calls} calls"
         if variants > 1:
             detail += f" · {variants} prompts"
-        cards.append(signal_card("First Cut", label, detail, "Throttle or dedupe this loop first."))
+        cards.append(
+            signal_card(
+                "Main Drain",
+                label,
+                detail,
+                "One prompt family is consuming the session.",
+                "Throttle, batch, or dedupe this loop first.",
+            )
+        )
     cache_break = first_dict(report.get("cache_breaks"))
     if cache_break:
         label = prompt_row_label(cache_break)
         tokens = int(cache_break.get("tokens") or 0)
         detail = f"{pct(tokens, cache_create)} of cache create · {html.escape(compact_number(tokens))}"
-        cards.append(signal_card("Cache Hotspot", label, detail, "Stabilize this prompt family if cache-create spikes."))
+        cards.append(
+            signal_card(
+                "Fresh Cache Hotspot",
+                label,
+                detail,
+                "This family creates new cache blocks instead of reusing old ones.",
+                "Stabilize the prompt shape and shared context.",
+            )
+        )
     if cache_read or cache_create:
         if cache_hit >= 90 and cache_read > cache_create * 5:
             label = "Cached-context burn"
-            action = "Cache is working; reduce context size or call frequency."
+            meaning = "Cache reuse is high, so the burn is mostly repeated context reads."
+            action = "Reduce context size or call frequency."
         elif cache_create > cache_read:
             label = "Fresh-cache churn"
+            meaning = "Fresh cache creation is larger than reuse."
             action = "Prompt shape is moving too often; stabilize system/context blocks."
         else:
             label = "Mixed cache posture"
+            meaning = "Both cache reuse and fresh creation matter."
             action = "Inspect cache-create hotspots before tuning context size."
         detail = f"{compact_number(cache_read)} read / {compact_number(cache_create)} create · {cache_hit:.1f}% hit"
-        cards.append(signal_card("Cache Posture", label, detail, action))
+        cards.append(signal_card("Cache Diagnosis", label, detail, meaning, action))
     top_project = first_dict(report.get("by_project"))
     if top_project:
         name = str(top_project.get("display_name") or top_project.get("name") or "unknown")
         share = float(top_project.get("share_pct") or 0)
         tokens = compact_number(int(top_project.get("total_tokens") or 0))
         active = format_duration(int(totals.get("active_seconds") or 0))
-        cards.append(signal_card("Blast Radius", name, f"{share:.1f}% · {tokens} · active {active}", "Focus quota controls on this project first."))
+        cards.append(
+            signal_card(
+                "Project Concentration",
+                name,
+                f"{share:.1f}% · {tokens} · active {active}",
+                "Quota risk is concentrated in one project.",
+                "Apply limits and alerts here before broad tuning.",
+            )
+        )
     return f'<section class="session-signals">{"".join(cards)}</section>' if cards else ""
 
 
-def signal_card(title: str, value: str, detail: str, action: str) -> str:
+def signal_card(title: str, value: str, impact: str, meaning: str, action: str) -> str:
     return (
         '<article class="session-signal">'
         f'<h3>{html.escape(title)}</h3>'
         f'<strong>{html.escape(value)}</strong>'
-        f'<span>{html.escape(detail)}</span>'
-        f'<p>{html.escape(action)}</p>'
+        '<dl>'
+        f'<dt>Impact</dt><dd>{html.escape(impact)}</dd>'
+        f'<dt>Meaning</dt><dd>{html.escape(meaning)}</dd>'
+        f'<dt>Next</dt><dd>{html.escape(action)}</dd>'
+        '</dl>'
         '</article>'
     )
 
@@ -961,6 +991,9 @@ main { max-width:1400px; margin:0 auto; padding:20px 24px; }
 .runtime-project-list li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:baseline; font-size:11px; }
 .runtime-project-list span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#fffaf1; font-weight:650; }
 .runtime-project-list strong { color:var(--muted); white-space:nowrap; font-weight:600; }
+.session-card .runtime-project-list li { align-items:start; }
+.session-card .runtime-project-list span { white-space:normal; overflow:visible; text-overflow:clip; line-height:1.35; }
+.session-card .runtime-project-list strong { padding-top:1px; }
 .empty-list { margin:6px 0 0; color:var(--muted); font-size:11px; }
 .usage-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:20px; margin-top:8px; }
 .usage-card > strong { display:block; margin-bottom:8px; font-size:20px; color:#fff; }
@@ -973,9 +1006,10 @@ main { max-width:1400px; margin:0 auto; padding:20px 24px; }
 .session-signals { grid-column:1 / -1; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
 .session-signal { background:linear-gradient(180deg,rgba(139,124,246,.12),rgba(17,19,25,.72)); border:1px solid rgba(139,124,246,.24); border-radius:8px; padding:12px; min-width:0; }
 .session-signal h3 { margin:0 0 8px; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.4px; }
-.session-signal strong { display:block; color:#fffaf1; font-size:13px; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.session-signal span { display:block; margin-top:6px; color:#d7d0c4; font-size:11px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.session-signal p { margin:8px 0 0; color:var(--muted); font-size:11px; line-height:1.35; }
+.session-signal strong { display:block; color:#fffaf1; font-size:13px; line-height:1.35; overflow-wrap:anywhere; }
+.session-signal dl { display:grid; grid-template-columns:52px minmax(0,1fr); gap:5px 8px; margin:10px 0 0; }
+.session-signal dt { color:var(--muted); font-size:10px; font-weight:750; text-transform:uppercase; letter-spacing:.3px; }
+.session-signal dd { margin:0; color:#d7d0c4; font-size:11px; line-height:1.35; font-weight:650; overflow-wrap:anywhere; }
 .session-card-wide { grid-column:span 2; }
 .timeline-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
 .timeline-card { background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:14px; min-width:0; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
