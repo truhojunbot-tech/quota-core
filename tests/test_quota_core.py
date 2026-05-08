@@ -220,6 +220,23 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(projects["claude-autonomous-trader"].share_pct, 75.3)
         self.assertEqual(models["gpt-5.4"].total_tokens, 327_857)
 
+    def test_project_aggregates_skip_runtime_duplicate_after_normalization(self):
+        projects = project_aggregates_with_runtime_extras(
+            {
+                "/tmp/worktrees/quota/codex": {"tokens": 100, "models": {"gpt-5.4": 100}},
+            },
+            {
+                "quota": {"tokens": 80, "models": {"gpt-5.4": 80}},
+                "runtime-only": {"tokens": 20, "models": {"gpt-5.4": 20}},
+            },
+            120,
+        )
+        models = model_aggregates_from_projects(projects, 120)
+
+        self.assertEqual(projects["quota"].total_tokens, 100)
+        self.assertEqual(projects["runtime-only"].total_tokens, 20)
+        self.assertEqual(models["gpt-5.4"].total_tokens, 120)
+
     def test_codex_payload_accepts_explicit_cache_state(self):
         payload = {
             "fetched_at": 1770000000,
@@ -581,6 +598,43 @@ class SnapshotTests(unittest.TestCase):
         errors = verify_dashboard_html([snapshot], bad_html)
         self.assertTrue(any("missing reset label" in error for error in errors))
         self.assertTrue(any("usage timeline" in error for error in errors))
+
+    def test_dashboard_artifact_verifier_does_not_exact_match_live_countdowns(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="claude",
+            sampled_at=now,
+            windows={
+                "seven_day": SnapshotWindow(
+                    window_start=now - 24 * 3600,
+                    window_end=now,
+                    resets_at=now + 6 * 24 * 3600,
+                    utilization=0.2,
+                    total_tokens=1_000,
+                    cache_state="live",
+                )
+            },
+        )
+        html = render_page([snapshot]).replace("시간 후 리셋", "시간 뒤 리셋")
+
+        self.assertEqual(verify_dashboard_html([snapshot], html), [])
+
+    def test_dashboard_artifact_verifier_ignores_local_usage_runtime_context(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="gemini",
+            sampled_at=now,
+            windows={
+                "today": SnapshotWindow(
+                    window_end=now,
+                    total_tokens=100,
+                    cache_state="live",
+                )
+            },
+        )
+        html = render_page([snapshot])
+
+        self.assertEqual(verify_dashboard_html([snapshot], html), [])
 
     def test_verify_dashboard_cli_reports_artifact_errors(self):
         now = int(time.time())

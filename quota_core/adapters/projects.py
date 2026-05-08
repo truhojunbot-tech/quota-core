@@ -112,9 +112,13 @@ def project_aggregates_with_runtime_extras(
     """Normalize main projects and include runtime-only projects in the same denominator."""
 
     merged = dict(raw_projects) if isinstance(raw_projects, dict) else {}
+    main_project_names = {normalize_project_name(project) for project in merged}
     if isinstance(raw_runtime_projects, dict):
         for project, value in raw_runtime_projects.items():
-            merged.setdefault(project, value)
+            normalized_project = normalize_project_name(project)
+            if normalized_project not in main_project_names:
+                merged[project] = value
+                main_project_names.add(normalized_project)
     return project_aggregates_from_raw(merged, total_tokens)
 
 

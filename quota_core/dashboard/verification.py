@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from quota_core.dashboard.formatters import quota_utilization_label, runtime_quota_context_label, runtime_share_label, window_reset_label
+from quota_core.dashboard.formatters import quota_utilization_label, quota_window_is_stale, runtime_quota_context_label, runtime_share_label, window_reset_label
+from quota_core.dashboard.view_model import window_is_quota
 from quota_core.snapshot import NormalizedSnapshot, SnapshotWindow
 
 HISTORY_NOTE = "30일 사용량 히스토리 · 현재 quota 창 아님"
@@ -24,11 +25,15 @@ def verify_dashboard_html(snapshots: list[NormalizedSnapshot], html: str) -> lis
 
 
 def _verify_window_labels(errors: list[str], source: str, window_name: str, window: SnapshotWindow, html: str) -> None:
+    if not window_is_quota(window_name, window):
+        return
+
     quota_label = quota_utilization_label(window)
-    reset_label = window_reset_label(window)
     if quota_label and quota_label not in html:
         errors.append(f"{source}.{window_name} missing quota label: {quota_label}")
-    if reset_label and reset_label not in html:
+
+    reset_label = window_reset_label(window)
+    if quota_window_is_stale(window) and reset_label and reset_label not in html:
         errors.append(f"{source}.{window_name} missing reset label: {reset_label}")
 
     runtime_label = runtime_share_label(window.runtime, window.total_tokens)
@@ -39,7 +44,7 @@ def _verify_window_labels(errors: list[str], source: str, window_name: str, wind
     if quota_context and quota_context not in html:
         errors.append(f"{source}.{window_name} missing runtime quota context: {quota_context}")
 
-    if (window.stale or window.cache_state == "stale") and "시간 후 리셋" in reset_label:
+    if quota_window_is_stale(window) and "시간 후 리셋" in reset_label:
         errors.append(f"{source}.{window_name} stale window renders a live reset countdown")
 
 
