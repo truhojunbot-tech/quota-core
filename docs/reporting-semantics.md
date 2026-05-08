@@ -58,7 +58,7 @@ Shared ownership:
 | --- | --- | --- | --- |
 | `live` | Fresh enough to represent current provider state | Show percent normally | Show reset countdown normally |
 | `cached` | Recent cached data, usable with caution | Show percent with cached badge/warning | Show countdown, but keep data-state warning visible |
-| `stale` | Rate-limit/quota telemetry is too old or unreliable | Mark as delayed; do not show plain percent as authoritative | Show `reset 확인 지연`, not a normal countdown |
+| `stale` | Provider quota telemetry is too old or unreliable | Mark as delayed; do not show plain percent as authoritative | Show `reset 확인 지연`, not a normal countdown |
 | `unknown` | Freshness cannot be established | Avoid strong operational claims | Avoid strong reset claims when possible |
 
 Specific stale rules:
@@ -95,7 +95,7 @@ Rules:
 - Label usage timelines with their date range.
 - Mark usage timelines as historical, for example `30일 사용량 히스토리 · 현재 quota 창 아님`.
 - Do not compare a 30-day history total directly with a current 5-hour or 7-day quota window total without explaining the denominator.
-- Codex `codex_daily` and `codex_exec_log` history are not the same source semantics as Codex rate-limit telemetry.
+- Codex `codex_daily` and `codex_exec_log` history are not the same source semantics as Codex quota telemetry. A stale Codex quota event does not by itself mean Codex is currently usage-limited.
 
 ## Claude Session Coverage Policy
 

@@ -652,7 +652,7 @@ def data_state_panel(providers: tuple[ProviderDashboard, ...]) -> str:
         provider_has_detailed_telemetry = False
         for warning in provider.snapshot.warnings:
             provider_has_rows = True
-            provider_has_detailed_telemetry = provider_has_detailed_telemetry or "latest rate-limit event" in str(warning)
+            provider_has_detailed_telemetry = provider_has_detailed_telemetry or "latest quota event" in str(warning)
             rows.append(f'<li><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(data_state_warning_message(warning))}</span></li>')
         for error in provider.snapshot.errors:
             provider_has_rows = True
@@ -690,7 +690,7 @@ def data_state_warning_message(raw: object) -> str:
     if lower.startswith("using cached claude quota"):
         reason = message.split(":", 1)[1].strip() if ":" in message else "refresh attempt timed out"
         return f"quota telemetry cached; {reason}"
-    if "rate-limit telemetry is stale" in lower:
+    if "quota telemetry stale" in lower:
         return "quota telemetry stale; reset and pressure are delayed"
     if len(message) > 120:
         return message[:117].rstrip() + "..."
@@ -703,10 +703,12 @@ def data_state_quota_telemetry_message(raw: object) -> str:
     parts = []
     source_age = raw.get("source_age_seconds")
     if isinstance(source_age, (int, float)):
-        parts.append(f"latest rate-limit event {data_state_age_label(source_age)} ago")
+        parts.append(f"latest quota event {data_state_age_label(source_age)} ago")
     activity_age = raw.get("last_cli_activity_age_seconds")
     if isinstance(activity_age, (int, float)):
         parts.append(f"CLI activity {data_state_age_label(activity_age)} ago")
+    if raw.get("usage_limited") is False:
+        parts.append("not currently usage-limited")
     source = raw.get("rate_limit_source")
     if source:
         parts.append(f"source {source}")

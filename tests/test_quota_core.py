@@ -154,6 +154,7 @@ class SnapshotTests(unittest.TestCase):
             "stale": True,
             "source_age_seconds": 240564,
             "last_cli_activity_age_seconds": 12,
+            "usage_limited": False,
             "rate_limit_source": "logs_2",
             "five_hour": {
                 "utilization": 0.01,
@@ -177,8 +178,9 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["windows"]["five_hour"]["cache_state"], "stale")
         self.assertTrue(snapshot["windows"]["seven_day"]["stale"])
         self.assertEqual(snapshot["windows"]["seven_day"]["total_tokens"], 72090696)
-        self.assertIn("latest rate-limit event 2d 18h ago", snapshot["warnings"][0])
+        self.assertIn("latest quota event 2d 18h ago", snapshot["warnings"][0])
         self.assertIn("CLI activity 12s ago", snapshot["warnings"][0])
+        self.assertIn("not currently usage-limited", snapshot["warnings"][0])
         self.assertEqual(snapshot["history"]["quota_telemetry"]["source_age_seconds"], 240564)
 
     def test_codex_payload_uses_observed_total_with_runtime_extras(self):
@@ -656,7 +658,7 @@ class SnapshotTests(unittest.TestCase):
                     stale=True,
                 )
             },
-            warnings=("codex rate-limit telemetry stale; latest rate-limit event 2d ago",),
+            warnings=("codex quota telemetry stale; latest quota event 2d ago",),
             history={
                 "usage_timeline": {
                     "unit": "tokens",

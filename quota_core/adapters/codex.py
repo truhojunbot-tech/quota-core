@@ -78,7 +78,7 @@ def normalize_codex_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
     if cache_state == "stale":
         warnings = (_stale_warning(payload),)
     elif cache_state == "cached":
-        warnings = ("codex rate-limit telemetry is cached",)
+        warnings = ("codex quota telemetry is cached",)
     return NormalizedSnapshot(source="codex", sampled_at=sampled_at, windows=windows, warnings=warnings, history=history)
 
 
@@ -101,13 +101,15 @@ def _telemetry_history(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stale_warning(payload: dict[str, Any]) -> str:
-    parts = ["codex rate-limit telemetry stale"]
+    parts = ["codex quota telemetry stale"]
     source_age = _optional_int(payload.get("source_age_seconds"))
     if source_age is not None:
-        parts.append(f"latest rate-limit event {_format_age(source_age)} ago")
+        parts.append(f"latest quota event {_format_age(source_age)} ago")
     activity_age = _optional_int(payload.get("last_cli_activity_age_seconds"))
     if activity_age is not None:
         parts.append(f"CLI activity {_format_age(activity_age)} ago")
+    if payload.get("usage_limited") is False:
+        parts.append("not currently usage-limited")
     source = payload.get("rate_limit_source")
     if source:
         parts.append(f"source {source}")
