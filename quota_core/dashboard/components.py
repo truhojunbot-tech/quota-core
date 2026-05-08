@@ -196,6 +196,7 @@ def claude_session_panel(providers: tuple[ProviderDashboard, ...]) -> str:
     report = provider.snapshot.history.get("claude_session_report")
     if not isinstance(report, dict):
         return ""
+    reports = provider.snapshot.history.get("claude_session_reports")
     totals = report.get("totals", {}) if isinstance(report.get("totals"), dict) else {}
     window = report.get("window", {}) if isinstance(report.get("window"), dict) else {}
     blocks = [
@@ -207,16 +208,23 @@ def claude_session_panel(providers: tuple[ProviderDashboard, ...]) -> str:
     ]
     sections = [
         f'<div class="session-metrics">{"".join(blocks)}</div>',
+        session_window_selector(reports),
         f'<p class="panel-note">window: {html.escape(str(window.get("name") or "unknown"))} · {html.escape(str(report.get("cache_state") or "unknown"))}</p>',
         session_decision_panel(report),
         session_coverage_card(report),
+        session_timeline_card(report.get("by_day", [])),
         session_rows("Local Session Projects", report.get("by_project", []), max_rows=4),
         session_rows("Model Mix", report.get("by_model", []), max_rows=4),
+        session_rows("Subagents", report.get("by_subagent", []), max_rows=4, empty_text="No subagent-attributed usage in this window."),
+        session_rows("Skills", report.get("by_skill", []), max_rows=4, empty_text="No Skill-attributed usage in this window."),
+        session_rows("Slash Commands", report.get("by_slash_command", []), max_rows=4, empty_text="No slash-command usage in this window."),
         expensive_prompt_rows(report.get("expensive_prompts", [])),
         cache_break_rows(report.get("cache_breaks", [])),
         session_rows("Burst Hours", report.get("hourly_bursts", []), max_rows=4),
         session_rows("Top Sessions", report.get("top_sessions", []), max_rows=4),
         cache_efficiency_card(report.get("cache_efficiency", [])),
+        session_notice_card("Warnings", report.get("warnings", [])),
+        session_notice_card("Errors", report.get("errors", [])),
     ]
     return panel("Claude Sessions", '<div class="session-grid">' + "".join(section for section in sections if section) + "</div>", status_badge(str(report.get("cache_state") or "unknown")))
 
@@ -225,8 +233,20 @@ def session_metric(label: str, value: str) -> str:
     return f'<div class="session-metric"><span>{html.escape(label)}</span><strong>{html.escape(value)}</strong></div>'
 
 
-def session_rows(title: str, rows: object, *, max_rows: int = 6) -> str:
+def session_window_selector(reports: object) -> str:
+    expected = ("5h", "24h", "7d", "30d", "all")
+    available = set(reports.keys()) if isinstance(reports, dict) else set()
+    buttons = []
+    for name in expected:
+        state = "ready" if name in available else "empty"
+        buttons.append(f'<span class="session-window-pill session-window-{state}">{html.escape(name)}</span>')
+    return '<div class="session-window-selector" aria-label="Claude session report windows">' + "".join(buttons) + "</div>"
+
+
+def session_rows(title: str, rows: object, *, max_rows: int = 6, empty_text: str | None = None) -> str:
     if not isinstance(rows, list) or not rows:
+        if empty_text:
+            return f'<article class="session-card"><h3>{html.escape(title)}</h3><ol class="runtime-project-list"><li><span>{html.escape(empty_text)}</span><strong></strong></li></ol></article>'
         return ""
     items = []
     for row in rows[:max_rows]:
@@ -235,7 +255,31 @@ def session_rows(title: str, rows: object, *, max_rows: int = 6) -> str:
         name = session_row_name(row.get("display_name") or row.get("name") or "unknown")
         share = float(row.get("share_pct") or 0)
         tokens = compact_number(int(row.get("total_tokens") or 0))
-        items.append(f'<li><span>{html.escape(name)}</span><strong>{share:.1f}% · {html.escape(tokens)}</strong></li>')
+        avg = int(row.get("avg_tokens_per_call") or 0)
+        avg_text = f" · avg {compact_number(avg)}/call" if avg else ""
+        items.append(f'<li><span>{html.escape(name)}</span><strong>{share:.1f}% · {html.escape(tokens)}{html.escape(avg_text)}</strong></li>')
+    return f'<article class="session-card"><h3>{html.escape(title)}</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def session_timeline_card(rows: object) -> str:
+    if not isinstance(rows, list) or not rows:
+        return ""
+    items = []
+    for row in rows[-5:]:
+        if not isinstance(row, dict):
+            continue
+        date = str(row.get("date") or "unknown")
+        tokens = compact_number(int(row.get("tokens") or 0))
+        sessions = int(row.get("sessions") or 0)
+        peak = int(row.get("peak_concurrency") or 0)
+        items.append(f'<li><span>{html.escape(date)}</span><strong>{html.escape(tokens)} · {sessions} sessions · peak {peak}</strong></li>')
+    return f'<article class="session-card"><h3>Session Timeline</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def session_notice_card(title: str, rows: object) -> str:
+    if not isinstance(rows, list) or not rows:
+        return ""
+    items = [f'<li><span>{html.escape(str(item))}</span><strong></strong></li>' for item in rows[:4] if item]
     return f'<article class="session-card"><h3>{html.escape(title)}</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
@@ -357,7 +401,9 @@ def expensive_prompt_rows(rows: object) -> str:
         variants = int(row.get("prompt_variants") or 0)
         variant_text = f" · {variants} prompts" if variants > 1 else ""
         right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
-        items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
+        context = prompt_context_label(row.get("context"))
+        label = f"{project} · {preview}{context}"
+        items.append(f'<li><span>{html.escape(label)}</span><strong>{html.escape(right)}</strong></li>')
     return f'<article class="session-card"><h3>Prompt Families</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
@@ -375,8 +421,17 @@ def cache_break_rows(rows: object) -> str:
         variants = int(row.get("prompt_variants") or 0)
         variant_text = f" · {variants} prompts" if variants > 1 else ""
         right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
-        items.append(f'<li><span>{html.escape(project)} · {html.escape(preview)}</span><strong>{html.escape(right)}</strong></li>')
+        context = prompt_context_label(row.get("context"))
+        label = f"{project} · {preview}{context}"
+        items.append(f'<li><span>{html.escape(label)}</span><strong>{html.escape(right)}</strong></li>')
     return f'<article class="session-card"><h3>Fresh Cache Creates</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def prompt_context_label(rows: object) -> str:
+    if not isinstance(rows, list) or not rows:
+        return ""
+    count = sum(1 for row in rows if isinstance(row, dict))
+    return f" · {count} context" if count else ""
 
 
 def cache_efficiency_card(rows: object) -> str:
@@ -1113,6 +1168,9 @@ main { max-width:1400px; margin:0 auto; padding:20px 24px; }
 .session-card .runtime-project-list li { align-items:start; }
 .session-card .runtime-project-list span { white-space:normal; overflow:visible; text-overflow:clip; line-height:1.35; }
 .session-card .runtime-project-list strong { padding-top:1px; }
+.session-window-selector { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 6px; }
+.session-window-pill { border:1px solid var(--border); border-radius:4px; color:var(--muted); font-size:11px; padding:3px 7px; }
+.session-window-ready { color:#fffaf1; border-color:#3c6f58; background:rgba(67,138,105,.16); }
 .empty-list { margin:6px 0 0; color:var(--muted); font-size:11px; }
 .usage-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:20px; margin-top:8px; }
 .usage-card > strong { display:block; margin-bottom:8px; font-size:20px; color:#fff; }

@@ -14,6 +14,8 @@ from typing import Any, Callable, Iterable
 
 from quota_core.adapters.projects import normalize_project_name
 from quota_core.session.report import SessionReportQuery, build_session_report, normalize_session_report_query
+from quota_core.session.reconcile import reconcile_totals
+from quota_core.session.timeline import build_day_rows
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
 ACTIVE_GAP_SECONDS = 300
@@ -66,6 +68,7 @@ def analyze_claude_sessions(
     active_gap_seconds: int = ACTIVE_GAP_SECONDS,
     project_normalizer: ProjectNormalizer = normalize_project_name,
     quota_scanner_total_tokens: int | None = None,
+    cache_break_input_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Return normalized Claude session analytics from local JSONL transcripts."""
 
@@ -85,6 +88,7 @@ def analyze_claude_sessions(
         active_gap_seconds=active_gap_seconds,
         project_normalizer=project_normalizer,
         quota_scanner_total_tokens=quota_scanner_total_tokens,
+        cache_break_input_tokens=cache_break_input_tokens,
     )
     return scanner.scan()
 
@@ -100,6 +104,7 @@ class ClaudeSessionScanner:
         active_gap_seconds: int,
         project_normalizer: ProjectNormalizer,
         quota_scanner_total_tokens: int | None,
+        cache_break_input_tokens: int | None,
     ) -> None:
         self.transcript_roots = transcript_roots
         self.query = query
@@ -108,6 +113,7 @@ class ClaudeSessionScanner:
         self.active_gap_seconds = active_gap_seconds
         self.project_normalizer = project_normalizer
         self.quota_scanner_total_tokens = quota_scanner_total_tokens
+        self.cache_break_input_tokens = cache_break_input_tokens
         self.totals = Aggregate()
         self.by_project: dict[str, Aggregate] = defaultdict(Aggregate)
         self.by_model: dict[str, Aggregate] = defaultdict(Aggregate)
@@ -117,6 +123,7 @@ class ClaudeSessionScanner:
         self.by_hour: dict[str, Aggregate] = defaultdict(Aggregate)
         self.by_session: dict[str, Aggregate] = defaultdict(Aggregate)
         self.runtime_by_class: dict[str, Aggregate] = defaultdict(Aggregate)
+        self.session_spans: dict[str, dict[str, Any]] = {}
         self.expensive_prompts: dict[str, dict[str, Any]] = {}
         self.cache_breaks: dict[str, dict[str, Any]] = {}
         self.seen_api_keys: set[str] = set()
@@ -125,6 +132,7 @@ class ClaudeSessionScanner:
         self.skipped_unparseable_timestamps = 0
         self.malformed_json_records = 0
         self.timestamps: list[int] = []
+        self.human_messages = 0
         self.warnings: list[str] = []
 
     def scan(self) -> dict[str, Any]:
@@ -140,6 +148,7 @@ class ClaudeSessionScanner:
             by_subagent=self._rows(self.by_subagent),
             by_skill=self._rows(self.by_skill),
             by_slash_command=self._rows(self.by_slash_command),
+            by_day=build_day_rows(self.session_spans),
             hourly_bursts=self._rows(self.by_hour)[:12],
             top_sessions=self._rows(self.by_session)[:12],
             cache_efficiency=cache_efficiency_rows(self.expensive_prompts, self.totals.total_tokens)[:12],
@@ -166,6 +175,7 @@ class ClaudeSessionScanner:
         except OSError:
             return
         project = self.project_normalizer(project_from_path(root, transcript))
+        session_label = transcript_label(root, transcript, project)
         context = PromptContext()
         try:
             handle = transcript.open(errors="replace")
@@ -187,6 +197,8 @@ class ClaudeSessionScanner:
                     continue
                 if timestamp is not None:
                     self.timestamps.append(timestamp)
+                if is_human_prompt(record):
+                    self.human_messages += 1
                 context = update_context(context, record, timestamp)
                 usage = extract_usage(record)
                 if not usage:
@@ -197,7 +209,7 @@ class ClaudeSessionScanner:
                     continue
                 self.seen_api_keys.add(key)
                 model = extract_model(record)
-                self._add_usage(project, transcript_label(root, transcript, project), model, usage, runtime_classification(record), context, timestamp)
+                self._add_usage(project, session_label, model, usage, runtime_classification(record), context, timestamp)
 
     def _in_window(self, timestamp: int | None) -> bool:
         selected = self.query.window
@@ -239,6 +251,7 @@ class ClaudeSessionScanner:
         total = usage_total(usage)
         if context.text:
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
+            prompt_context = prompt_context_rows(context, self.query.redaction)
             family_key = prompt_family_key(project, context.text, prompt_hash)
             row = self.expensive_prompts.get(family_key)
             if row is None:
@@ -255,6 +268,7 @@ class ClaudeSessionScanner:
                     "slash_command": context.slash_command,
                     "skill": context.skill,
                     "redaction": self.query.redaction,
+                    "context": prompt_context,
                 }
                 self.expensive_prompts[family_key] = row
             row["_prompt_hashes"].add(prompt_hash)
@@ -262,8 +276,12 @@ class ClaudeSessionScanner:
             row["api_calls"] = int(row["api_calls"]) + 1
             row["cache_read_input_tokens"] = int(row.get("cache_read_input_tokens") or 0) + usage["cache_read_input_tokens"]
             row["cache_creation_input_tokens"] = int(row.get("cache_creation_input_tokens") or 0) + usage["cache_creation_input_tokens"]
-        if usage["cache_creation_input_tokens"] > 0 and usage["cache_creation_input_tokens"] >= usage["cache_read_input_tokens"]:
+        cache_break = usage["cache_creation_input_tokens"] > 0 and usage["cache_creation_input_tokens"] >= usage["cache_read_input_tokens"]
+        if self.cache_break_input_tokens is not None:
+            cache_break = usage["input_tokens"] + usage["cache_creation_input_tokens"] >= self.cache_break_input_tokens
+        if cache_break:
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
+            prompt_context = prompt_context_rows(context, self.query.redaction)
             family_key = prompt_family_key(project, context.text, prompt_hash)
             row = self.cache_breaks.get(family_key)
             if row is None:
@@ -277,16 +295,30 @@ class ClaudeSessionScanner:
                     "prompt_family": family_key,
                     "_prompt_hashes": set(),
                     "prompt_preview": preview,
+                    "context": prompt_context,
                 }
                 self.cache_breaks[family_key] = row
             row["_prompt_hashes"].add(prompt_hash)
             row["tokens"] = int(row["tokens"]) + usage["cache_creation_input_tokens"]
             row["api_calls"] = int(row["api_calls"]) + 1
+        self._add_session_span(project, session_label, usage, timestamp)
+
+    def _add_session_span(self, project: str, session_label: str, usage: Usage, timestamp: int | None) -> None:
+        total = usage_total(usage)
+        span = self.session_spans.setdefault(session_label, {"project": project, "first_ts": timestamp, "last_ts": timestamp, "tokens": 0})
+        span["tokens"] = int(span.get("tokens") or 0) + total
+        if timestamp is not None:
+            if span.get("first_ts") is None or timestamp < int(span["first_ts"]):
+                span["first_ts"] = timestamp
+            if span.get("last_ts") is None or timestamp > int(span["last_ts"]):
+                span["last_ts"] = timestamp
 
     def _totals(self) -> dict[str, Any]:
         cache_total = self.totals.cache_read_input_tokens + self.totals.cache_creation_input_tokens
         return {
             "input_tokens": self.totals.input_tokens,
+            "sessions": len(self.session_spans),
+            "human_messages": self.human_messages,
             "output_tokens": self.totals.output_tokens,
             "cache_read_input_tokens": self.totals.cache_read_input_tokens,
             "cache_creation_input_tokens": self.totals.cache_creation_input_tokens,
@@ -324,13 +356,7 @@ class ClaudeSessionScanner:
             notes.append("quota scanner total unavailable")
         if self.duplicate_records:
             notes.append(f"deduped {self.duplicate_records} duplicate transcript records")
-        return {
-            "quota_scanner_total_tokens": self.quota_scanner_total_tokens,
-            "session_total_tokens": session_total,
-            "delta_tokens": delta,
-            "delta_pct": delta_pct,
-            "notes": notes,
-        }
+        return reconcile_totals(session_total, self.quota_scanner_total_tokens, notes)
 
     def _finalize_warnings(self) -> None:
         if self.skipped_oversized_files:
@@ -386,11 +412,20 @@ def update_context(context: PromptContext, record: dict[str, Any], timestamp: in
 
 
 def user_prompt_text(record: dict[str, Any]) -> str:
+    if record.get("isMeta") or record.get("isCompactSummary") or record.get("isSidechain"):
+        return ""
     message = record.get("message") if isinstance(record.get("message"), dict) else {}
     role = message.get("role") or record.get("role") or record.get("type")
     if role != "user":
         return ""
-    return text_from_content(message.get("content") if "content" in message else record.get("content"))
+    text = text_from_content(message.get("content") if "content" in message else record.get("content"))
+    if not text or text.startswith("[Request interrupted") or text.startswith("<task-notification") or text.startswith("<scheduled-wakeup") or text.startswith("<background-task"):
+        return ""
+    return text
+
+
+def is_human_prompt(record: dict[str, Any]) -> bool:
+    return bool(user_prompt_text(record))
 
 
 def text_from_content(content: Any) -> str:
@@ -450,6 +485,7 @@ def aggregate_row(name: str, aggregate: Aggregate, total_tokens: int) -> dict[st
         "display_name": name,
         "total_tokens": aggregate.total_tokens,
         "api_calls": aggregate.api_calls,
+        "avg_tokens_per_call": round(aggregate.total_tokens / aggregate.api_calls) if aggregate.api_calls else 0,
         "share_pct": round(aggregate.total_tokens / total_tokens * 100, 1) if total_tokens else 0.0,
         "input_tokens": aggregate.input_tokens,
         "output_tokens": aggregate.output_tokens,
@@ -544,6 +580,22 @@ def prompt_family_key(project: str, prompt: str, prompt_hash: str) -> str:
         branch = agent_crew_value(prompt, compact, "branch") or "no-branch"
         return f"{project}:agent-crew:{task_type}:{branch}"
     return f"{project}:{prompt_hash}"
+
+
+def prompt_context_rows(context: PromptContext, redaction: str) -> list[dict[str, Any]]:
+    if not context.text:
+        return []
+    preview, prompt_hash = redact_prompt(context.text, redaction)
+    return [
+        {
+            "text": preview,
+            "prompt_hash": prompt_hash,
+            "timestamp": context.timestamp,
+            "api_calls": 1,
+            "here": True,
+            "redaction": redaction,
+        }
+    ]
 
 
 def agent_crew_value(prompt: str, compact: str, field: str) -> str | None:

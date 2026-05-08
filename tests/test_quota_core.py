@@ -1070,6 +1070,7 @@ class SessionReportContractTests(unittest.TestCase):
             "by_subagent",
             "by_skill",
             "by_slash_command",
+            "by_day",
             "hourly_bursts",
             "top_sessions",
             "cache_efficiency",
@@ -1134,6 +1135,8 @@ class SessionReportContractTests(unittest.TestCase):
 
         self.assertEqual(validate_session_report_dict(report), ())
         self.assertEqual(report["totals"]["total_tokens"], 100)
+        self.assertEqual(report["totals"]["sessions"], 1)
+        self.assertEqual(report["totals"]["human_messages"], 1)
         self.assertEqual(report["totals"]["api_calls"], 1)
         self.assertEqual(report["totals"]["deduped_api_calls"], 1)
         self.assertEqual(report["totals"]["cache_hit_pct"], 42.9)
@@ -1142,11 +1145,15 @@ class SessionReportContractTests(unittest.TestCase):
         self.assertEqual(report["by_subagent"][0]["name"], "Explore")
         self.assertEqual(report["by_skill"][0]["name"], "systematic-debugging")
         self.assertEqual(report["by_slash_command"][0]["name"], "/investigate")
+        self.assertEqual(report["by_subagent"][0]["avg_tokens_per_call"], 100)
+        self.assertEqual(report["by_day"][0]["date"], "2026-05-07")
+        self.assertEqual(report["by_day"][0]["sessions"], 1)
         self.assertEqual(report["hourly_bursts"][0]["name"], "05-07 00:00Z")
         self.assertEqual(report["top_sessions"][0]["name"], "demo-project/session")
         self.assertEqual(report["cache_efficiency"][0]["cache_hit_pct"], 42.9)
         self.assertIn("cache_creation_spike", report["cache_breaks"][0]["reason"])
         self.assertIn("/investigate why cache", report["expensive_prompts"][0]["prompt_preview"])
+        self.assertEqual(report["expensive_prompts"][0]["context"][0]["here"], True)
         self.assertEqual(report["reconciliation"]["quota_scanner_total_tokens"], 120)
 
     def test_claude_session_parser_aggregates_prompt_diagnostics(self):
@@ -1263,13 +1270,17 @@ priority: 3
         report["totals"].update({"total_tokens": 300, "input_tokens": 10, "output_tokens": 80, "cache_read_input_tokens": 90, "cache_creation_input_tokens": 120, "cache_hit_pct": 42.9, "active_seconds": 3660})
         report["by_project"] = [{"name": "demo-project", "display_name": "demo-project", "total_tokens": 300, "share_pct": 100.0}]
         report["by_model"] = [{"name": "claude-sonnet-4-6", "display_name": "claude-sonnet-4-6", "total_tokens": 300, "share_pct": 100.0}]
+        report["by_subagent"] = [{"name": "Explore", "display_name": "Explore", "total_tokens": 150, "share_pct": 50.0, "avg_tokens_per_call": 150}]
+        report["by_skill"] = [{"name": "systematic-debugging", "display_name": "systematic-debugging", "total_tokens": 90, "share_pct": 30.0}]
+        report["by_slash_command"] = [{"name": "/investigate", "display_name": "/investigate", "total_tokens": 60, "share_pct": 20.0}]
+        report["by_day"] = [{"date": "2026-05-07", "tokens": 300, "sessions": 1, "peak_concurrency": 1, "peak_at_minute": 0, "top_projects": []}]
         report["hourly_bursts"] = [{"name": "05-07 00:00Z", "display_name": "05-07 00:00Z", "total_tokens": 300, "share_pct": 100.0}]
         report["top_sessions"] = [{"name": "demo-project/session", "display_name": "demo-project/session", "total_tokens": 300, "share_pct": 100.0}]
         report["cache_efficiency"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "cache_hit_pct": 42.9, "cache_creation_input_tokens": 120}]
-        report["expensive_prompts"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "api_calls": 3, "prompt_variants": 2}]
-        report["cache_breaks"] = [{"project": "demo-project", "prompt_preview": "cache prompt", "tokens": 120, "api_calls": 2, "prompt_variants": 2}]
+        report["expensive_prompts"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "api_calls": 3, "prompt_variants": 2, "context": [{"text": "neighbor", "here": True}]}]
+        report["cache_breaks"] = [{"project": "demo-project", "prompt_preview": "cache prompt", "tokens": 120, "api_calls": 2, "prompt_variants": 2, "context": [{"text": "neighbor", "here": True}]}]
         report["reconciliation"].update({"quota_scanner_total_tokens": 600, "session_total_tokens": 300})
-        snapshot = NormalizedSnapshot(source="claude", sampled_at=1770000000, history={"claude_session_report": report})
+        snapshot = NormalizedSnapshot(source="claude", sampled_at=1770000000, history={"claude_session_report": report, "claude_session_reports": {"5h": report, "24h": report, "7d": report}})
         page = render_page([snapshot])
         self.assertIn("Claude Sessions", page)
         self.assertIn("demo-project", page)
@@ -1296,6 +1307,13 @@ priority: 3
         self.assertIn("expensive prompt", page)
         self.assertIn("Model Mix", page)
         self.assertIn("claude-sonnet-4-6", page)
+        self.assertIn("Subagents", page)
+        self.assertIn("avg 150/call", page)
+        self.assertIn("Skills", page)
+        self.assertIn("Slash Commands", page)
+        self.assertIn("Session Timeline", page)
+        self.assertIn("2026-05-07", page)
+        self.assertIn("session-window-ready", page)
         self.assertIn("Burst Hours", page)
         self.assertIn("05-07 00:00Z", page)
         self.assertIn("Top Sessions", page)

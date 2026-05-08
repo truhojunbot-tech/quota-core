@@ -9,6 +9,7 @@ from .report import (
     normalize_session_report_query,
     validate_session_report_dict,
 )
+from .reconcile import reconcile_totals
 
 __all__ = [
     "analyze_claude_sessions",
@@ -18,4 +19,5 @@ __all__ = [
     "build_session_report",
     "normalize_session_report_query",
     "validate_session_report_dict",
+    "reconcile_totals",
 ]

@@ -26,7 +26,10 @@ def create_app(*, claude_session_report_provider: SessionReportProvider | None =
     @app.get("/api/claude_session_report")
     def claude_session_report(window: str | None = None, since: str | None = None, redaction: str | None = None):
         if claude_session_report_provider is not None:
-            return claude_session_report_provider(window=window, since=since, redaction=redaction)
+            try:
+                return claude_session_report_provider(window=window, since=since, redaction=redaction)
+            except Exception as exc:
+                return build_empty_session_report(window=window, since=since, redaction=redaction, errors=[f"claude session report failed: {exc}"])
         return build_empty_session_report(window=window, since=since, redaction=redaction)
 
     return app
