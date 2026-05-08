@@ -17,7 +17,7 @@ from quota_core.runtime import runtime_env
 from quota_core.session import analyze_claude_sessions, build_empty_session_report, normalize_session_report_query, validate_session_report_dict
 from quota_core.session.claude import normalize_prompt_preview
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
-from quota_core.cli import main as cli_main, scan_config, verify_dashboard, write_dashboard, write_demo, write_scan
+from quota_core.cli import main as cli_main, scan_config, session_parity_summary, verify_dashboard, write_dashboard, write_demo, write_scan
 from quota_core.dashboard.formatters import quota_utilization_label, runtime_quota_context_label, runtime_share_label, timestamp_reset_label, window_reset_label
 from quota_core.dashboard.renderer import render_page
 from quota_core.dashboard.verification import verify_dashboard_html
@@ -1368,6 +1368,37 @@ priority: 3
         self.assertIn("400 · 8 calls · avg 50/call · 4 prompts", page)
         self.assertIn("Prompt Families", page)
         self.assertIn("100 · 1 calls · avg 100/call", page)
+
+    def test_session_parity_summary_compares_official_shape(self):
+        official = {
+            "overall": {
+                "api_calls": 10,
+                "human_messages": 3,
+                "sessions": 2,
+                "input_tokens": {"total": 900, "pct_cached": 80.0},
+                "output_tokens": 100,
+            }
+        }
+        core = {
+            "totals": {
+                "api_calls": 9,
+                "human_messages": 3,
+                "sessions": 2,
+                "total_tokens": 990,
+                "cache_hit_pct": 79.5,
+            }
+        }
+
+        summary = session_parity_summary(official, core)
+
+        self.assertEqual(summary["official_total_tokens"], 1000)
+        self.assertEqual(summary["quota_core_total_tokens"], 990)
+        self.assertEqual(summary["total_delta_tokens"], -10)
+        self.assertEqual(summary["total_delta_pct"], -1.0)
+        self.assertEqual(summary["official_api_calls"], 10)
+        self.assertEqual(summary["quota_core_api_calls"], 9)
+        self.assertEqual(summary["official_cache_hit_pct"], 80.0)
+        self.assertEqual(summary["quota_core_cache_hit_pct"], 79.5)
 
 
 class PublicSplitGuardTests(unittest.TestCase):
