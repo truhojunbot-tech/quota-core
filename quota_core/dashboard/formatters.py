@@ -15,22 +15,32 @@ def runtime_share_label(runtime: RuntimeBreakdown, service_total: int) -> str:
 
 
 def quota_utilization_label(window: SnapshotWindow, *, decimals: int = 1) -> str:
+    if quota_window_is_stale(window):
+        if quota_utilization_is_delayed(window):
+            return "집계 지연"
+        return f"{_clamped_pct(window.utilization):.{decimals}f}% · 지연"
     if quota_utilization_is_delayed(window):
         return "집계 지연"
     return f"{_clamped_pct(window.utilization):.{decimals}f}%"
 
 
 def runtime_quota_context_label(window: SnapshotWindow) -> str:
-    if quota_utilization_is_delayed(window):
+    if quota_window_is_stale(window):
         return "quota 집계 지연"
     return f"{_clamped_pct(window.utilization):.1f}% of quota"
 
 
 def quota_utilization_is_delayed(window: SnapshotWindow) -> bool:
-    return bool(window.total_tokens > 0 and window.utilization <= 0 and (window.stale or window.cache_state == "stale"))
+    return bool(window.total_tokens > 0 and window.utilization <= 0 and quota_window_is_stale(window))
+
+
+def quota_window_is_stale(window: SnapshotWindow) -> bool:
+    return bool(window.stale or window.cache_state == "stale")
 
 
 def window_reset_label(window: SnapshotWindow, *, now: float | None = None) -> str:
+    if quota_window_is_stale(window):
+        return "reset 확인 지연"
     return reset_countdown_label(
         window.resets_at,
         stale=window.stale or window.cache_state == "stale",

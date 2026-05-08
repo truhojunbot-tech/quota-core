@@ -494,7 +494,8 @@ class SnapshotTests(unittest.TestCase):
 
         page = render_page([snapshot])
 
-        self.assertIn("집계 지연", page)
+        self.assertIn("15.0% · 지연", page)
+        self.assertIn("reset 확인 지연", page)
         self.assertNotIn("리셋됨", page)
 
     def test_dashboard_reset_labels_use_shared_formatter(self):
@@ -503,7 +504,7 @@ class SnapshotTests(unittest.TestCase):
         live_window = SnapshotWindow(resets_at=now - 60, cache_state="live")
         soon_window = SnapshotWindow(resets_at=now + 30 * 60, cache_state="live")
 
-        self.assertEqual(window_reset_label(stale_window, now=now), "집계 지연")
+        self.assertEqual(window_reset_label(stale_window, now=now), "reset 확인 지연")
         self.assertEqual(window_reset_label(live_window, now=now), "리셋 시각 지남")
         self.assertEqual(window_reset_label(soon_window, now=now), "30분 후 리셋")
         self.assertEqual(timestamp_reset_label(now + 2 * 3600, now=now), "2.0h 후")
@@ -515,6 +516,7 @@ class SnapshotTests(unittest.TestCase):
 
         self.assertEqual(quota_utilization_label(stale_window), "집계 지연")
         self.assertEqual(runtime_quota_context_label(stale_window), "quota 집계 지연")
+        self.assertEqual(quota_utilization_label(SnapshotWindow(total_tokens=10, utilization=0.01, cache_state="stale", stale=True)), "1.0% · 지연")
         self.assertEqual(quota_utilization_label(live_window), "20.0%")
         self.assertEqual(runtime_quota_context_label(live_window), "20.0% of quota")
         self.assertEqual(runtime_share_label(RuntimeBreakdown(), 327_857), "runtime 없음")
