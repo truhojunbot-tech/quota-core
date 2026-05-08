@@ -4,7 +4,30 @@ from __future__ import annotations
 
 import time
 
-from quota_core.snapshot import SnapshotWindow
+from quota_core.snapshot import RuntimeBreakdown, SnapshotWindow
+
+
+def runtime_share_label(runtime: RuntimeBreakdown, service_total: int) -> str:
+    if runtime.total_tokens <= 0 and runtime.requests <= 0:
+        return "runtime 없음"
+    share = runtime.total_tokens / service_total if service_total > 0 else 0.0
+    return f"{_clamped_pct(share):.1f}%"
+
+
+def quota_utilization_label(window: SnapshotWindow, *, decimals: int = 1) -> str:
+    if quota_utilization_is_delayed(window):
+        return "집계 지연"
+    return f"{_clamped_pct(window.utilization):.{decimals}f}%"
+
+
+def runtime_quota_context_label(window: SnapshotWindow) -> str:
+    if quota_utilization_is_delayed(window):
+        return "quota 집계 지연"
+    return f"{_clamped_pct(window.utilization):.1f}% of quota"
+
+
+def quota_utilization_is_delayed(window: SnapshotWindow) -> bool:
+    return bool(window.total_tokens > 0 and window.utilization <= 0 and (window.stale or window.cache_state == "stale"))
 
 
 def window_reset_label(window: SnapshotWindow, *, now: float | None = None) -> str:
@@ -46,3 +69,7 @@ def reset_countdown_label(
     if diff < 3600:
         return minute_template.format(minutes=diff / 60, hours=diff / 3600)
     return hour_template.format(minutes=diff / 60, hours=diff / 3600)
+
+
+def _clamped_pct(utilization: float) -> float:
+    return max(0.0, min(100.0, utilization * 100))

@@ -6,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 import html
 import time
 
-from quota_core.dashboard.formatters import timestamp_reset_label, window_reset_label
+from quota_core.dashboard.formatters import quota_utilization_label, runtime_quota_context_label, runtime_share_label, timestamp_reset_label, window_reset_label
 from quota_core.dashboard.view_model import DashboardWindow, ProviderDashboard, build_dashboard
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotQuotaGroup, SnapshotWindow
 
@@ -58,7 +58,7 @@ def overall_provider(provider: ProviderDashboard) -> str:
 def overall_window(item: DashboardWindow, source: str) -> str:
     return (
         '<div class="overview-window">'
-        f'<div class="row"><span>{html.escape(short_window_label(item.name))}</span><strong>{percent0(item.window.utilization)}{pace_badge(item.window)}</strong></div>'
+        f'<div class="row"><span>{html.escape(short_window_label(item.name))}</span><strong>{html.escape(quota_utilization_label(item.window, decimals=0))}{pace_badge(item.window)}</strong></div>'
         f'<div class="mini-bar"><span class="fill-{html.escape(source)} fill-{html.escape(item.name)}" style="width:{clamped_pct(item.window.utilization):.1f}%"></span></div>'
         f'<p>{html.escape(window_reset_label(item.window))}</p>'
         '</div>'
@@ -98,7 +98,7 @@ def runtime_window(item: DashboardWindow) -> str:
         '<div class="runtime-window">'
         f'<h4>{html.escape(runtime_window_label(item.name))}</h4>'
         f'<div class="runtime-bar"><span style="width:{clamped_pct(runtime_pct):.1f}%">{model_segments(runtime)}</span></div>'
-        f'<div class="row"><strong>{percent1(runtime_pct)}</strong><span>{percent1(item.window.utilization)} of quota</span></div>'
+        f'<div class="row"><strong>{html.escape(runtime_share_label(runtime, service_total))}</strong><span>{html.escape(runtime_quota_context_label(item.window))}</span></div>'
         f'<p>{html.escape(tokens)}</p>'
         f'{projects}'
         '</div>'
@@ -150,7 +150,7 @@ def quota_window_card(item: DashboardWindow, source: str) -> str:
         '<article class="quota-window">'
         f'<h3>{html.escape(short_window_label(item.name))} 창</h3>'
         f'<div class="quota-bar"><span class="fill-{html.escape(source)} fill-{html.escape(item.name)}" style="width:{clamped_pct(window.utilization):.1f}%">{model_segments_from_projects(window.by_project)}</span></div>'
-        f'<div class="row"><strong>{percent1(window.utilization)}{pace_badge(window)}</strong><span>{html.escape(window_reset_label(window))}</span></div>'
+        f'<div class="row"><strong>{html.escape(quota_utilization_label(window))}{pace_badge(window)}</strong><span>{html.escape(window_reset_label(window))}</span></div>'
         f'{token_section}'
         f'{quota_group_rows(window.quota_groups)}'
         f'{project_section}'
@@ -509,6 +509,7 @@ def usage_timeline_card(source: str, dates: list[str], totals: list[float], data
         f'<div class="row"><h3>{html.escape(provider_title(source))}</h3><strong>{html.escape(format_history_value(sum(totals), unit))}</strong></div>'
         f'{usage_multiline_svg(totals, project_series, source)}'
         f'<p>{html.escape(dates[0])} - {html.escape(dates[-1])}</p>'
+        '<p class="timeline-note">30일 사용량 히스토리 · 현재 quota 창 아님</p>'
         f'{project_rows_html}'
         '</article>'
     )

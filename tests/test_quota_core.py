@@ -18,7 +18,7 @@ from quota_core.session import analyze_claude_sessions, build_empty_session_repo
 from quota_core.session.claude import normalize_prompt_preview
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
 from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
-from quota_core.dashboard.formatters import timestamp_reset_label, window_reset_label
+from quota_core.dashboard.formatters import quota_utilization_label, runtime_quota_context_label, runtime_share_label, timestamp_reset_label, window_reset_label
 from quota_core.dashboard.renderer import render_page
 from quota_core.dashboard.view_model import build_provider_dashboard
 
@@ -436,6 +436,7 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("<i style=\"background:#38bdf8\"></i>alpha-app", page)
         self.assertIn("<polyline points=", page)
         self.assertIn("mini-sparkline", page)
+        self.assertIn("30일 사용량 히스토리 · 현재 quota 창 아님", page)
         self.assertIn("72.0%", page)
         self.assertNotIn("0.7%", page)
 
@@ -507,6 +508,42 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(window_reset_label(soon_window, now=now), "30분 후 리셋")
         self.assertEqual(timestamp_reset_label(now + 2 * 3600, now=now), "2.0h 후")
         self.assertEqual(timestamp_reset_label(None, now=now), "-")
+
+    def test_dashboard_quota_utilization_labels_use_shared_formatter(self):
+        stale_window = SnapshotWindow(total_tokens=327_857, utilization=0.0, cache_state="stale", stale=True)
+        live_window = SnapshotWindow(total_tokens=327_857, utilization=0.2, cache_state="live")
+
+        self.assertEqual(quota_utilization_label(stale_window), "집계 지연")
+        self.assertEqual(runtime_quota_context_label(stale_window), "quota 집계 지연")
+        self.assertEqual(quota_utilization_label(live_window), "20.0%")
+        self.assertEqual(runtime_quota_context_label(live_window), "20.0% of quota")
+        self.assertEqual(runtime_share_label(RuntimeBreakdown(), 327_857), "runtime 없음")
+        self.assertEqual(runtime_share_label(RuntimeBreakdown(total_tokens=246_942), 327_857), "75.3%")
+
+    def test_dashboard_marks_stale_zero_quota_utilization_as_delayed(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="codex",
+            sampled_at=now,
+            windows={
+                "seven_day": SnapshotWindow(
+                    window_start=now - 3 * 24 * 3600,
+                    window_end=now,
+                    resets_at=now + 4 * 24 * 3600,
+                    utilization=0.0,
+                    total_tokens=327_857,
+                    runtime=RuntimeBreakdown(total_tokens=246_942),
+                    cache_state="stale",
+                    stale=True,
+                )
+            },
+        )
+
+        page = render_page([snapshot])
+
+        self.assertIn("집계 지연", page)
+        self.assertIn("quota 집계 지연", page)
+        self.assertNotIn("0.0% of quota", page)
 
     def test_dashboard_keeps_gemini_local_history_out_of_operations_pair(self):
         now = int(time.time())
