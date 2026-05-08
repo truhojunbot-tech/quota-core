@@ -73,12 +73,59 @@ def normalize_codex_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
             cache_state=cache_state,
             stale=cache_state == "stale",
         )
+    history = _telemetry_history(payload)
     warnings = ()
     if cache_state == "stale":
-        warnings = ("codex rate-limit telemetry is stale",)
+        warnings = (_stale_warning(payload),)
     elif cache_state == "cached":
         warnings = ("codex rate-limit telemetry is cached",)
-    return NormalizedSnapshot(source="codex", sampled_at=sampled_at, windows=windows, warnings=warnings)
+    return NormalizedSnapshot(source="codex", sampled_at=sampled_at, windows=windows, warnings=warnings, history=history)
+
+
+def _telemetry_history(payload: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "rate_limit_source",
+        "source_event_ts",
+        "source_age_seconds",
+        "last_usage_ts",
+        "last_usage_age_seconds",
+        "last_cli_activity_ts",
+        "last_cli_activity_age_seconds",
+        "usage_limit_ts",
+        "usage_limit_age_seconds",
+        "usage_limited",
+        "idle",
+    )
+    telemetry = {key: payload[key] for key in keys if key in payload and payload[key] is not None}
+    return {"quota_telemetry": telemetry} if telemetry else {}
+
+
+def _stale_warning(payload: dict[str, Any]) -> str:
+    parts = ["codex rate-limit telemetry stale"]
+    source_age = _optional_int(payload.get("source_age_seconds"))
+    if source_age is not None:
+        parts.append(f"latest rate-limit event {_format_age(source_age)} ago")
+    activity_age = _optional_int(payload.get("last_cli_activity_age_seconds"))
+    if activity_age is not None:
+        parts.append(f"CLI activity {_format_age(activity_age)} ago")
+    source = payload.get("rate_limit_source")
+    if source:
+        parts.append(f"source {source}")
+    return "; ".join(parts)
+
+
+def _format_age(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h {minutes % 60}m"
+    days = hours // 24
+    return f"{days}d {hours % 24}h"
 
 def _cache_state(payload: dict[str, Any]) -> str:
     state = payload.get("cache_state")
