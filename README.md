@@ -77,7 +77,7 @@ quota-core dashboard --snapshot quota-core-snapshot.json --output quota-core-das
 
 Dashboard and reporting code consume normalized snapshots only. They must not inspect raw Claude JSONL files, Codex SQLite databases, Gemini session files, credentials, Telegram settings, private bot registries, or internal paths.
 
-The schema is documented in [docs/snapshot-schema.md](docs/snapshot-schema.md).
+The schema is documented in [docs/snapshot-schema.md](docs/snapshot-schema.md). Data ingestion flow is documented in [docs/data-ingestion-architecture.md](docs/data-ingestion-architecture.md). Field interpretation, stale/cached display policy, runtime share semantics, history-vs-quota distinctions, and dashboard QA expectations are documented in [docs/reporting-semantics.md](docs/reporting-semantics.md).
 
 ## Public vs Private Boundary
 

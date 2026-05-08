@@ -6,6 +6,8 @@ This schema is the public API between provider adapters, dashboard components, a
 
 Provider-specific raw data must be normalized into this shape before it reaches dashboard or reporting code.
 
+For data ingestion flow, see [data-ingestion-architecture.md](data-ingestion-architecture.md). For field interpretation and UI/reporting policy, see [reporting-semantics.md](reporting-semantics.md). This schema defines shape; the reporting semantics document defines freshness, history, runtime, and coverage meaning.
+
 ## Top-Level Shape
 
 ```json
@@ -56,6 +58,8 @@ Fields:
 - `cache_state`: `live`, `cached`, `stale`, or `unknown`
 - `stale`: boolean shortcut for stale UI/reporting states
 
+Freshness matters. A stale window can still carry tokens, utilization, and reset timestamps, but dashboard code must render those values according to [reporting-semantics.md](reporting-semantics.md) instead of treating them as live provider state.
+
 ## Aggregate Shape
 
 ```json
@@ -84,6 +88,8 @@ Fields:
 ```
 
 Runtime is nested under each window so dashboard and reporting can compare provider-wide usage with bot/runtime-only usage without re-scanning raw logs.
+
+Runtime percentages are a share of provider-window tokens, not provider quota utilization. Dashboards must label those concepts separately.
 
 ## Local Scanner Windows
 

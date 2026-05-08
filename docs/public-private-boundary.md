@@ -15,6 +15,8 @@ quota-core dashboard
 
 Private ops should be an overlay for one environment, not a required dependency for public usage.
 
+Data source flow is documented in [data-ingestion-architecture.md](data-ingestion-architecture.md). Dashboard/reporting field semantics are documented in [reporting-semantics.md](reporting-semantics.md).
+
 ## Public Repo Ownership
 
 The public repo owns reusable product code.
@@ -128,6 +130,8 @@ Forbidden GUI inputs:
 - Internal paths
 
 Provider adapters and snapshot normalizers own raw data parsing. The dashboard must not repair provider data.
+
+Dashboard display policy must remain public and reusable. Private ops can supply snapshots and generated artifacts, but stale/cached/live wording, runtime share semantics, history-vs-quota labels, and common aggregation behavior belong in public core.
 
 ## Provider Boundary
 
