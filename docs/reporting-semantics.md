@@ -67,6 +67,8 @@ Specific stale rules:
 - If `stale`, render reset text as `reset 확인 지연` even when `resets_at` is in the future.
 - Never render stale future `resets_at` as a normal `n시간 후 리셋` countdown.
 - Never render expired stale `resets_at` as `리셋됨`; that suggests a confirmed provider reset.
+- Any quota window whose `cache_state` is not `live` must carry a provider-level reason through `warnings`, `errors`, history `*_error`, or structured `history.quota_telemetry`.
+- Dashboard verification must fail if a non-live quota window has no tracked reason; otherwise operators see a stale/cached badge without knowing what collector path failed.
 
 ## Runtime Display Policy
 

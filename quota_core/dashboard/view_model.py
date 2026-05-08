@@ -10,6 +10,7 @@ from quota_core.snapshot import NormalizedSnapshot, SnapshotWindow
 
 WindowKind = Literal["quota", "usage", "local"]
 WindowRole = Literal["short", "weekly", "detail"]
+NON_LIVE_REASON_MISSING = "non-live reason missing; check collector telemetry"
 
 
 @dataclass(frozen=True)
@@ -100,6 +101,20 @@ def data_state_label(providers: tuple[ProviderDashboard, ...]) -> str:
     if cached:
         return f"{cached} cached"
     return f"{live} live"
+
+
+def provider_has_non_live_quota(provider: ProviderDashboard) -> bool:
+    return any(window.is_quota and window.window.cache_state != "live" for window in provider.windows)
+
+
+def snapshot_has_non_live_reason(snapshot: NormalizedSnapshot) -> bool:
+    if snapshot.errors or snapshot.warnings:
+        return True
+    if not isinstance(snapshot.history, dict):
+        return False
+    if snapshot.history.get("quota_telemetry"):
+        return True
+    return any(key.endswith("_error") and value for key, value in snapshot.history.items())
 
 
 def window_is_quota(name: str, window: SnapshotWindow) -> bool:

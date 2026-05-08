@@ -60,6 +60,8 @@ Fields:
 
 Freshness matters. A stale window can still carry tokens, utilization, and reset timestamps, but dashboard code must render those values according to [reporting-semantics.md](reporting-semantics.md) instead of treating them as live provider state.
 
+When any quota window is `cached`, `stale`, or `unknown`, the snapshot must also preserve why the provider is not live. Use `warnings`, `errors`, a history key ending in `_error`, or structured `history.quota_telemetry` with fields such as `source_event_ts`, `source_age_seconds`, `last_cli_activity_ts`, and `rate_limit_source`.
+
 ## Aggregate Shape
 
 ```json

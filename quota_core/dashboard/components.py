@@ -7,7 +7,7 @@ import html
 import time
 
 from quota_core.dashboard.formatters import quota_utilization_label, runtime_quota_context_label, runtime_share_label, timestamp_reset_label, window_reset_label
-from quota_core.dashboard.view_model import DashboardWindow, ProviderDashboard, build_dashboard
+from quota_core.dashboard.view_model import DashboardWindow, NON_LIVE_REASON_MISSING, ProviderDashboard, build_dashboard, provider_has_non_live_quota, snapshot_has_non_live_reason
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotQuotaGroup, SnapshotWindow
 
 KST = timezone(timedelta(hours=9))
@@ -648,15 +648,27 @@ def detail_window(item: DashboardWindow) -> str:
 def data_state_panel(providers: tuple[ProviderDashboard, ...]) -> str:
     rows = []
     for provider in providers:
+        provider_has_rows = False
+        provider_has_detailed_telemetry = False
         for warning in provider.snapshot.warnings:
+            provider_has_rows = True
+            provider_has_detailed_telemetry = provider_has_detailed_telemetry or "latest rate-limit event" in str(warning)
             rows.append(f'<li><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(data_state_warning_message(warning))}</span></li>')
         for error in provider.snapshot.errors:
+            provider_has_rows = True
             rows.append(f'<li class="error"><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(error)}</span></li>')
         if isinstance(provider.snapshot.history, dict):
             for key, value in provider.snapshot.history.items():
                 if key.endswith("_error") and value:
+                    provider_has_rows = True
                     label = key[:-6].replace("_", " ")
                     rows.append(f'<li class="error"><strong>{html.escape(provider.source.title())} {html.escape(label)}</strong><span>{html.escape(data_state_error_message(value))}</span></li>')
+            telemetry_message = data_state_quota_telemetry_message(provider.snapshot.history.get("quota_telemetry"))
+            if telemetry_message and provider_has_non_live_quota(provider) and not provider_has_detailed_telemetry:
+                provider_has_rows = True
+                rows.append(f'<li><strong>{html.escape(provider.source.title())} telemetry</strong><span>{html.escape(telemetry_message)}</span></li>')
+        if provider_has_non_live_quota(provider) and not provider_has_rows and not snapshot_has_non_live_reason(provider.snapshot):
+            rows.append(f'<li class="error"><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(NON_LIVE_REASON_MISSING)}</span></li>')
     if not rows:
         rows.append('<li><strong>All providers</strong><span>No quota pressure or warnings in the current snapshot</span></li>')
     return panel("Data State", f'<ol class="state-list">{"".join(rows)}</ol>')
@@ -676,12 +688,46 @@ def data_state_warning_message(raw: object) -> str:
     message = " ".join(str(raw or "unknown warning").split())
     lower = message.lower()
     if lower.startswith("using cached claude quota"):
-        return "quota telemetry cached; refresh attempt timed out"
+        reason = message.split(":", 1)[1].strip() if ":" in message else "refresh attempt timed out"
+        return f"quota telemetry cached; {reason}"
     if "rate-limit telemetry is stale" in lower:
         return "quota telemetry stale; reset and pressure are delayed"
     if len(message) > 120:
         return message[:117].rstrip() + "..."
     return message
+
+
+def data_state_quota_telemetry_message(raw: object) -> str:
+    if not isinstance(raw, dict):
+        return ""
+    parts = []
+    source_age = raw.get("source_age_seconds")
+    if isinstance(source_age, (int, float)):
+        parts.append(f"latest rate-limit event {data_state_age_label(source_age)} ago")
+    activity_age = raw.get("last_cli_activity_age_seconds")
+    if isinstance(activity_age, (int, float)):
+        parts.append(f"CLI activity {data_state_age_label(activity_age)} ago")
+    source = raw.get("rate_limit_source")
+    if source:
+        parts.append(f"source {source}")
+    return "; ".join(parts)
+
+
+def data_state_age_label(seconds: object) -> str:
+    try:
+        value = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return "unknown"
+    if value < 60:
+        return f"{value}s"
+    minutes = value // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h {minutes % 60}m"
+    days = hours // 24
+    return f"{days}d {hours % 24}h"
 
 
 def session_row_name(raw: object) -> str:

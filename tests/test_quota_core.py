@@ -21,7 +21,7 @@ from quota_core.cli import main as cli_main, scan_config, verify_dashboard, writ
 from quota_core.dashboard.formatters import quota_utilization_label, runtime_quota_context_label, runtime_share_label, timestamp_reset_label, window_reset_label
 from quota_core.dashboard.renderer import render_page
 from quota_core.dashboard.verification import verify_dashboard_html
-from quota_core.dashboard.view_model import build_provider_dashboard
+from quota_core.dashboard.view_model import NON_LIVE_REASON_MISSING, build_provider_dashboard
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -374,7 +374,28 @@ class SnapshotTests(unittest.TestCase):
         page = render_page([snapshot])
 
         self.assertIn("quota telemetry cached", page)
-        self.assertNotIn("claude quota.py timeout", page)
+        self.assertIn("claude quota.py timeout", page)
+
+    def test_dashboard_flags_non_live_windows_without_reason(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="demo",
+            sampled_at=now,
+            windows={
+                "five_hour": SnapshotWindow(
+                    window_start=now - 3600,
+                    window_end=now,
+                    resets_at=now + 3600,
+                    utilization=0.1,
+                    cache_state="cached",
+                )
+            },
+        )
+
+        page = render_page([snapshot])
+
+        self.assertIn(NON_LIVE_REASON_MISSING, page)
+        self.assertTrue(any("non-live quota windows missing reason" in error for error in verify_dashboard_html([snapshot], page)))
 
     def test_dashboard_shortens_session_identifiers(self):
         snapshot = NormalizedSnapshot(
@@ -635,6 +656,7 @@ class SnapshotTests(unittest.TestCase):
                     stale=True,
                 )
             },
+            warnings=("codex rate-limit telemetry stale; latest rate-limit event 2d ago",),
             history={
                 "usage_timeline": {
                     "unit": "tokens",

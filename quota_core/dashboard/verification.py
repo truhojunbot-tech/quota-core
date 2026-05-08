@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from quota_core.dashboard.formatters import quota_utilization_label, quota_window_is_stale, runtime_quota_context_label, runtime_share_label, window_reset_label
-from quota_core.dashboard.view_model import window_is_quota
+from quota_core.dashboard.view_model import NON_LIVE_REASON_MISSING, snapshot_has_non_live_reason, window_is_quota
 from quota_core.snapshot import NormalizedSnapshot, SnapshotWindow
 
 HISTORY_NOTE = "30일 사용량 히스토리 · 현재 quota 창 아님"
@@ -19,9 +19,24 @@ def verify_dashboard_html(snapshots: list[NormalizedSnapshot], html: str) -> lis
         errors.append(f"usage timeline is missing history-vs-quota note: {HISTORY_NOTE}")
 
     for snapshot in snapshots:
+        _verify_non_live_reasons(errors, snapshot, html)
         for window_name, window in snapshot.windows.items():
             _verify_window_labels(errors, snapshot.source, window_name, window, html)
     return errors
+
+
+def _verify_non_live_reasons(errors: list[str], snapshot: NormalizedSnapshot, html: str) -> None:
+    non_live_quota_windows = [
+        name
+        for name, window in snapshot.windows.items()
+        if window_is_quota(name, window) and window.cache_state != "live"
+    ]
+    if not non_live_quota_windows:
+        return
+    if not snapshot_has_non_live_reason(snapshot):
+        errors.append(f"{snapshot.source} non-live quota windows missing reason: {', '.join(non_live_quota_windows)}")
+    if NON_LIVE_REASON_MISSING in html:
+        errors.append(f"dashboard renders missing non-live reason marker: {NON_LIVE_REASON_MISSING}")
 
 
 def _verify_window_labels(errors: list[str], source: str, window_name: str, window: SnapshotWindow, html: str) -> None:
