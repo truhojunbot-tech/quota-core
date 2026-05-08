@@ -144,6 +144,8 @@ The source of truth is:
 
 A dashboard change that affects private deployment output must regenerate both snapshot JSON and dashboard HTML before visual verification.
 
+Use `quota-core verify-dashboard --snapshot <snapshot.json> --html <dashboard.html>` after rendering to check that the generated HTML still follows the documented stale, runtime, and history display semantics.
+
 ## Operational Verification
 
 When a private deployment serves the dashboard, verify the actual configured dashboard URL and port.

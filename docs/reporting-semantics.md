@@ -138,6 +138,7 @@ Required artifact checks:
 - private mirror is synced when private ops serves the dashboard
 - snapshot artifact is regenerated
 - HTML artifact is regenerated from that snapshot
+- `quota-core verify-dashboard --snapshot <snapshot.json> --html <dashboard.html>` passes
 - the actual served URL is checked, not only a temporary file or alternate server
 
 Required visual checks:

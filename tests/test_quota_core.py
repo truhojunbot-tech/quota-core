@@ -17,9 +17,10 @@ from quota_core.runtime import runtime_env
 from quota_core.session import analyze_claude_sessions, build_empty_session_report, normalize_session_report_query, validate_session_report_dict
 from quota_core.session.claude import normalize_prompt_preview
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
-from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
+from quota_core.cli import main as cli_main, scan_config, verify_dashboard, write_dashboard, write_demo, write_scan
 from quota_core.dashboard.formatters import quota_utilization_label, runtime_quota_context_label, runtime_share_label, timestamp_reset_label, window_reset_label
 from quota_core.dashboard.renderer import render_page
+from quota_core.dashboard.verification import verify_dashboard_html
 from quota_core.dashboard.view_model import build_provider_dashboard
 
 
@@ -546,6 +547,64 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("집계 지연", page)
         self.assertIn("quota 집계 지연", page)
         self.assertNotIn("0.0% of quota", page)
+
+    def test_dashboard_artifact_verifier_enforces_reporting_semantics(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="codex",
+            sampled_at=now,
+            windows={
+                "seven_day": SnapshotWindow(
+                    window_start=now - 3 * 24 * 3600,
+                    window_end=now,
+                    resets_at=now + 4 * 24 * 3600,
+                    utilization=0.0,
+                    total_tokens=327_857,
+                    runtime=RuntimeBreakdown(total_tokens=246_942),
+                    cache_state="stale",
+                    stale=True,
+                )
+            },
+            history={
+                "usage_timeline": {
+                    "unit": "tokens",
+                    "dates": ["2026-05-07"],
+                    "daily_total": {"2026-05-07": 327_857},
+                    "datasets": [],
+                }
+            },
+        )
+        good_html = render_page([snapshot])
+        bad_html = good_html.replace("reset 확인 지연", "4.9시간 후 리셋").replace("30일 사용량 히스토리 · 현재 quota 창 아님", "")
+
+        self.assertEqual(verify_dashboard_html([snapshot], good_html), [])
+        errors = verify_dashboard_html([snapshot], bad_html)
+        self.assertTrue(any("missing reset label" in error for error in errors))
+        self.assertTrue(any("usage timeline" in error for error in errors))
+
+    def test_verify_dashboard_cli_reports_artifact_errors(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="codex",
+            sampled_at=now,
+            windows={
+                "seven_day": SnapshotWindow(
+                    resets_at=now + 3600,
+                    utilization=0.0,
+                    total_tokens=100,
+                    cache_state="stale",
+                    stale=True,
+                )
+            },
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            snapshot_path = Path(temp_dir) / "snapshot.json"
+            html_path = Path(temp_dir) / "dashboard.html"
+            snapshot_path.write_text(json.dumps({"snapshots": [snapshot_to_dict(snapshot)]}))
+            html_path.write_text("<html><body>리셋됨</body></html>")
+
+            self.assertNotEqual(cli_main(["verify-dashboard", "--snapshot", str(snapshot_path), "--html", str(html_path)]), 0)
+            self.assertTrue(verify_dashboard(snapshot_path, html_path))
 
     def test_dashboard_keeps_gemini_local_history_out_of_operations_pair(self):
         now = int(time.time())

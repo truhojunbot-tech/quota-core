@@ -73,6 +73,14 @@ Renders static dashboard HTML from a normalized snapshot file.
 quota-core dashboard --snapshot quota-core-snapshot.json --output quota-core-dashboard.html
 ```
 
+### `quota-core verify-dashboard`
+
+Verifies that generated dashboard HTML still matches the reporting semantics for the snapshot that produced it.
+
+```bash
+quota-core verify-dashboard --snapshot quota-core-snapshot.json --html quota-core-dashboard.html
+```
+
 ## Public Snapshot Contract
 
 Dashboard and reporting code consume normalized snapshots only. They must not inspect raw Claude JSONL files, Codex SQLite databases, Gemini session files, credentials, Telegram settings, private bot registries, or internal paths.

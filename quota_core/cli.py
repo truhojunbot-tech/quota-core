@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import QuotaCoreConfig, default_config_path, load_config, validate_config, write_default_config
 from .dashboard.renderer import render_page
+from .dashboard.verification import verify_dashboard_html
 from .providers import enabled_provider_names
 from .snapshot import NormalizedSnapshot, empty_snapshot, snapshot_from_dict, snapshot_to_dict, validate_snapshot_dict
 
@@ -27,6 +28,9 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard_parser = subcommands.add_parser("dashboard", help="render a local dashboard from snapshots")
     dashboard_parser.add_argument("--snapshot", default="quota-core-snapshot.json", help="snapshot JSON path")
     dashboard_parser.add_argument("--output", default="quota-core-dashboard.html", help="HTML output path")
+    verify_parser = subcommands.add_parser("verify-dashboard", help="verify a dashboard HTML artifact against its snapshot")
+    verify_parser.add_argument("--snapshot", default="quota-core-snapshot.json", help="snapshot JSON path")
+    verify_parser.add_argument("--html", default="quota-core-dashboard.html", help="dashboard HTML path")
     return parser
 
 
@@ -51,6 +55,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "dashboard":
         path = write_dashboard(args.snapshot, args.output)
         print(f"Wrote dashboard: {path}")
+        return 0
+    if args.command == "verify-dashboard":
+        errors = verify_dashboard(args.snapshot, args.html)
+        if errors:
+            for error in errors:
+                print(f"ERROR: {error}")
+            return 1
+        print("Dashboard verification passed")
         return 0
     raise SystemExit(f"quota-core {args.command} is not implemented yet")
 
@@ -124,6 +136,14 @@ def write_dashboard(snapshot_path: str | Path, output: str | Path) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(html)
     return target
+
+
+def verify_dashboard(snapshot_path: str | Path, html_path: str | Path) -> list[str]:
+    """Verify generated dashboard HTML against the snapshot that produced it."""
+
+    snapshots = load_snapshot_file(snapshot_path)
+    html = Path(html_path).expanduser().read_text(errors="replace")
+    return verify_dashboard_html(snapshots, html)
 
 
 def load_snapshot_file(snapshot_path: str | Path) -> list[NormalizedSnapshot]:
