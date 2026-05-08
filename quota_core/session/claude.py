@@ -260,6 +260,7 @@ class ClaudeSessionScanner:
                     "prompt_preview": preview,
                     "prompt_hash": prompt_hash,
                     "prompt_family": family_key,
+                    "family_type": prompt_family_type(context.text),
                     "_prompt_hashes": set(),
                     "timestamp": timestamp,
                     "total_tokens": 0,
@@ -293,6 +294,7 @@ class ClaudeSessionScanner:
                     "api_calls": 0,
                     "prompt_hash": prompt_hash,
                     "prompt_family": family_key,
+                    "family_type": prompt_family_type(context.text),
                     "_prompt_hashes": set(),
                     "prompt_preview": preview,
                     "context": prompt_context,
@@ -500,7 +502,12 @@ def diagnostic_rows(rows: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows.values():
         cleaned = dict(row)
         hashes = cleaned.pop("_prompt_hashes", set())
-        cleaned["prompt_variants"] = len(hashes) if isinstance(hashes, set) else 1
+        variants = len(hashes) if isinstance(hashes, set) else 1
+        api_calls = int(cleaned.get("api_calls") or 0)
+        total_tokens = int(cleaned.get("total_tokens") or cleaned.get("tokens") or 0)
+        cleaned["prompt_variants"] = variants
+        cleaned["avg_tokens_per_call"] = round(total_tokens / api_calls) if api_calls else 0
+        cleaned["avg_tokens_per_prompt"] = round(total_tokens / variants) if variants else 0
         result.append(cleaned)
     return result
 
@@ -518,6 +525,9 @@ def cache_efficiency_rows(rows: dict[str, dict[str, Any]], total_tokens: int) ->
                 "total_tokens": row.get("total_tokens", 0),
                 "api_calls": row.get("api_calls", 0),
                 "prompt_variants": row.get("prompt_variants", 0),
+                "family_type": row.get("family_type") or "prompt",
+                "avg_tokens_per_call": row.get("avg_tokens_per_call", 0),
+                "avg_tokens_per_prompt": row.get("avg_tokens_per_prompt", 0),
                 "cache_read_input_tokens": cache_read,
                 "cache_creation_input_tokens": cache_create,
                 "cache_hit_pct": round(cache_read / cache_total * 100, 1) if cache_total else 0.0,
@@ -580,6 +590,13 @@ def prompt_family_key(project: str, prompt: str, prompt_hash: str) -> str:
         branch = agent_crew_value(prompt, compact, "branch") or "no-branch"
         return f"{project}:agent-crew:{task_type}:{branch}"
     return f"{project}:{prompt_hash}"
+
+
+def prompt_family_type(prompt: str) -> str:
+    compact = " ".join(prompt.split())
+    if compact == "Poll agent_crew for next task and execute it." or compact.startswith("=== AGENT_CREW TASK ==="):
+        return "automated_workflow"
+    return "prompt"
 
 
 def prompt_context_rows(context: PromptContext, redaction: str) -> list[dict[str, Any]]:

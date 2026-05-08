@@ -1205,6 +1205,9 @@ context: {"instructions": "Write tests first"}
         self.assertEqual(report["expensive_prompts"][0]["total_tokens"], 77)
         self.assertEqual(report["expensive_prompts"][0]["api_calls"], 2)
         self.assertEqual(report["expensive_prompts"][0]["prompt_preview"], "Agent Crew implement main")
+        self.assertEqual(report["expensive_prompts"][0]["family_type"], "automated_workflow")
+        self.assertEqual(report["expensive_prompts"][0]["avg_tokens_per_call"], 38)
+        self.assertEqual(report["expensive_prompts"][0]["avg_tokens_per_prompt"], 77)
         self.assertEqual(report["expensive_prompts"][0]["prompt_variants"], 1)
         self.assertEqual(len(report["cache_breaks"]), 1)
         self.assertEqual(report["cache_breaks"][0]["tokens"], 44)
@@ -1262,8 +1265,11 @@ priority: 3
 
         self.assertEqual(len(report["expensive_prompts"]), 1)
         self.assertEqual(report["expensive_prompts"][0]["prompt_preview"], "Agent Crew implement main")
+        self.assertEqual(report["expensive_prompts"][0]["family_type"], "automated_workflow")
         self.assertEqual(report["expensive_prompts"][0]["prompt_variants"], 2)
         self.assertEqual(report["expensive_prompts"][0]["api_calls"], 2)
+        self.assertEqual(report["expensive_prompts"][0]["avg_tokens_per_call"], 70)
+        self.assertEqual(report["expensive_prompts"][0]["avg_tokens_per_prompt"], 70)
 
     def test_dashboard_renders_claude_session_report(self):
         report = build_empty_session_report(generated_at=1770000000)
@@ -1277,16 +1283,16 @@ priority: 3
         report["hourly_bursts"] = [{"name": "05-07 00:00Z", "display_name": "05-07 00:00Z", "total_tokens": 300, "share_pct": 100.0}]
         report["top_sessions"] = [{"name": "demo-project/session", "display_name": "demo-project/session", "total_tokens": 300, "share_pct": 100.0}]
         report["cache_efficiency"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "cache_hit_pct": 42.9, "cache_creation_input_tokens": 120}]
-        report["expensive_prompts"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "api_calls": 3, "prompt_variants": 2, "context": [{"text": "neighbor", "here": True}]}]
+        report["expensive_prompts"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "api_calls": 3, "avg_tokens_per_call": 100, "prompt_variants": 2, "context": [{"text": "neighbor", "here": True}]}]
         report["cache_breaks"] = [{"project": "demo-project", "prompt_preview": "cache prompt", "tokens": 120, "api_calls": 2, "prompt_variants": 2, "context": [{"text": "neighbor", "here": True}]}]
         report["reconciliation"].update({"quota_scanner_total_tokens": 600, "session_total_tokens": 300})
         snapshot = NormalizedSnapshot(source="claude", sampled_at=1770000000, history={"claude_session_report": report, "claude_session_reports": {"5h": report, "24h": report, "7d": report}})
         page = render_page([snapshot])
         self.assertIn("Claude Sessions", page)
         self.assertIn("demo-project", page)
-        self.assertIn("Main Drain", page)
+        self.assertIn("Prompt Hotspot", page)
         self.assertIn("demo-project · expensive prompt", page)
-        self.assertIn("100.0% of session · 3 calls · 2 prompts", page)
+        self.assertIn("100.0% of session · 3 calls · avg 100/call · 2 prompts", page)
         self.assertIn("One prompt family is consuming the session.", page)
         self.assertIn("Throttle, batch, or dedupe this loop first.", page)
         self.assertIn("Fresh Cache Hotspot", page)
@@ -1321,10 +1327,47 @@ priority: 3
         self.assertIn("Cache Efficiency", page)
         self.assertIn("300 · 42.9% hit · 120 create", page)
         self.assertIn("Prompt Families", page)
-        self.assertIn("300 · 3 calls · 2 prompts", page)
+        self.assertIn("300 · 3 calls · avg 100/call · 2 prompts", page)
         self.assertIn("cache prompt", page)
         self.assertIn("Fresh Cache Creates", page)
         self.assertIn("120 · 2 calls · 2 prompts", page)
+
+    def test_dashboard_separates_agent_crew_workflow_families_from_prompts(self):
+        report = build_empty_session_report(generated_at=1770000000)
+        report["totals"].update({"total_tokens": 500})
+        report["expensive_prompts"] = [
+            {
+                "project": "demo-project",
+                "prompt_preview": "Agent Crew implement main",
+                "prompt_family": "demo-project:agent-crew:implement:main",
+                "family_type": "automated_workflow",
+                "total_tokens": 400,
+                "api_calls": 8,
+                "avg_tokens_per_call": 50,
+                "prompt_variants": 4,
+            },
+            {
+                "project": "demo-project",
+                "prompt_preview": "single expensive question",
+                "family_type": "prompt",
+                "total_tokens": 100,
+                "api_calls": 1,
+                "avg_tokens_per_call": 100,
+                "prompt_variants": 1,
+            },
+        ]
+        snapshot = NormalizedSnapshot(source="claude", sampled_at=1770000000, history={"claude_session_report": report})
+
+        page = render_page([snapshot])
+
+        self.assertIn("Workflow Drain", page)
+        self.assertIn("This is an automated workflow family", page)
+        self.assertIn("Compare average tokens/call, prompt count, and cache churn", page)
+        self.assertIn("Automated Workflow Families", page)
+        self.assertIn("Workflow totals are grouped task families", page)
+        self.assertIn("400 · 8 calls · avg 50/call · 4 prompts", page)
+        self.assertIn("Prompt Families", page)
+        self.assertIn("100 · 1 calls · avg 100/call", page)
 
 
 class PublicSplitGuardTests(unittest.TestCase):

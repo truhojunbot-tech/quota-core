@@ -314,18 +314,32 @@ def session_decision_panel(report: dict[str, object]) -> str:
         tokens = int(expensive.get("total_tokens") or 0)
         calls = int(expensive.get("api_calls") or 0)
         variants = int(expensive.get("prompt_variants") or 0)
+        avg = int(expensive.get("avg_tokens_per_call") or 0)
         detail = f"{pct(tokens, total_tokens)} of session · {calls} calls"
+        if avg:
+            detail += f" · avg {compact_number(avg)}/call"
         if variants > 1:
             detail += f" · {variants} prompts"
-        cards.append(
-            signal_card(
-                "Main Drain",
-                label,
-                detail,
-                "One prompt family is consuming the session.",
-                "Throttle, batch, or dedupe this loop first.",
+        if is_workflow_family(expensive):
+            cards.append(
+                signal_card(
+                    "Workflow Drain",
+                    label,
+                    detail,
+                    "This is an automated workflow family, so total tokens are expected to dwarf one-off prompts.",
+                    "Compare average tokens/call, prompt count, and cache churn before judging the workflow.",
+                )
             )
-        )
+        else:
+            cards.append(
+                signal_card(
+                    "Prompt Hotspot",
+                    label,
+                    detail,
+                    "One prompt family is consuming the session.",
+                    "Throttle, batch, or dedupe this loop first.",
+                )
+            )
     cache_break = first_dict(report.get("cache_breaks"))
     if cache_break:
         label = prompt_row_label(cache_break)
@@ -390,21 +404,40 @@ def signal_card(title: str, value: str, impact: str, meaning: str, action: str) 
 def expensive_prompt_rows(rows: object) -> str:
     if not isinstance(rows, list) or not rows:
         return ""
+    workflow_rows = [row for row in rows if isinstance(row, dict) and is_workflow_family(row)]
+    prompt_rows = [row for row in rows if isinstance(row, dict) and not is_workflow_family(row)]
+    cards = []
+    if workflow_rows:
+        cards.append(prompt_family_card("Automated Workflow Families", workflow_rows, "Workflow totals are grouped task families; compare avg/call and prompt count, not only total tokens."))
+    if prompt_rows:
+        cards.append(prompt_family_card("Prompt Families", prompt_rows, ""))
+    return "".join(cards)
+
+
+def prompt_family_card(title: str, rows: list[dict[str, object]], note: str) -> str:
     items = []
     for row in rows[:4]:
-        if not isinstance(row, dict):
-            continue
         preview = prompt_preview_label(row.get("prompt_preview") or row.get("prompt_hash") or "redacted")
         tokens = compact_number(int(row.get("total_tokens") or 0))
         project = str(row.get("project") or "unknown")
         calls = int(row.get("api_calls") or 0)
         variants = int(row.get("prompt_variants") or 0)
+        avg = int(row.get("avg_tokens_per_call") or 0)
         variant_text = f" · {variants} prompts" if variants > 1 else ""
-        right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
+        avg_text = f" · avg {compact_number(avg)}/call" if avg else ""
+        right = f"{tokens}{f' · {calls} calls' if calls else ''}{avg_text}{variant_text}"
         context = prompt_context_label(row.get("context"))
         label = f"{project} · {preview}{context}"
         items.append(f'<li><span>{html.escape(label)}</span><strong>{html.escape(right)}</strong></li>')
-    return f'<article class="session-card"><h3>Prompt Families</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+    note_html = f'<p class="panel-note">{html.escape(note)}</p>' if note else ""
+    return f'<article class="session-card"><h3>{html.escape(title)}</h3>{note_html}<ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def is_workflow_family(row: dict[str, object]) -> bool:
+    family_type = str(row.get("family_type") or "")
+    family = str(row.get("prompt_family") or "")
+    preview = str(row.get("prompt_preview") or "")
+    return family_type == "automated_workflow" or ":agent-crew:" in family or preview.startswith("Agent Crew")
 
 
 def cache_break_rows(rows: object) -> str:
