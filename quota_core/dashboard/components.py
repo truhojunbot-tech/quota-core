@@ -350,7 +350,7 @@ def expensive_prompt_rows(rows: object) -> str:
     for row in rows[:4]:
         if not isinstance(row, dict):
             continue
-        preview = str(row.get("prompt_preview") or row.get("prompt_hash") or "redacted")
+        preview = prompt_preview_label(row.get("prompt_preview") or row.get("prompt_hash") or "redacted")
         tokens = compact_number(int(row.get("total_tokens") or 0))
         project = str(row.get("project") or "unknown")
         calls = int(row.get("api_calls") or 0)
@@ -368,7 +368,7 @@ def cache_break_rows(rows: object) -> str:
     for row in rows[:4]:
         if not isinstance(row, dict):
             continue
-        preview = str(row.get("prompt_preview") or row.get("reason") or row.get("prompt_hash") or "cache break")
+        preview = prompt_preview_label(row.get("prompt_preview") or row.get("reason") or row.get("prompt_hash") or "cache break")
         project = str(row.get("project") or "unknown")
         tokens = compact_number(int(row.get("tokens") or 0))
         calls = int(row.get("api_calls") or 0)
@@ -402,8 +402,22 @@ def first_dict(rows: object) -> dict[str, object] | None:
 
 def prompt_row_label(row: dict[str, object]) -> str:
     project = str(row.get("project") or "unknown")
-    preview = str(row.get("prompt_preview") or row.get("reason") or row.get("prompt_hash") or "unknown")
+    preview = prompt_preview_label(row.get("prompt_preview") or row.get("reason") or row.get("prompt_hash") or "unknown")
     return f"{project} · {preview}"
+
+
+def prompt_preview_label(raw: object, *, max_chars: int = 72) -> str:
+    preview = " ".join(str(raw or "unknown").split())
+    lower = preview.lower()
+    if "agent_crew reminder" in lower or "agent crew reminder" in lower:
+        return "Agent Crew reminder"
+    if lower.startswith("tele" + "gram:"):
+        return "Message prompt"
+    if lower.startswith("this session is being continued"):
+        return "continued session context"
+    if len(preview) > max_chars:
+        return preview[: max_chars - 3].rstrip() + "..."
+    return preview
 
 
 def pct(value: int, total: int) -> str:
@@ -971,6 +985,7 @@ main { max-width:1400px; margin:0 auto; padding:20px 24px; }
 .runtime-card, .quota-window, .usage-card, .detail-card { background:var(--card2); border:1px solid var(--border); border-radius:8px; padding:14px; min-width:0; overflow:hidden; box-shadow:inset 0 1px 0 rgba(255,255,255,.025); }
 .runtime-card h3, .quota-window h3, .usage-card h3, .detail-card h3 { margin:0 0 10px; font-size:12px; color:#fffaf1; }
 .runtime-windows, .qc-quota-split { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.runtime-windows { grid-template-columns:1fr; }
 .runtime-card:last-child .runtime-windows { grid-template-columns:1fr; }
 .quota-grid-1 { grid-template-columns:minmax(0,1fr); }
 .provider-subhead { margin:14px 0 8px; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
@@ -1060,8 +1075,9 @@ main { max-width:1400px; margin:0 auto; padding:20px 24px; }
 dl { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:0; }
 dt { color:var(--muted); font-size:11px; }
 dd { margin:2px 0 0; color:#fffaf1; font-weight:650; overflow-wrap:anywhere; }
-.model-list li, .state-list li { display:flex; justify-content:space-between; gap:10px; padding:5px 0; border-bottom:1px solid var(--border-soft); }
-.state-list span { color:var(--muted); }
+.model-list li { display:flex; justify-content:space-between; gap:10px; padding:5px 0; border-bottom:1px solid var(--border-soft); }
+.state-list li { display:grid; grid-template-columns:160px minmax(0,1fr); gap:12px; padding:5px 0; border-bottom:1px solid var(--border-soft); }
+.state-list span { color:var(--muted); min-width:0; overflow-wrap:anywhere; }
 .error-text, .state-list .error span { color:var(--fail); }
 .limit-badge { display:inline-block; padding:3px 8px; border-radius:999px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.3px; }
 .limit-available { background:rgba(52,211,153,.14); color:#5ee0aa; }
@@ -1069,5 +1085,5 @@ dd { margin:2px 0 0; color:#fffaf1; font-weight:650; overflow-wrap:anywhere; }
 .limit-limited { background:rgba(251,113,133,.16); color:#fb7185; }
 .limit-unknown { background:rgba(148,163,184,.15); color:#94a3b8; }
 @media (max-width: 980px) { .overview-grid, .runtime-grid, .detail-grid, .usage-grid, .timeline-grid, .session-grid, .session-metrics, .session-signals { grid-template-columns:1fr; } .runtime-windows, .qc-quota-split { grid-template-columns:1fr; } .session-card-wide { grid-column:auto; } }
-@media (max-width: 640px) { header { padding:14px 16px; } main { padding:16px; } .project-list li, .timeline-projects li { grid-template-columns:minmax(0,1fr); } .project-list strong { text-align:left; } .mini-sparkline { display:none; } dl { grid-template-columns:1fr; } }
+@media (max-width: 640px) { header { padding:14px 16px; } main { padding:16px; } .project-list li, .timeline-projects li, .runtime-project-list li, .state-list li { grid-template-columns:minmax(0,1fr); display:grid; } .project-list span, .runtime-project-list span, .timeline-project-name { white-space:normal; overflow:visible; text-overflow:clip; overflow-wrap:anywhere; } .project-list strong, .runtime-project-list strong, .state-list span { text-align:left; } .mini-sparkline { display:none; } dl { grid-template-columns:1fr; } }
 """.strip()
