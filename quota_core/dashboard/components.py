@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 import html
 import time
 
+from quota_core.dashboard.formatters import timestamp_reset_label, window_reset_label
 from quota_core.dashboard.view_model import DashboardWindow, ProviderDashboard, build_dashboard
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotQuotaGroup, SnapshotWindow
 
@@ -59,7 +60,7 @@ def overall_window(item: DashboardWindow, source: str) -> str:
         '<div class="overview-window">'
         f'<div class="row"><span>{html.escape(short_window_label(item.name))}</span><strong>{percent0(item.window.utilization)}{pace_badge(item.window)}</strong></div>'
         f'<div class="mini-bar"><span class="fill-{html.escape(source)} fill-{html.escape(item.name)}" style="width:{clamped_pct(item.window.utilization):.1f}%"></span></div>'
-        f'<p>{html.escape(reset_hours(item.window))}</p>'
+        f'<p>{html.escape(window_reset_label(item.window))}</p>'
         '</div>'
     )
 
@@ -149,7 +150,7 @@ def quota_window_card(item: DashboardWindow, source: str) -> str:
         '<article class="quota-window">'
         f'<h3>{html.escape(short_window_label(item.name))} 창</h3>'
         f'<div class="quota-bar"><span class="fill-{html.escape(source)} fill-{html.escape(item.name)}" style="width:{clamped_pct(window.utilization):.1f}%">{model_segments_from_projects(window.by_project)}</span></div>'
-        f'<div class="row"><strong>{percent1(window.utilization)}{pace_badge(window)}</strong><span>{html.escape(reset_hours(window))}</span></div>'
+        f'<div class="row"><strong>{percent1(window.utilization)}{pace_badge(window)}</strong><span>{html.escape(window_reset_label(window))}</span></div>'
         f'{token_section}'
         f'{quota_group_rows(window.quota_groups)}'
         f'{project_section}'
@@ -172,7 +173,7 @@ def quota_group_row(group: SnapshotQuotaGroup) -> str:
         f'<i style="width:{clamped_pct(group.utilization):.1f}%;background:{quota_tone_color(group.utilization)}"></i>'
         '</div>'
         f'<strong>{percent0(group.utilization)}</strong>'
-        f'<em>{html.escape(reset_label(group.resets_at))}</em>'
+        f'<em>{html.escape(timestamp_reset_label(group.resets_at))}</em>'
         '</div>'
     )
 
@@ -208,7 +209,8 @@ def claude_session_panel(providers: tuple[ProviderDashboard, ...]) -> str:
         f'<div class="session-metrics">{"".join(blocks)}</div>',
         f'<p class="panel-note">window: {html.escape(str(window.get("name") or "unknown"))} · {html.escape(str(report.get("cache_state") or "unknown"))}</p>',
         session_decision_panel(report),
-        session_rows("Top Projects", report.get("by_project", []), max_rows=4),
+        session_coverage_card(report),
+        session_rows("Local Session Projects", report.get("by_project", []), max_rows=4),
         session_rows("Model Mix", report.get("by_model", []), max_rows=4),
         expensive_prompt_rows(report.get("expensive_prompts", [])),
         cache_break_rows(report.get("cache_breaks", [])),
@@ -235,6 +237,24 @@ def session_rows(title: str, rows: object, *, max_rows: int = 6) -> str:
         tokens = compact_number(int(row.get("total_tokens") or 0))
         items.append(f'<li><span>{html.escape(name)}</span><strong>{share:.1f}% · {html.escape(tokens)}</strong></li>')
     return f'<article class="session-card"><h3>{html.escape(title)}</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+
+
+def session_coverage_card(report: dict[str, object]) -> str:
+    reconciliation = report.get("reconciliation", {}) if isinstance(report.get("reconciliation"), dict) else {}
+    session_total = int(reconciliation.get("session_total_tokens") or 0)
+    quota_total = reconciliation.get("quota_scanner_total_tokens")
+    if not isinstance(quota_total, int) or quota_total <= 0:
+        return ""
+    missing = max(0, quota_total - session_total)
+    coverage = session_total / quota_total * 100 if quota_total else 0.0
+    items = [
+        f'<li><span>Session analytics coverage</span><strong>{coverage:.1f}%</strong></li>',
+        f'<li><span>Quota scanner total</span><strong>{html.escape(compact_number(quota_total))}</strong></li>',
+        f'<li><span>Analyzed local transcripts</span><strong>{html.escape(compact_number(session_total))}</strong></li>',
+    ]
+    if missing:
+        items.append(f'<li><span>Outside local session report, usually remote or skipped transcripts</span><strong>{html.escape(compact_number(missing))}</strong></li>')
+    return f'<article class="session-card"><h3>Coverage</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>'
 
 
 def session_decision_panel(report: dict[str, object]) -> str:
@@ -888,28 +908,6 @@ def pace_label(window: SnapshotWindow) -> str:
     if diff < -3:
         return f"▼{abs(diff):.0f}%p 여유"
     return ""
-
-
-def reset_hours(window: SnapshotWindow) -> str:
-    if not window.resets_at:
-        return ""
-    diff = window.resets_at - time.time()
-    if diff < 0:
-        return "리셋됨"
-    if diff < 3600:
-        return f"{diff / 60:.0f}분 후 리셋"
-    return f"{diff / 3600:.1f}시간 후 리셋"
-
-
-def reset_label(resets_at: int | None, *, suffix: str = " 후") -> str:
-    if not resets_at:
-        return "-"
-    diff = resets_at - time.time()
-    if diff < 0:
-        return "리셋됨"
-    if diff < 3600:
-        return f"{diff / 60:.0f}분{suffix}"
-    return f"{diff / 3600:.1f}h{suffix}"
 
 
 def quota_tone_color(utilization: float) -> str:

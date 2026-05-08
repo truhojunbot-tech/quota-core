@@ -6,7 +6,14 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from quota_core.adapters.projects import finalize_project_aggregates, merge_project_breakdown, normalize_project_name
+from quota_core.adapters.projects import (
+    finalize_project_aggregates,
+    merge_project_breakdown,
+    model_aggregates_from_projects,
+    normalize_project_name,
+    project_aggregates_from_raw,
+    project_aggregates_with_runtime_extras,
+)
 from quota_core.config import ProviderConfig
 from quota_core.snapshot import (
     AggregateBreakdown,
@@ -38,10 +45,16 @@ def normalize_codex_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
         resets_at = _optional_int(raw_window.get("resets_at"))
         window_start = resets_at - window_seconds if resets_at is not None else None
         window_end = min(sampled_at, resets_at) if sampled_at and resets_at is not None else sampled_at or resets_at
-        total_tokens = int(raw_window.get("tokens_used") or 0)
+        observed_total_tokens = int(raw_window.get("total_tokens") or 0)
+        tokens_used = int(raw_window.get("tokens_used") or 0)
+        total_tokens = observed_total_tokens or tokens_used
         runtime_total = int(raw_window.get("runtime_tokens_used") or 0)
-        by_project = _project_aggregates(raw_window.get("by_project", {}), total_tokens)
-        runtime_by_project = _project_aggregates(raw_window.get("runtime_by_project", {}), runtime_total)
+        by_project = project_aggregates_with_runtime_extras(
+            raw_window.get("by_project", {}),
+            raw_window.get("runtime_by_project", {}),
+            total_tokens,
+        )
+        runtime_by_project = project_aggregates_from_raw(raw_window.get("runtime_by_project", {}), runtime_total)
         windows[window_name] = SnapshotWindow(
             window_start=window_start,
             window_end=window_end,
@@ -50,12 +63,12 @@ def normalize_codex_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
             total_tokens=total_tokens,
             requests=sum(item.requests for item in by_project.values()),
             by_project=by_project,
-            by_model=_model_aggregates(by_project, total_tokens),
+            by_model=model_aggregates_from_projects(by_project, total_tokens),
             runtime=RuntimeBreakdown(
                 total_tokens=runtime_total,
                 requests=sum(item.requests for item in runtime_by_project.values()),
                 by_project=runtime_by_project,
-                by_model=_model_aggregates(runtime_by_project, runtime_total),
+                by_model=model_aggregates_from_projects(runtime_by_project, runtime_total),
             ),
             cache_state=cache_state,
             stale=cache_state == "stale",
@@ -134,7 +147,7 @@ def scan_codex_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnaps
         total_tokens=total_tokens,
         requests=requests,
         by_project=by_project,
-        by_model=_model_aggregates(by_project, total_tokens),
+        by_model=model_aggregates_from_projects(by_project, total_tokens),
         cache_state="live",
         stale=False,
     )
@@ -145,60 +158,6 @@ def _thread_rows(state_db: Path) -> list[tuple[Any, Any, Any]]:
     uri = state_db.resolve().as_uri() + "?mode=ro"
     with sqlite3.connect(uri, timeout=10, uri=True) as conn:
         return list(conn.execute("SELECT cwd, model, tokens_used FROM threads"))
-
-
-def _project_aggregates(raw: Any, total_tokens: int) -> dict[str, AggregateBreakdown]:
-    if not isinstance(raw, dict):
-        return {}
-
-    aggregates: dict[str, AggregateBreakdown] = {}
-    for project, value in raw.items():
-        if not isinstance(value, dict):
-            continue
-        tokens = int(value.get("tokens") or value.get("total_tokens") or 0)
-        requests = int(value.get("requests") or 0)
-        share_pct = value.get("share_pct")
-        if share_pct is None:
-            share_pct = round(tokens / total_tokens * 100, 1) if total_tokens else 0.0
-        merge_project_breakdown(
-            aggregates,
-            project,
-            tokens=tokens,
-            requests=requests,
-            models=_int_map(value.get("models", {})),
-            model_requests=_int_map(value.get("model_requests", {})),
-        )
-    return finalize_project_aggregates(aggregates, total_tokens)
-
-
-def _model_aggregates(projects: dict[str, AggregateBreakdown], total_tokens: int) -> dict[str, AggregateBreakdown]:
-    model_tokens: dict[str, int] = {}
-    model_requests: dict[str, int] = {}
-    for project in projects.values():
-        for model, tokens in project.models.items():
-            model_tokens[model] = model_tokens.get(model, 0) + int(tokens)
-        for model, requests in project.model_requests.items():
-            model_requests[model] = model_requests.get(model, 0) + int(requests)
-    return {
-        model: AggregateBreakdown(
-            total_tokens=tokens,
-            requests=model_requests.get(model, 0),
-            share_pct=round(tokens / total_tokens * 100, 1) if total_tokens else 0.0,
-        )
-        for model, tokens in sorted(model_tokens.items(), key=lambda item: -item[1])
-    }
-
-
-def _int_map(raw: Any) -> dict[str, int]:
-    if not isinstance(raw, dict):
-        return {}
-    result: dict[str, int] = {}
-    for key, value in raw.items():
-        try:
-            result[str(key)] = int(value or 0)
-        except (TypeError, ValueError):
-            continue
-    return result
 
 
 def _optional_int(value: Any) -> int | None:

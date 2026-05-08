@@ -10,7 +10,7 @@ from pathlib import Path
 
 from quota_core.adapters.claude import normalize_claude_quota
 from quota_core.adapters.codex import normalize_codex_quota
-from quota_core.adapters.projects import normalize_project_name
+from quota_core.adapters.projects import model_aggregates_from_projects, normalize_project_name, project_aggregates_with_runtime_extras
 from quota_core.adapters.gemini import normalize_gemini_usage
 from quota_core.config import config_from_mapping, load_config, validate_config, write_default_config
 from quota_core.runtime import runtime_env
@@ -18,6 +18,7 @@ from quota_core.session import analyze_claude_sessions, build_empty_session_repo
 from quota_core.session.claude import normalize_prompt_preview
 from quota_core.snapshot import AggregateBreakdown, NormalizedSnapshot, RuntimeBreakdown, SnapshotWindow, snapshot_to_dict, validate_snapshot_dict
 from quota_core.cli import scan_config, write_dashboard, write_demo, write_scan
+from quota_core.dashboard.formatters import timestamp_reset_label, window_reset_label
 from quota_core.dashboard.renderer import render_page
 from quota_core.dashboard.view_model import build_provider_dashboard
 
@@ -172,6 +173,51 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["windows"]["five_hour"]["cache_state"], "stale")
         self.assertTrue(snapshot["windows"]["seven_day"]["stale"])
         self.assertEqual(snapshot["windows"]["seven_day"]["total_tokens"], 72090696)
+
+    def test_codex_payload_uses_observed_total_with_runtime_extras(self):
+        payload = {
+            "fetched_at": 1770000000,
+            "stale": True,
+            "seven_day": {
+                "utilization": 0.0,
+                "resets_at": 1770604800,
+                "tokens_used": 80_915,
+                "total_tokens": 327_857,
+                "by_project": {
+                    "quota": {"tokens": 53_891, "models": {"gpt-5.4": 53_891}},
+                    "unknown": {"tokens": 27_024, "models": {"gpt-5.4": 27_024}},
+                },
+                "runtime_tokens_used": 246_942,
+                "runtime_by_project": {
+                    "claude-autonomous-trader": {"tokens": 246_942, "models": {"gpt-5.4": 246_942}},
+                },
+            },
+        }
+
+        snapshot = snapshot_to_dict(normalize_codex_quota(payload))
+        window = snapshot["windows"]["seven_day"]
+
+        self.assertEqual(validate_snapshot_dict(snapshot), ())
+        self.assertEqual(window["total_tokens"], 327_857)
+        self.assertEqual(window["by_project"]["claude-autonomous-trader"]["total_tokens"], 246_942)
+        self.assertEqual(window["runtime"]["by_project"]["claude-autonomous-trader"]["total_tokens"], 246_942)
+
+    def test_project_aggregates_include_runtime_only_projects(self):
+        projects = project_aggregates_with_runtime_extras(
+            {
+                "quota": {"tokens": 53_891, "models": {"gpt-5.4": 53_891}},
+                "unknown": {"tokens": 27_024, "models": {"gpt-5.4": 27_024}},
+            },
+            {
+                "claude-autonomous-trader": {"tokens": 246_942, "models": {"gpt-5.4": 246_942}},
+            },
+            327_857,
+        )
+        models = model_aggregates_from_projects(projects, 327_857)
+
+        self.assertEqual(list(projects), ["claude-autonomous-trader", "quota", "unknown"])
+        self.assertEqual(projects["claude-autonomous-trader"].share_pct, 75.3)
+        self.assertEqual(models["gpt-5.4"].total_tokens, 327_857)
 
     def test_codex_payload_accepts_explicit_cache_state(self):
         payload = {
@@ -426,6 +472,41 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual([item.name for item in provider.comparison], ["five_hour", "seven_day"])
         self.assertEqual(provider.primary.name if provider.primary else None, "seven_day")
         self.assertEqual([item.name for item in provider.details], ["local_all"])
+
+    def test_dashboard_marks_expired_stale_reset_as_delayed(self):
+        now = int(time.time())
+        snapshot = NormalizedSnapshot(
+            source="codex",
+            sampled_at=now,
+            windows={
+                "five_hour": SnapshotWindow(
+                    window_start=now - 6 * 3600,
+                    window_end=now - 3600,
+                    resets_at=now - 3600,
+                    utilization=0.15,
+                    total_tokens=322_500_000,
+                    cache_state="stale",
+                    stale=True,
+                )
+            },
+        )
+
+        page = render_page([snapshot])
+
+        self.assertIn("집계 지연", page)
+        self.assertNotIn("리셋됨", page)
+
+    def test_dashboard_reset_labels_use_shared_formatter(self):
+        now = int(time.time())
+        stale_window = SnapshotWindow(resets_at=now - 60, cache_state="stale", stale=True)
+        live_window = SnapshotWindow(resets_at=now - 60, cache_state="live")
+        soon_window = SnapshotWindow(resets_at=now + 30 * 60, cache_state="live")
+
+        self.assertEqual(window_reset_label(stale_window, now=now), "집계 지연")
+        self.assertEqual(window_reset_label(live_window, now=now), "리셋 시각 지남")
+        self.assertEqual(window_reset_label(soon_window, now=now), "30분 후 리셋")
+        self.assertEqual(timestamp_reset_label(now + 2 * 3600, now=now), "2.0h 후")
+        self.assertEqual(timestamp_reset_label(None, now=now), "-")
 
     def test_dashboard_keeps_gemini_local_history_out_of_operations_pair(self):
         now = int(time.time())
@@ -958,6 +1039,7 @@ priority: 3
         report["cache_efficiency"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "cache_hit_pct": 42.9, "cache_creation_input_tokens": 120}]
         report["expensive_prompts"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "api_calls": 3, "prompt_variants": 2}]
         report["cache_breaks"] = [{"project": "demo-project", "prompt_preview": "cache prompt", "tokens": 120, "api_calls": 2, "prompt_variants": 2}]
+        report["reconciliation"].update({"quota_scanner_total_tokens": 600, "session_total_tokens": 300})
         snapshot = NormalizedSnapshot(source="claude", sampled_at=1770000000, history={"claude_session_report": report})
         page = render_page([snapshot])
         self.assertIn("Claude Sessions", page)
@@ -972,6 +1054,10 @@ priority: 3
         self.assertIn("This family creates new cache blocks instead of reusing old ones.", page)
         self.assertIn("100.0% of cache create · 120", page)
         self.assertIn("Project Concentration", page)
+        self.assertIn("Coverage", page)
+        self.assertIn("Session analytics coverage", page)
+        self.assertIn("50.0%", page)
+        self.assertIn("Local Session Projects", page)
         self.assertIn("active 1h 1m", page)
         self.assertIn("Fresh-cache churn", page)
         self.assertIn("Fresh cache creation is larger than reuse.", page)

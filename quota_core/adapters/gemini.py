@@ -6,7 +6,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from quota_core.adapters.projects import finalize_project_aggregates, merge_project_breakdown, normalize_project_name
+from quota_core.adapters.projects import (
+    finalize_project_aggregates,
+    merge_project_breakdown,
+    model_aggregates_from_projects,
+    normalize_project_name,
+    project_aggregates_from_raw,
+)
 from quota_core.config import ProviderConfig
 from quota_core.snapshot import (
     AggregateBreakdown,
@@ -114,7 +120,7 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         total_tokens=total_tokens,
         requests=requests,
         by_project=by_project,
-        by_model=_model_aggregates(by_project, total_tokens),
+        by_model=model_aggregates_from_projects(by_project, total_tokens),
         cache_state="live",
         stale=False,
     )
@@ -214,7 +220,7 @@ def _window_from_bucket(
     window_seconds = _optional_int(raw.get("window_seconds"))
     window_end = resets_at or sampled_at or None
     window_start = window_end - window_seconds if window_end is not None and window_seconds else None
-    by_project = _project_aggregates(raw.get("by_project", {}), total_tokens)
+    by_project = project_aggregates_from_raw(raw.get("by_project", {}), total_tokens)
     runtime = _runtime_breakdown(runtime_raw, total_tokens)
     stale = cache_state == "stale"
     return SnapshotWindow(
@@ -225,7 +231,7 @@ def _window_from_bucket(
         total_tokens=total_tokens,
         requests=requests,
         by_project=by_project,
-        by_model=_model_aggregates(by_project, total_tokens),
+        by_model=model_aggregates_from_projects(by_project, total_tokens),
         quota_groups=quota_groups or {},
         runtime=runtime,
         cache_state=cache_state,  # type: ignore[arg-type]
@@ -277,55 +283,13 @@ def _runtime_breakdown(raw: Any, provider_total_tokens: int) -> RuntimeBreakdown
     if not isinstance(raw, dict):
         return RuntimeBreakdown()
     total_tokens = int(raw.get("total") or raw.get("total_tokens") or 0)
-    by_project = _project_aggregates(raw.get("by_project", {}), total_tokens or provider_total_tokens)
+    by_project = project_aggregates_from_raw(raw.get("by_project", {}), total_tokens or provider_total_tokens)
     return RuntimeBreakdown(
         total_tokens=total_tokens,
         requests=int(raw.get("requests") or 0),
         by_project=by_project,
-        by_model=_model_aggregates(by_project, total_tokens),
+        by_model=model_aggregates_from_projects(by_project, total_tokens),
     )
-
-
-def _project_aggregates(raw: Any, total_tokens: int) -> dict[str, AggregateBreakdown]:
-    if not isinstance(raw, dict):
-        return {}
-
-    aggregates: dict[str, AggregateBreakdown] = {}
-    for project, value in raw.items():
-        if not isinstance(value, dict):
-            continue
-        tokens = int(value.get("total") or value.get("tokens") or value.get("total_tokens") or 0)
-        requests = int(value.get("requests") or 0)
-        share_pct = value.get("share_pct")
-        if share_pct is None:
-            share_pct = round(tokens / total_tokens * 100, 1) if total_tokens else 0.0
-        merge_project_breakdown(
-            aggregates,
-            project,
-            tokens=tokens,
-            requests=requests,
-            models=_int_map(value.get("models", {})),
-            model_requests=_int_map(value.get("model_requests", {})),
-        )
-    return finalize_project_aggregates(aggregates, total_tokens)
-
-
-def _model_aggregates(projects: dict[str, AggregateBreakdown], total_tokens: int) -> dict[str, AggregateBreakdown]:
-    model_tokens: dict[str, int] = {}
-    model_requests: dict[str, int] = {}
-    for project in projects.values():
-        for model, tokens in project.models.items():
-            model_tokens[model] = model_tokens.get(model, 0) + int(tokens)
-        for model, requests in project.model_requests.items():
-            model_requests[model] = model_requests.get(model, 0) + int(requests)
-    return {
-        model: AggregateBreakdown(
-            total_tokens=tokens,
-            requests=model_requests.get(model, 0),
-            share_pct=round(tokens / total_tokens * 100, 1) if total_tokens else 0.0,
-        )
-        for model, tokens in sorted(model_tokens.items(), key=lambda item: -item[1])
-    }
 
 
 def _quota_cache_state(raw_quota: Any, sampled_at: int) -> str:
@@ -348,18 +312,6 @@ def _quota_error(raw_quota: Any) -> str | None:
     if isinstance(raw_quota, dict) and raw_quota.get("error"):
         return str(raw_quota["error"])
     return None
-
-
-def _int_map(raw: Any) -> dict[str, int]:
-    if not isinstance(raw, dict):
-        return {}
-    result: dict[str, int] = {}
-    for key, value in raw.items():
-        try:
-            result[str(key)] = int(value or 0)
-        except (TypeError, ValueError):
-            continue
-    return result
 
 
 def _optional_int(value: Any) -> int | None:

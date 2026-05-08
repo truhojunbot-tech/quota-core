@@ -83,6 +83,64 @@ def finalize_project_aggregates(
     }
 
 
+def project_aggregates_from_raw(raw: object, total_tokens: int) -> dict[str, AggregateBreakdown]:
+    """Normalize a provider raw project breakdown into sorted public aggregates."""
+
+    if not isinstance(raw, dict):
+        return {}
+
+    aggregates: dict[str, AggregateBreakdown] = {}
+    for project, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        merge_project_breakdown(
+            aggregates,
+            project,
+            tokens=_coerce_int(value.get("total") or value.get("tokens") or value.get("total_tokens")),
+            requests=_coerce_int(value.get("requests")),
+            models=_int_map(value.get("models", {})),
+            model_requests=_int_map(value.get("model_requests", {})),
+        )
+    return finalize_project_aggregates(aggregates, total_tokens)
+
+
+def project_aggregates_with_runtime_extras(
+    raw_projects: object,
+    raw_runtime_projects: object,
+    total_tokens: int,
+) -> dict[str, AggregateBreakdown]:
+    """Normalize main projects and include runtime-only projects in the same denominator."""
+
+    merged = dict(raw_projects) if isinstance(raw_projects, dict) else {}
+    if isinstance(raw_runtime_projects, dict):
+        for project, value in raw_runtime_projects.items():
+            merged.setdefault(project, value)
+    return project_aggregates_from_raw(merged, total_tokens)
+
+
+def model_aggregates_from_projects(
+    projects: dict[str, AggregateBreakdown],
+    total_tokens: int,
+) -> dict[str, AggregateBreakdown]:
+    """Roll normalized project aggregates up into a model breakdown."""
+
+    model_tokens: dict[str, int] = {}
+    model_requests: dict[str, int] = {}
+    for project in projects.values():
+        for model, tokens in project.models.items():
+            model_tokens[model] = model_tokens.get(model, 0) + int(tokens)
+        for model, requests in project.model_requests.items():
+            model_requests[model] = model_requests.get(model, 0) + int(requests)
+    return {
+        model: AggregateBreakdown(
+            total_tokens=tokens,
+            requests=model_requests.get(model, 0),
+            share_pct=round(tokens / total_tokens * 100, 1) if total_tokens else 0.0,
+        )
+        for model, tokens in sorted(model_tokens.items(), key=lambda item: -item[1])
+    }
+
+
 def _normalize_encoded_agent_crew(name: str) -> str:
     tokens = [token for token in name.strip("-").split("-") if token]
     lower = [token.lower() for token in tokens]
@@ -97,6 +155,22 @@ def _normalize_encoded_agent_crew(name: str) -> str:
             if project_tokens:
                 return "-".join(project_tokens)
     return name
+
+
+def _int_map(raw: object) -> dict[str, int]:
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, int] = {}
+    for key, value in raw.items():
+        result[str(key)] = _coerce_int(value)
+    return result
+
+
+def _coerce_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _canonical_project(name: str) -> str:
