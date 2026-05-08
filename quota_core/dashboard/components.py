@@ -975,6 +975,9 @@ main { max-width:1400px; margin:0 auto; padding:20px 24px; }
 .quota-grid-1 { grid-template-columns:minmax(0,1fr); }
 .provider-subhead { margin:14px 0 8px; color:var(--muted); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
 .runtime-window h4, .quota-window h4, .detail-window h4 { margin:12px 0 6px; color:var(--muted); font-size:12px; font-weight:650; }
+.runtime-window .row { display:grid; grid-template-columns:minmax(max-content,auto) minmax(0,1fr); align-items:start; }
+.runtime-window .row strong, .runtime-window .row span { white-space:nowrap; }
+.runtime-window .row span { text-align:right; }
 .runtime-bar { height:20px; margin-bottom:4px; }
 .runtime-bar > span { display:flex; height:100%; min-width:0; border-radius:4px; overflow:hidden; }
 .runtime-bar b, .quota-bar b { display:block; height:100%; }
