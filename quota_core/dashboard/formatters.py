@@ -19,6 +19,8 @@ def quota_utilization_label(window: SnapshotWindow, *, decimals: int = 1) -> str
         if quota_utilization_is_delayed(window):
             return "집계 지연"
         return f"{_clamped_pct(window.utilization):.{decimals}f}% · 지연"
+    if quota_window_is_cached(window):
+        return f"{_clamped_pct(window.utilization):.{decimals}f}% · 캐시"
     if quota_utilization_is_delayed(window):
         return "집계 지연"
     return f"{_clamped_pct(window.utilization):.{decimals}f}%"
@@ -27,6 +29,8 @@ def quota_utilization_label(window: SnapshotWindow, *, decimals: int = 1) -> str
 def runtime_quota_context_label(window: SnapshotWindow) -> str:
     if quota_window_is_stale(window):
         return "quota 집계 지연"
+    if quota_window_is_cached(window):
+        return f"{_clamped_pct(window.utilization):.1f}% of quota · 캐시"
     return f"{_clamped_pct(window.utilization):.1f}% of quota"
 
 
@@ -36,6 +40,10 @@ def quota_utilization_is_delayed(window: SnapshotWindow) -> bool:
 
 def quota_window_is_stale(window: SnapshotWindow) -> bool:
     return bool(window.stale or window.cache_state == "stale")
+
+
+def quota_window_is_cached(window: SnapshotWindow) -> bool:
+    return bool(window.cache_state == "cached" and not quota_window_is_stale(window))
 
 
 def window_reset_label(window: SnapshotWindow, *, now: float | None = None) -> str:

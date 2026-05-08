@@ -345,6 +345,50 @@ class SnapshotTests(unittest.TestCase):
         self.assertIn("top-heavy 80%", page)
         self.assertNotIn("<dt>Utilization</dt><dd>0.0%</dd>", page)
 
+    def test_dashboard_surfaces_history_ingestion_errors(self):
+        snapshot = NormalizedSnapshot(
+            source="codex",
+            sampled_at=1770000000,
+            history={"quota_history_error": "module 'codex_monitor' has no attribute 'quota_history'"},
+        )
+
+        page = render_page([snapshot])
+
+        self.assertIn("Codex quota history", page)
+        self.assertIn("collector interface mismatch", page)
+        self.assertNotIn("has no attribute", page)
+
+    def test_dashboard_summarizes_data_state_warnings(self):
+        snapshot = NormalizedSnapshot(
+            source="claude",
+            sampled_at=1770000000,
+            warnings=("using cached claude quota: claude quota.py timeout",),
+        )
+
+        page = render_page([snapshot])
+
+        self.assertIn("quota telemetry cached", page)
+        self.assertNotIn("claude quota.py timeout", page)
+
+    def test_dashboard_shortens_session_identifiers(self):
+        snapshot = NormalizedSnapshot(
+            source="claude",
+            sampled_at=1770000000,
+            history={
+                "claude_session_report": {
+                    "totals": {},
+                    "top_sessions": [
+                        {"display_name": "demo-project/session:abcdef1234567890", "share_pct": 10.0, "total_tokens": 1000},
+                    ],
+                }
+            },
+        )
+
+        page = render_page([snapshot])
+
+        self.assertIn("demo-project · session abcdef1", page)
+        self.assertNotIn("demo-project/session:abcdef1234567890", page)
+
     def test_dashboard_surfaces_operational_quota_context(self):
         now = int(time.time())
         snapshot = NormalizedSnapshot(
@@ -531,12 +575,15 @@ class SnapshotTests(unittest.TestCase):
     def test_dashboard_quota_utilization_labels_use_shared_formatter(self):
         stale_window = SnapshotWindow(total_tokens=327_857, utilization=0.0, cache_state="stale", stale=True)
         live_window = SnapshotWindow(total_tokens=327_857, utilization=0.2, cache_state="live")
+        cached_window = SnapshotWindow(total_tokens=327_857, utilization=0.2, cache_state="cached")
 
         self.assertEqual(quota_utilization_label(stale_window), "집계 지연")
         self.assertEqual(runtime_quota_context_label(stale_window), "quota 집계 지연")
         self.assertEqual(quota_utilization_label(SnapshotWindow(total_tokens=10, utilization=0.01, cache_state="stale", stale=True)), "1.0% · 지연")
         self.assertEqual(quota_utilization_label(live_window), "20.0%")
         self.assertEqual(runtime_quota_context_label(live_window), "20.0% of quota")
+        self.assertEqual(quota_utilization_label(cached_window), "20.0% · 캐시")
+        self.assertEqual(runtime_quota_context_label(cached_window), "20.0% of quota · 캐시")
         self.assertEqual(runtime_share_label(RuntimeBreakdown(), 327_857), "runtime 없음")
         self.assertEqual(runtime_share_label(RuntimeBreakdown(total_tokens=246_942), 327_857), "75.3%")
 

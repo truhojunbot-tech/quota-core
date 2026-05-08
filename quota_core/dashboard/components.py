@@ -232,7 +232,7 @@ def session_rows(title: str, rows: object, *, max_rows: int = 6) -> str:
     for row in rows[:max_rows]:
         if not isinstance(row, dict):
             continue
-        name = str(row.get("display_name") or row.get("name") or "unknown")
+        name = session_row_name(row.get("display_name") or row.get("name") or "unknown")
         share = float(row.get("share_pct") or 0)
         tokens = compact_number(int(row.get("total_tokens") or 0))
         items.append(f'<li><span>{html.escape(name)}</span><strong>{share:.1f}% · {html.escape(tokens)}</strong></li>')
@@ -649,12 +649,47 @@ def data_state_panel(providers: tuple[ProviderDashboard, ...]) -> str:
     rows = []
     for provider in providers:
         for warning in provider.snapshot.warnings:
-            rows.append(f'<li><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(warning)}</span></li>')
+            rows.append(f'<li><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(data_state_warning_message(warning))}</span></li>')
         for error in provider.snapshot.errors:
             rows.append(f'<li class="error"><strong>{html.escape(provider.source.title())}</strong><span>{html.escape(error)}</span></li>')
+        if isinstance(provider.snapshot.history, dict):
+            for key, value in provider.snapshot.history.items():
+                if key.endswith("_error") and value:
+                    label = key[:-6].replace("_", " ")
+                    rows.append(f'<li class="error"><strong>{html.escape(provider.source.title())} {html.escape(label)}</strong><span>{html.escape(data_state_error_message(value))}</span></li>')
     if not rows:
         rows.append('<li><strong>All providers</strong><span>No quota pressure or warnings in the current snapshot</span></li>')
     return panel("Data State", f'<ol class="state-list">{"".join(rows)}</ol>')
+
+
+def data_state_error_message(raw: object) -> str:
+    message = " ".join(str(raw or "unknown error").split())
+    lower = message.lower()
+    if "has no attribute" in lower or "modulenotfounderror" in lower or "importerror" in lower:
+        return "unavailable: collector interface mismatch; check private collector logs"
+    if len(message) > 120:
+        return message[:117].rstrip() + "..."
+    return message
+
+
+def data_state_warning_message(raw: object) -> str:
+    message = " ".join(str(raw or "unknown warning").split())
+    lower = message.lower()
+    if lower.startswith("using cached claude quota"):
+        return "quota telemetry cached; refresh attempt timed out"
+    if "rate-limit telemetry is stale" in lower:
+        return "quota telemetry stale; reset and pressure are delayed"
+    if len(message) > 120:
+        return message[:117].rstrip() + "..."
+    return message
+
+
+def session_row_name(raw: object) -> str:
+    name = str(raw or "unknown")
+    if "/session:" in name:
+        project, session_id = name.split("/session:", 1)
+        return f"{project} · session {session_id[:7]}"
+    return name
 
 
 def panel(title: str, body: str, right: str = "") -> str:
