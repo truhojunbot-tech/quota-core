@@ -54,6 +54,8 @@ class PromptContext:
     skill: str | None = None
     subagent_type: str | None = None
     timestamp: int | None = None
+    session_label: str | None = None
+    prompt_index: int | None = None
 
 
 def analyze_claude_sessions(
@@ -124,6 +126,7 @@ class ClaudeSessionScanner:
         self.by_session: dict[str, Aggregate] = defaultdict(Aggregate)
         self.runtime_by_class: dict[str, Aggregate] = defaultdict(Aggregate)
         self.session_spans: dict[str, dict[str, Any]] = {}
+        self.prompt_turns: dict[str, list[dict[str, Any]]] = defaultdict(list)
         self.expensive_prompts: dict[str, dict[str, Any]] = {}
         self.cache_breaks: dict[str, dict[str, Any]] = {}
         self.seen_api_keys: set[str] = set()
@@ -139,6 +142,7 @@ class ClaudeSessionScanner:
         for root in self.transcript_roots:
             self._scan_root(root)
         self._finalize_warnings()
+        self._finalize_prompt_contexts()
         return build_session_report(
             query=self.query,
             generated_at=self.generated_at,
@@ -153,7 +157,7 @@ class ClaudeSessionScanner:
             top_sessions=self._rows(self.by_session)[:12],
             cache_efficiency=cache_efficiency_rows(self.expensive_prompts, self.totals.total_tokens)[:12],
             expensive_prompts=sorted(diagnostic_rows(self.expensive_prompts), key=lambda row: -int(row["total_tokens"]))[:20],
-            cache_breaks=sorted(diagnostic_rows(self.cache_breaks), key=lambda row: -int(row["tokens"]))[:20],
+            cache_breaks=sorted(diagnostic_rows(self.cache_breaks), key=lambda row: -int(row.get("uncached_input_tokens") or row["tokens"]))[:20],
             runtime_attribution=self._runtime_attribution(),
             reconciliation=self._reconciliation(),
             warnings=self.warnings,
@@ -199,7 +203,7 @@ class ClaudeSessionScanner:
                     self.timestamps.append(timestamp)
                 if is_human_prompt(record):
                     self.human_messages += 1
-                context = update_context(context, record, timestamp)
+                context = self._update_context(context, record, timestamp, session_label)
                 usage = extract_usage(record)
                 if not usage:
                     continue
@@ -223,6 +227,67 @@ class ClaudeSessionScanner:
         if selected.window_end is not None and timestamp > selected.window_end:
             return False
         return True
+
+    def _update_context(self, context: PromptContext, record: dict[str, Any], timestamp: int | None, session_label: str) -> PromptContext:
+        prompt = user_prompt_text(record)
+        tool_context = tool_use_context(record)
+        slash_command = slash_command_from_prompt(prompt) if prompt else context.slash_command
+        prompt_index = context.prompt_index
+        prompt_session = context.session_label
+        if prompt:
+            prompt_index = len(self.prompt_turns[session_label])
+            prompt_session = session_label
+            preview, prompt_hash = redact_prompt(prompt, self.query.redaction)
+            self.prompt_turns[session_label].append(
+                {
+                    "text": preview,
+                    "prompt_hash": prompt_hash,
+                    "timestamp": timestamp,
+                    "api_calls": 0,
+                    "redaction": self.query.redaction,
+                }
+            )
+        return PromptContext(
+            text=prompt or context.text,
+            slash_command=slash_command,
+            skill=tool_context.get("skill") or context.skill,
+            subagent_type=tool_context.get("subagent_type") or context.subagent_type,
+            timestamp=timestamp or context.timestamp,
+            session_label=prompt_session,
+            prompt_index=prompt_index,
+        )
+
+    def _increment_prompt_turn_calls(self, context: PromptContext) -> None:
+        if context.session_label is None or context.prompt_index is None:
+            return
+        turns = self.prompt_turns.get(context.session_label)
+        if not turns or context.prompt_index >= len(turns):
+            return
+        turns[context.prompt_index]["api_calls"] = int(turns[context.prompt_index].get("api_calls") or 0) + 1
+
+    def _finalize_prompt_contexts(self) -> None:
+        for rows in (self.expensive_prompts, self.cache_breaks):
+            for row in rows.values():
+                session_label = row.pop("_session_label", None)
+                prompt_index = row.pop("_prompt_index", None)
+                context_rows = self._prompt_context_rows(session_label, prompt_index)
+                if context_rows:
+                    row["context"] = context_rows
+
+    def _prompt_context_rows(self, session_label: object, prompt_index: object) -> list[dict[str, Any]]:
+        if not isinstance(session_label, str) or not isinstance(prompt_index, int):
+            return []
+        turns = self.prompt_turns.get(session_label, [])
+        if not turns or prompt_index < 0 or prompt_index >= len(turns):
+            return []
+        start = max(0, prompt_index - 2)
+        end = min(len(turns), prompt_index + 3)
+        rows = []
+        for index in range(start, end):
+            row = dict(turns[index])
+            row["here"] = index == prompt_index
+            rows.append(row)
+        return rows
 
     def _add_usage(
         self,
@@ -250,8 +315,9 @@ class ClaudeSessionScanner:
         self.runtime_by_class[runtime_class].add(usage, model)
         total = usage_total(usage)
         if context.text:
+            self._increment_prompt_turn_calls(context)
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
-            prompt_context = prompt_context_rows(context, self.query.redaction)
+            prompt_context = self._prompt_context_rows(context.session_label, context.prompt_index) or prompt_context_rows(context, self.query.redaction)
             family_key = prompt_family_key(project, context.text, prompt_hash)
             row = self.expensive_prompts.get(family_key)
             if row is None:
@@ -270,6 +336,8 @@ class ClaudeSessionScanner:
                     "skill": context.skill,
                     "redaction": self.query.redaction,
                     "context": prompt_context,
+                    "_session_label": context.session_label,
+                    "_prompt_index": context.prompt_index,
                 }
                 self.expensive_prompts[family_key] = row
             row["_prompt_hashes"].add(prompt_hash)
@@ -277,12 +345,13 @@ class ClaudeSessionScanner:
             row["api_calls"] = int(row["api_calls"]) + 1
             row["cache_read_input_tokens"] = int(row.get("cache_read_input_tokens") or 0) + usage["cache_read_input_tokens"]
             row["cache_creation_input_tokens"] = int(row.get("cache_creation_input_tokens") or 0) + usage["cache_creation_input_tokens"]
+        uncached_input_tokens = usage["input_tokens"] + usage["cache_creation_input_tokens"]
         cache_break = usage["cache_creation_input_tokens"] > 0 and usage["cache_creation_input_tokens"] >= usage["cache_read_input_tokens"]
         if self.cache_break_input_tokens is not None:
-            cache_break = usage["input_tokens"] + usage["cache_creation_input_tokens"] >= self.cache_break_input_tokens
+            cache_break = uncached_input_tokens >= self.cache_break_input_tokens
         if cache_break:
             preview, prompt_hash = redact_prompt(context.text, self.query.redaction)
-            prompt_context = prompt_context_rows(context, self.query.redaction)
+            prompt_context = self._prompt_context_rows(context.session_label, context.prompt_index) or prompt_context_rows(context, self.query.redaction)
             family_key = prompt_family_key(project, context.text, prompt_hash)
             row = self.cache_breaks.get(family_key)
             if row is None:
@@ -291,6 +360,8 @@ class ClaudeSessionScanner:
                     "timestamp": timestamp,
                     "reason": "cache_creation_spike_after_prompt_change",
                     "tokens": 0,
+                    "uncached_input_tokens": 0,
+                    "total_input_tokens": 0,
                     "api_calls": 0,
                     "prompt_hash": prompt_hash,
                     "prompt_family": family_key,
@@ -298,10 +369,14 @@ class ClaudeSessionScanner:
                     "_prompt_hashes": set(),
                     "prompt_preview": preview,
                     "context": prompt_context,
+                    "_session_label": context.session_label,
+                    "_prompt_index": context.prompt_index,
                 }
                 self.cache_breaks[family_key] = row
             row["_prompt_hashes"].add(prompt_hash)
             row["tokens"] = int(row["tokens"]) + usage["cache_creation_input_tokens"]
+            row["uncached_input_tokens"] = int(row.get("uncached_input_tokens") or 0) + uncached_input_tokens
+            row["total_input_tokens"] = int(row.get("total_input_tokens") or 0) + usage["input_tokens"] + usage["cache_creation_input_tokens"] + usage["cache_read_input_tokens"]
             row["api_calls"] = int(row["api_calls"]) + 1
         self._add_session_span(project, session_label, usage, timestamp)
 

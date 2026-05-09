@@ -449,15 +449,17 @@ def cache_break_rows(rows: object) -> str:
             continue
         preview = prompt_preview_label(row.get("prompt_preview") or row.get("reason") or row.get("prompt_hash") or "cache break")
         project = str(row.get("project") or "unknown")
-        tokens = compact_number(int(row.get("tokens") or 0))
+        tokens = compact_number(int(row.get("uncached_input_tokens") or row.get("tokens") or 0))
         calls = int(row.get("api_calls") or 0)
         variants = int(row.get("prompt_variants") or 0)
         variant_text = f" · {variants} prompts" if variants > 1 else ""
-        right = f"{tokens}{f' · {calls} calls' if calls else ''}{variant_text}"
+        create = int(row.get("tokens") or 0)
+        create_text = f" · create {compact_number(create)}" if row.get("uncached_input_tokens") is not None else ""
+        right = f"{tokens} uncached{create_text}{f' · {calls} calls' if calls else ''}{variant_text}"
         context = prompt_context_label(row.get("context"))
         label = f"{project} · {preview}{context}"
         items.append(f'<li><span>{html.escape(label)}</span><strong>{html.escape(right)}</strong></li>')
-    return f'<article class="session-card"><h3>Fresh Cache Creates</h3><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
+    return f'<article class="session-card"><h3>Cache Breaks</h3><p class="panel-note">Ranked by uncached input spikes; create shows fresh cache written.</p><ol class="runtime-project-list">{"".join(items)}</ol></article>' if items else ""
 
 
 def prompt_context_label(rows: object) -> str:

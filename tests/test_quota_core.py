@@ -1211,7 +1211,40 @@ context: {"instructions": "Write tests first"}
         self.assertEqual(report["expensive_prompts"][0]["prompt_variants"], 1)
         self.assertEqual(len(report["cache_breaks"]), 1)
         self.assertEqual(report["cache_breaks"][0]["tokens"], 44)
+        self.assertEqual(report["cache_breaks"][0]["uncached_input_tokens"], 55)
+        self.assertEqual(report["cache_breaks"][0]["total_input_tokens"], 55)
         self.assertEqual(report["cache_breaks"][0]["api_calls"], 2)
+
+    def test_claude_session_prompt_context_includes_neighboring_turns(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "demo-project"
+            project_dir.mkdir()
+            rows = []
+            for index, prompt in enumerate(("first prompt", "second prompt", "target expensive prompt", "fourth prompt", "fifth prompt"), start=1):
+                rows.append({"timestamp": f"2026-05-07T00:00:0{index}Z", "message": {"role": "user", "content": prompt}})
+                rows.append(
+                    {
+                        "timestamp": f"2026-05-07T00:00:1{index}Z",
+                        "requestId": f"req-{index}",
+                        "message": {
+                            "model": "claude-sonnet-4-6",
+                            "usage": {
+                                "input_tokens": 100 if index == 3 else 1,
+                                "output_tokens": 10,
+                                "cache_read_input_tokens": 0,
+                                "cache_creation_input_tokens": 0,
+                            },
+                        },
+                    }
+                )
+            (project_dir / "session.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+            report = analyze_claude_sessions([temp_dir], since="24h", redaction="preview", now=1778169600)
+
+        target = next(row for row in report["expensive_prompts"] if row["prompt_preview"] == "target expensive prompt")
+        self.assertEqual([row["text"] for row in target["context"]], ["first prompt", "second prompt", "target expensive prompt", "fourth prompt", "fifth prompt"])
+        self.assertEqual([row["here"] for row in target["context"]], [False, False, True, False, False])
+        self.assertEqual(target["context"][2]["api_calls"], 1)
 
     def test_claude_session_prompt_preview_handles_empty_agent_crew_branch(self):
         prompt = """
@@ -1284,7 +1317,7 @@ priority: 3
         report["top_sessions"] = [{"name": "demo-project/session", "display_name": "demo-project/session", "total_tokens": 300, "share_pct": 100.0}]
         report["cache_efficiency"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "cache_hit_pct": 42.9, "cache_creation_input_tokens": 120}]
         report["expensive_prompts"] = [{"project": "demo-project", "prompt_preview": "expensive prompt", "total_tokens": 300, "api_calls": 3, "avg_tokens_per_call": 100, "prompt_variants": 2, "context": [{"text": "neighbor", "here": True}]}]
-        report["cache_breaks"] = [{"project": "demo-project", "prompt_preview": "cache prompt", "tokens": 120, "api_calls": 2, "prompt_variants": 2, "context": [{"text": "neighbor", "here": True}]}]
+        report["cache_breaks"] = [{"project": "demo-project", "prompt_preview": "cache prompt", "tokens": 120, "uncached_input_tokens": 180, "api_calls": 2, "prompt_variants": 2, "context": [{"text": "neighbor", "here": True}]}]
         report["reconciliation"].update({"quota_scanner_total_tokens": 600, "session_total_tokens": 300})
         snapshot = NormalizedSnapshot(source="claude", sampled_at=1770000000, history={"claude_session_report": report, "claude_session_reports": {"5h": report, "24h": report, "7d": report}})
         page = render_page([snapshot])
@@ -1329,8 +1362,9 @@ priority: 3
         self.assertIn("Prompt Families", page)
         self.assertIn("300 · 3 calls · avg 100/call · 2 prompts", page)
         self.assertIn("cache prompt", page)
-        self.assertIn("Fresh Cache Creates", page)
-        self.assertIn("120 · 2 calls · 2 prompts", page)
+        self.assertIn("Cache Breaks", page)
+        self.assertIn("Ranked by uncached input spikes", page)
+        self.assertIn("180 uncached · create 120 · 2 calls · 2 prompts", page)
 
     def test_dashboard_separates_agent_crew_workflow_families_from_prompts(self):
         report = build_empty_session_report(generated_at=1770000000)
