@@ -46,6 +46,15 @@ def before_after_compact(
     Matching is by ``context_id``. Events without a ``context_id`` are
     skipped -- there is nothing to scope the comparison to. Tasks with no
     usable timestamp are excluded from both windows.
+
+    Known limitation: this assumes the runtime keeps the *same* ``context_id``
+    across a compact/reset (true for Claude Code's own ``/compact``, which
+    compresses in place). If a runtime instead mints a *new* context identity
+    at compaction (bumping ``context_generation`` rather than reusing
+    ``context_id``), the "after" window here will come back empty rather than
+    silently attributing the wrong tasks -- callers comparing generations
+    across a context split should join on ``context_generation`` lineage
+    themselves rather than relying on this function alone.
     """
 
     all_records = list(records)

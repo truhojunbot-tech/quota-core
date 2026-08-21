@@ -53,20 +53,30 @@ def claude_token_components(usage: dict[str, Any]) -> TokenComponents:
 def codex_token_components(usage: dict[str, Any]) -> TokenComponents:
     """Codex/OpenAI usage block -> :class:`TokenComponents`.
 
-    Codex CLI telemetry commonly exposes input/output tokens and sometimes a
-    cached-input count, but not a separate cache-write figure. Unreported
+    Codex CLI telemetry commonly exposes ``input_tokens`` (the full prompt,
+    including any cached portion), ``output_tokens``, and sometimes a
+    cached-input count. Per OpenAI's usage semantics, ``cached_input_tokens``
+    is a *subset* of ``input_tokens`` -- not an additional charge -- so
+    ``fresh_input`` here is ``input_tokens - cached_input_tokens`` (the
+    non-cached portion actually billed as new input), matching how Claude's
+    ``input_tokens`` already excludes its own cache fields. Unreported
     components stay ``None`` -- they are not assumed to be zero.
     """
 
-    fresh_input = _opt_int(usage.get("input_tokens"))
+    raw_input = _opt_int(usage.get("input_tokens"))
     cached_input = _opt_int(usage.get("cached_input_tokens") or usage.get("input_tokens_cached"))
     output = _opt_int(usage.get("output_tokens"))
     reasoning = _opt_int(usage.get("reasoning_tokens") or usage.get("output_tokens_reasoning"))
+    if raw_input is not None and cached_input is not None:
+        fresh_input = max(0, raw_input - cached_input)
+    else:
+        fresh_input = raw_input
     provider_total = _opt_int(usage.get("total_tokens"))
     if provider_total is None:
-        known = [v for v in (fresh_input, output) if v is not None]
+        # raw_input already includes cached_input -- do not add cached_input again.
+        known = [v for v in (raw_input, output) if v is not None]
         if known:
-            provider_total = sum(known) + (cached_input or 0)
+            provider_total = sum(known)
     return TokenComponents(
         fresh_input=fresh_input,
         output=output,

@@ -108,6 +108,14 @@ class RuntimeAttribution:
     Agent Crew code -- it is populated by adapters (e.g.
     :mod:`quota_core.context_economics.agent_crew_adapter`) that translate a
     specific runtime's telemetry into this shape.
+
+    Not the same concept as ``quota_core.session.report``'s existing
+    ``runtime_attribution``/``reconciliation`` blocks (a human-vs-runtime
+    token-usage split for one session, reconciled against the local quota
+    scanner). This type is per-*task* orchestrator provenance (which agent,
+    role, context, and generation ran a given task) -- the two do not
+    currently share data or code, and a session-level report may reference
+    both independently.
     """
 
     runtime: str

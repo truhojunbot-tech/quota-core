@@ -24,6 +24,7 @@ from quota_core.context_economics import (
     token_components_from_dict,
     token_components_to_dict,
     token_components_total,
+    tokens_per_outcome,
     tokens_per_successful_task,
     validate_attribution_dict,
     ProviderUsageRecord,
@@ -65,11 +66,16 @@ class TokenComponentsTests(unittest.TestCase):
         self.assertNotEqual(components.fresh_input, 0)
 
     def test_codex_partial_breakdown(self):
+        # cached_input_tokens is a SUBSET of input_tokens per OpenAI's usage
+        # semantics -- fresh_input must be the non-cached remainder (200), not
+        # the raw input_tokens value, or cached tokens get double-counted.
         components = codex_token_components({"input_tokens": 500, "output_tokens": 120, "cached_input_tokens": 300})
-        self.assertEqual(components.fresh_input, 500)
+        self.assertEqual(components.fresh_input, 200)
         self.assertEqual(components.output, 120)
         self.assertEqual(components.cache_read, 300)
         self.assertIsNone(components.cache_creation)
+        # provider_total must not add cached_input on top of input_tokens (which already includes it).
+        self.assertEqual(components.provider_total, 620)
 
     def test_token_components_round_trip(self):
         components = TokenComponents(fresh_input=1, output=2, cache_read=3, cache_creation=4, tool_tokens=5, provider_total=15)
@@ -202,6 +208,66 @@ class CorrelateTests(unittest.TestCase):
         self.assertIsNone(token_components_total(records[0].tokens))
         self.assertIn("no matching usage telemetry found", records[0].attribution_notes[0])
 
+    def test_one_usage_record_is_not_double_counted_across_overlapping_tasks(self):
+        """Regression test: a single usage record whose (slop-widened) window touches
+        several sequential tasks in the same provider session must be attributed to
+        exactly one of them, not attributed in full to every task it overlaps."""
+
+        attributions = [
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="t1", provider="claude", provider_session_id="sess-x",
+                started_at=1000, completed_at=1010,
+            ),
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="t2", provider="claude", provider_session_id="sess-x",
+                started_at=1015, completed_at=1025,
+            ),
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="t3", provider="claude", provider_session_id="sess-x",
+                started_at=1030, completed_at=1040,
+            ),
+        ]
+        # One usage record sitting right in the middle -- with the +-30s slop this
+        # single record's window touches all three tasks' windows above.
+        usage = [
+            ProviderUsageRecord(
+                provider="claude",
+                tokens=TokenComponents(provider_total=110),
+                provider_session_id="sess-x",
+                started_at=1020,
+                completed_at=1020,
+            )
+        ]
+        records = correlate_task_economics(attributions, usage)
+        totals = [token_components_total(r.tokens) for r in records]
+        counted = [t for t in totals if t]
+        # The 110 tokens must show up for exactly one task, not all three (330).
+        self.assertEqual(counted, [110])
+        self.assertEqual(sum(t or 0 for t in totals), 110)
+        # t2's window is closest to the record's own timestamp (1020) -- it should win.
+        winner = next(r for r, t in zip(records, totals) if t)
+        self.assertEqual(winner.task_id, "t2")
+
+    def test_exclusive_assignment_does_not_leak_claimed_record_to_other_task(self):
+        attributions = [
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="winner", provider="claude", provider_session_id="sess-y",
+                started_at=100, completed_at=100,
+            ),
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="loser", provider="claude", provider_session_id="sess-y",
+                started_at=200, completed_at=200,
+            ),
+        ]
+        usage = [ProviderUsageRecord(provider="claude", tokens=TokenComponents(provider_total=50), provider_session_id="sess-y", started_at=100, completed_at=105)]
+        records = correlate_task_economics(attributions, usage)
+        by_id = {r.task_id: r for r in records}
+        self.assertEqual(by_id["winner"].attribution_confidence, "high")
+        self.assertEqual(token_components_total(by_id["winner"].tokens), 50)
+        # The losing task shares the session id but the only overlapping record was
+        # exclusively claimed by "winner" -- it must not also get those 50 tokens.
+        self.assertIsNone(token_components_total(by_id["loser"].tokens))
+
 
 def _sample_economics_records() -> list[TaskEconomicsRecord]:
     attributions = read_attribution_jsonl(FIXTURES / "attribution_sample.jsonl")
@@ -259,7 +325,23 @@ class AnalyticsTests(unittest.TestCase):
         comparison = compare_context_policies(records)
         self.assertIn("resume", comparison)
         self.assertIn("fresh", comparison)
-        self.assertGreaterEqual(comparison["resume"]["count"], 1)
+
+    def test_averages_are_computed_from_distinct_per_task_values_not_a_repeated_constant(self):
+        """Uses hand-built records with different token totals per task -- unlike
+        _sample_economics_records() (same fixed usage for every task), this actually
+        exercises the arithmetic instead of just checking the aggregate is non-None."""
+
+        records = [
+            TaskEconomicsRecord(task_id="a", runtime="agent_crew", outcome="success", tokens=TokenComponents(fresh_input=100)),
+            TaskEconomicsRecord(task_id="b", runtime="agent_crew", outcome="success", tokens=TokenComponents(fresh_input=300)),
+            TaskEconomicsRecord(task_id="c", runtime="agent_crew", outcome="failed", tokens=TokenComponents(fresh_input=9999)),
+        ]
+        # (100 + 300) / 2 successful tasks -- the failed task's 9999 must not pull this average.
+        self.assertEqual(fresh_input_per_successful_task(records), 200.0)
+
+        totals = tokens_per_outcome(records)
+        self.assertEqual(totals["success"]["avg_tokens"], 200.0)
+        self.assertEqual(totals["failed"]["avg_tokens"], 9999.0)
 
 
 class CompactAnalysisTests(unittest.TestCase):

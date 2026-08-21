@@ -76,7 +76,22 @@ with `ProviderUsageRecord`s using, in order:
 
 Confidence and a human-readable note are always attached to the result --
 callers must not treat a `low`-confidence join as equivalent to a `high`
-one.
+one. Each usage record is attributed to **at most one** task: when a
+record's window overlaps more than one candidate task in the same session,
+it is assigned exclusively to whichever task's own window it is closest to,
+so one unit of usage is never double-counted across several tasks.
+
+## Known limitations / follow-ups
+
+- **Not yet wired to quota-core's own live provider readers.** This PR adds
+  the schema, adapter, and correlation/analytics primitives and exercises
+  them against `ProviderUsageRecord`s built from fixtures/tests. It does not
+  yet add the glue that constructs `ProviderUsageRecord`s automatically from
+  `quota_core.adapters.claude`/`codex`/`gemini`'s live session readers --
+  intentionally left for a follow-up once `agent_crew#202` lands with real
+  attribution data to correlate against, rather than guessed at now.
+- **`before_after_compact` assumes `context_id` continuity across a
+  compact/reset** -- see that function's docstring.
 
 ## Analytics (`analytics.py`)
 

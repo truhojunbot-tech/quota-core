@@ -25,6 +25,21 @@ def _successful(records: Iterable[TaskEconomicsRecord]) -> list[TaskEconomicsRec
     return [r for r in records if r.succeeded]
 
 
+def _not_succeeded(record: TaskEconomicsRecord) -> bool:
+    """A task counts as not-succeeded once it has a known outcome that isn't "success".
+
+    This is the single definition every analytics function in this module
+    uses for "failed" -- there is intentionally no separate, narrower
+    ``outcome == "failed"`` check anywhere else, so e.g. ``outcome="error"``
+    or ``outcome="cancelled"`` are treated consistently as failures across
+    :func:`failed_retry_token_waste` and :func:`context_age_vs_failure_rate`
+    instead of silently disagreeing. A record with ``outcome=None`` (unknown)
+    is excluded, not counted as failed.
+    """
+
+    return record.outcome is not None and record.outcome != "success"
+
+
 def fresh_input_per_successful_task(records: Iterable[TaskEconomicsRecord]) -> float | None:
     """Average fresh/input tokens spent per successful task (unknowns excluded)."""
 
@@ -56,7 +71,7 @@ def failed_retry_token_waste(records: Iterable[TaskEconomicsRecord]) -> dict[str
     """
 
     records = list(records)
-    failed = [r for r in records if r.outcome == "failed"]
+    failed = [r for r in records if _not_succeeded(r)]
     retries = [r for r in records if r.retry_of]
     failed_totals = [token_components_total(r.tokens) for r in failed]
     retry_totals = [token_components_total(r.tokens) for r in retries]
@@ -117,7 +132,7 @@ def context_age_vs_failure_rate(records: Iterable[TaskEconomicsRecord]) -> list[
     for r in records:
         if r.session_task_index is None or r.outcome is None:
             continue
-        by_age[r.session_task_index].append(r.outcome != "success")
+        by_age[r.session_task_index].append(_not_succeeded(r))
     rows = []
     for age, outcomes in sorted(by_age.items()):
         rate = sum(1 for failed in outcomes if failed) / len(outcomes) if outcomes else None
