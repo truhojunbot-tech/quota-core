@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.14 - 2026-08-21
+
+Adds `quota_core.context_economics`: a provider-neutral context-economics /
+session-efficiency measurement layer (issue #56).
+
+- New public, versioned schema (`TokenComponents`, `RuntimeAttribution`,
+  `ContextLifecycleEvent`, `TaskEconomicsRecord`) that keeps fresh input,
+  output, cache-read, and cache-creation tokens as separate economic
+  categories instead of collapsing them into one total.
+- Tolerant Agent Crew attribution/lifecycle-event JSONL adapter
+  (`agent_crew_adapter.py`) built against a documented fixture contract
+  (`tests/fixtures/agent_crew/`) so this does not block on Agent Crew
+  issue #202 landing, and never imports `agent_crew`.
+- Per-provider token component extraction for Claude/Codex/Gemini
+  (`token_components.py`), preserving partial observability instead of
+  fabricating a breakdown for providers that only report a total.
+- Attribution/usage correlation with explicit confidence
+  (`high`/`medium`/`low`) and human-readable notes (`correlate.py`).
+- Context-efficiency analytics and resume/compact/fresh comparison
+  (`analytics.py`), and before-vs-after compact/reset analysis primitives
+  (`compact_analysis.py`).
+- `docs/context-economics.md` documents the contract and versioning
+  expectations.
+- Fully additive: existing `quota_core.snapshot`/dashboard/session public
+  APIs are unchanged, and the new subpackage is not imported eagerly from
+  `quota_core/__init__.py`.
+
 ## 0.1.13 - 2026-04-29
 
 Original dashboard structure restore.

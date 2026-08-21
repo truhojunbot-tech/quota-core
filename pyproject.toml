@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quota-core"
-version = "0.1.13"
+version = "0.1.14"
 description = "Config-driven local LLM usage snapshots and dashboard rendering"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,7 @@ packages = [
   "quota_core.adapters",
   "quota_core.dashboard",
   "quota_core.session",
+  "quota_core.context_economics",
 ]
 
 [tool.setuptools.package-data]
@@ -42,4 +43,5 @@ quota_core = ["fixtures/normalized/*.json"]
 "share/doc/quota-core" = [
   "docs/snapshot-schema.md",
   "docs/public-private-boundary.md",
+  "docs/context-economics.md",
 ]

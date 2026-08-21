@@ -13,3 +13,6 @@ dist/
 *.jsonl
 quota-core-*.html
 quota-core-*.json
+
+# Documented fixture contracts are committed source, not runtime data.
+!tests/fixtures/**/*.jsonl
