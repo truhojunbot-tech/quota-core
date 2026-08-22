@@ -23,11 +23,13 @@ from .analytics import (
 )
 from .compact_analysis import before_after_compact
 from .correlate import ProviderUsageRecord, correlate_task_economics
+from .agent_crew_adapter import reconcile_attribution_by_task
 from .schema import (
     SCHEMA_VERSION,
     ContextLifecycleEvent,
     ContextPolicy,
     LifecycleEventType,
+    NormalizedOutcome,
     RuntimeAttribution,
     TaskEconomicsRecord,
     TokenComponents,
@@ -35,6 +37,8 @@ from .schema import (
     attribution_to_dict,
     lifecycle_event_from_dict,
     lifecycle_event_to_dict,
+    normalize_outcome,
+    parse_flexible_timestamp,
     task_economics_to_dict,
     token_components_from_dict,
     token_components_to_dict,
@@ -53,6 +57,10 @@ __all__ = [
     "SCHEMA_VERSION",
     "ContextPolicy",
     "LifecycleEventType",
+    "NormalizedOutcome",
+    "normalize_outcome",
+    "parse_flexible_timestamp",
+    "reconcile_attribution_by_task",
     "TokenComponents",
     "RuntimeAttribution",
     "ContextLifecycleEvent",

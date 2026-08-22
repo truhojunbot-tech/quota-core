@@ -202,6 +202,7 @@ def correlate_task_economics(
                 started_at=a.started_at,
                 completed_at=a.completed_at,
                 outcome=a.outcome,
+                raw_outcome=a.raw_outcome,
                 attribution_confidence=confidence,  # type: ignore[arg-type]
                 attribution_notes=tuple(notes),
             )
