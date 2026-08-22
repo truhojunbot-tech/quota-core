@@ -69,6 +69,40 @@ def read_lifecycle_events_jsonl(path: str | Path) -> list[ContextLifecycleEvent]
     return events
 
 
+def _reconciliation_key(attribution: RuntimeAttribution) -> tuple[int, float]:
+    """Rank a row: terminal (has a normalized outcome) beats in-progress, then latest wins."""
+
+    timestamp = attribution.updated_at
+    if timestamp is None:
+        timestamp = attribution.completed_at
+    if timestamp is None:
+        timestamp = attribution.started_at
+    return (1 if attribution.outcome is not None else 0, float(timestamp or 0))
+
+
+def reconcile_attribution_by_task(attributions: Iterable[RuntimeAttribution]) -> list[RuntimeAttribution]:
+    """Collapse Agent Crew's real attribution stream to one row per ``task_id``.
+
+    Real Agent Crew ``attribution.jsonl`` is snapshot/event-like: a task
+    typically gets a dispatch row (``outcome`` unset), zero or more progress
+    updates, and a terminal row once it finishes -- all sharing the same
+    ``task_id`` (quota-core issue #58 point 3). Reading every line as an
+    independent task execution double/triple-counts the same task. This
+    picks, per ``task_id``, whichever row has a terminal outcome and (among
+    ties) the latest ``updated_at``/``completed_at``/``started_at`` --
+    preserving each task_id's first-seen order in the output.
+    """
+
+    groups: dict[str, list[RuntimeAttribution]] = {}
+    order: list[str] = []
+    for a in attributions:
+        if a.task_id not in groups:
+            order.append(a.task_id)
+        groups.setdefault(a.task_id, []).append(a)
+
+    return [max(groups[task_id], key=_reconciliation_key) for task_id in order]
+
+
 def filter_by_task(attributions: Iterable[RuntimeAttribution], task_id: str) -> list[RuntimeAttribution]:
     return [a for a in attributions if a.task_id == task_id]
 
@@ -110,6 +144,7 @@ def events_for_context(events: Iterable[ContextLifecycleEvent], context_id: str)
 __all__ = [
     "read_attribution_jsonl",
     "read_lifecycle_events_jsonl",
+    "reconcile_attribution_by_task",
     "filter_by_task",
     "filter_by_context",
     "filter_by_provider",

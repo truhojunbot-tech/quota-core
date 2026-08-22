@@ -13,6 +13,7 @@ as "parse tolerantly, do not assume new semantics".
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 SCHEMA_VERSION = 1
@@ -46,6 +47,68 @@ _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
 _CONTEXT_POLICIES: tuple[str, ...] = ("resume", "compact", "fresh", "unknown")
 
 AttributionConfidence = Literal["high", "medium", "low"]
+
+NormalizedOutcome = Literal["success", "failed", "unknown"]
+
+# Real Agent Crew outcome values observed in production attribution.jsonl:
+# "" (in progress), "completed", "failed", "failed:<reason>" (colon-delimited
+# sub-reason). Match on the prefix before ":" so "failed:dispatcher_timeout"
+# still normalizes to "failed".
+_SUCCESS_OUTCOME_PREFIXES = {"success", "completed", "done", "ok"}
+_FAILURE_OUTCOME_PREFIXES = {"failed", "error", "cancelled", "canceled", "timeout"}
+
+# Real Agent Crew attribution rows only ever set `agent` to one of these --
+# there is no separate `provider` field in the real contract. Used to derive
+# `provider` when the source data doesn't supply one explicitly, per
+# quota-core issue #58 point 4 ("derive/normalize provider from known Agent
+# Crew agent identities where deterministic, otherwise preserve unknown").
+_KNOWN_AGENT_PROVIDERS = {"claude", "codex", "gemini"}
+
+
+def normalize_outcome(raw: str | None) -> NormalizedOutcome | None:
+    """Map a runtime's raw outcome string to success/failed/unknown.
+
+    Returns ``None`` for an empty/missing outcome (task still in progress,
+    or outcome genuinely not reported) -- that is distinct from a real
+    ``"unknown"`` terminal outcome the runtime explicitly reported.
+    """
+
+    if not raw:
+        return None
+    prefix = raw.split(":", 1)[0].strip().lower()
+    if prefix in _SUCCESS_OUTCOME_PREFIXES:
+        return "success"
+    if prefix in _FAILURE_OUTCOME_PREFIXES:
+        return "failed"
+    return "unknown"
+
+
+def parse_flexible_timestamp(value: Any) -> int | None:
+    """Parse a timestamp that may be a unix epoch (int/float/numeric string)
+    or an ISO-8601 string (Agent Crew's real ``ts`` field, e.g.
+    ``"2026-08-21T23:56:19.497696"`` -- naive, implicitly UTC).
+    """
+
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            pass
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp())
+    return None
 
 
 @dataclass(frozen=True)
@@ -137,7 +200,9 @@ class RuntimeAttribution:
     fallback_of: str | None = None
     started_at: int | None = None
     completed_at: int | None = None
-    outcome: str | None = None
+    updated_at: int | None = None
+    outcome: NormalizedOutcome | None = None
+    raw_outcome: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -179,7 +244,8 @@ class TaskEconomicsRecord:
     fallback_of: str | None = None
     started_at: int | None = None
     completed_at: int | None = None
-    outcome: str | None = None
+    outcome: NormalizedOutcome | None = None
+    raw_outcome: str | None = None
     attribution_confidence: AttributionConfidence = "low"
     attribution_notes: tuple[str, ...] = ()
 
@@ -249,13 +315,28 @@ def attribution_to_dict(attribution: RuntimeAttribution) -> dict[str, Any]:
         "fallback_of": attribution.fallback_of,
         "started_at": attribution.started_at,
         "completed_at": attribution.completed_at,
+        "updated_at": attribution.updated_at,
         "outcome": attribution.outcome,
+        "raw_outcome": attribution.raw_outcome,
         "extra": dict(attribution.extra),
     }
 
 
 def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
     """Build a :class:`RuntimeAttribution` from a raw dict, tolerantly.
+
+    Handles both the original synthetic-fixture shape and Agent Crew's real
+    ``attribution.jsonl`` contract (quota-core issue #58):
+
+    - timestamps may be unix epoch (int/float) or ISO-8601 strings,
+    - ``outcome`` may be Agent Crew's real values (``""``/``"completed"``/
+      ``"failed:<reason>"``) -- normalized into :data:`NormalizedOutcome`,
+      with the original string preserved as ``raw_outcome``,
+    - ``provider`` is derived from ``agent`` when the real contract doesn't
+      supply a separate ``provider`` field and ``agent`` is a known identity
+      (claude/codex/gemini); otherwise it stays unknown rather than guessed,
+    - empty-string optional fields (Agent Crew writes ``""`` for "not set",
+      e.g. ``provider_session_id``) normalize to ``None``.
 
     Unknown top-level keys are preserved under ``extra`` so forward-compatible
     fields are not silently dropped. Missing/older fields fall back to safe
@@ -266,7 +347,7 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         "runtime", "task_id", "schema_version", "project", "task_type", "role", "agent",
         "provider", "model", "context_id", "provider_session_id", "context_policy",
         "context_generation", "session_task_index", "previous_task_id", "retry_of",
-        "fallback_of", "started_at", "completed_at", "outcome", "extra",
+        "fallback_of", "started_at", "completed_at", "updated_at", "outcome", "raw_outcome", "extra",
     }
     extra = dict(data.get("extra") or {}) if isinstance(data.get("extra"), dict) else {}
     for key, value in data.items():
@@ -288,7 +369,16 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
 
     def _opt_str(key: str) -> str | None:
         value = data.get(key)
-        return str(value) if value is not None else None
+        if value is None or value == "":
+            return None
+        return str(value)
+
+    agent = _opt_str("agent")
+    provider = _opt_str("provider")
+    if provider is None and agent is not None and agent.lower() in _KNOWN_AGENT_PROVIDERS:
+        provider = agent.lower()
+
+    raw_outcome = _opt_str("outcome")
 
     return RuntimeAttribution(
         runtime=str(data.get("runtime") or "unknown"),
@@ -297,8 +387,8 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         project=_opt_str("project"),
         task_type=_opt_str("task_type"),
         role=_opt_str("role"),
-        agent=_opt_str("agent"),
-        provider=_opt_str("provider"),
+        agent=agent,
+        provider=provider,
         model=_opt_str("model"),
         context_id=_opt_str("context_id"),
         provider_session_id=_opt_str("provider_session_id"),
@@ -308,9 +398,11 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         previous_task_id=_opt_str("previous_task_id"),
         retry_of=_opt_str("retry_of"),
         fallback_of=_opt_str("fallback_of"),
-        started_at=_opt_int("started_at"),
-        completed_at=_opt_int("completed_at"),
-        outcome=_opt_str("outcome"),
+        started_at=parse_flexible_timestamp(data.get("started_at")),
+        completed_at=parse_flexible_timestamp(data.get("completed_at")),
+        updated_at=parse_flexible_timestamp(data.get("updated_at")),
+        outcome=normalize_outcome(raw_outcome),
+        raw_outcome=raw_outcome,
         extra=extra,
     )
 
@@ -335,21 +427,24 @@ def lifecycle_event_from_dict(data: dict[str, Any]) -> ContextLifecycleEvent | N
 
     Tolerant by design: an unknown/future ``event_type`` is skipped rather
     than raising, so an older adapter can keep reading a newer event stream.
+
+    Accepts Agent Crew's real ``ts`` field (an ISO-8601 string, e.g.
+    ``"2026-08-21T23:56:19.497696"``) in addition to the original synthetic
+    ``timestamp`` (unix epoch int) -- quota-core issue #58 point 1. ``ts``
+    is preferred when both are present.
     """
 
     known_keys = {
-        "event_type", "runtime", "timestamp", "schema_version", "project", "task_id",
+        "event_type", "runtime", "timestamp", "ts", "schema_version", "project", "task_id",
         "context_id", "provider_session_id", "provider", "extra",
     }
     event_type = data.get("event_type")
     if event_type not in _LIFECYCLE_EVENT_TYPES:
         return None
-    raw_timestamp = data.get("timestamp")
-    if raw_timestamp is None:
-        return None
-    try:
-        timestamp = int(raw_timestamp)
-    except (TypeError, ValueError):
+    timestamp = parse_flexible_timestamp(data.get("ts"))
+    if timestamp is None:
+        timestamp = parse_flexible_timestamp(data.get("timestamp"))
+    if timestamp is None:
         return None
 
     extra = dict(data.get("extra") or {}) if isinstance(data.get("extra"), dict) else {}
@@ -396,6 +491,7 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "started_at": record.started_at,
         "completed_at": record.completed_at,
         "outcome": record.outcome,
+        "raw_outcome": record.raw_outcome,
         "attribution_confidence": record.attribution_confidence,
         "attribution_notes": list(record.attribution_notes),
     }
@@ -411,10 +507,17 @@ def validate_attribution_dict(data: dict[str, Any]) -> tuple[str, ...]:
         errors.append("task_id must be a non-empty string")
     if "context_policy" in data and data.get("context_policy") not in _CONTEXT_POLICIES:
         errors.append("context_policy must be one of resume|compact|fresh|unknown")
-    for key in ("started_at", "completed_at", "context_generation", "session_task_index"):
+    for key in ("context_generation", "session_task_index"):
         value = data.get(key)
         if value is not None and not isinstance(value, int):
             errors.append(f"{key} must be an integer or null")
+    # started_at/completed_at/updated_at accept unix epoch (int/float) or an
+    # ISO-8601 string (Agent Crew's real `ts`-style timestamps) -- only flag
+    # a value that parses as neither.
+    for key in ("started_at", "completed_at", "updated_at"):
+        value = data.get(key)
+        if value is not None and parse_flexible_timestamp(value) is None:
+            errors.append(f"{key} must be a unix epoch number, an ISO-8601 string, or null")
     return tuple(errors)
 
 
@@ -423,6 +526,9 @@ __all__ = [
     "ContextPolicy",
     "LifecycleEventType",
     "AttributionConfidence",
+    "NormalizedOutcome",
+    "normalize_outcome",
+    "parse_flexible_timestamp",
     "TokenComponents",
     "token_components_total",
     "RuntimeAttribution",

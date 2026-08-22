@@ -33,7 +33,14 @@ under `extra` instead of dropped, and a missing/invalid enum-like field
   `agent`, `provider`, `model`, `context_id`, `provider_session_id`,
   `context_policy` (`resume | compact | fresh | unknown`),
   `context_generation`, `session_task_index`, `previous_task_id`,
-  `retry_of`, `fallback_of`, `started_at`, `completed_at`, `outcome`.
+  `retry_of`, `fallback_of`, `started_at`, `completed_at`, `updated_at`,
+  `outcome` (normalized to `success | failed | unknown | None`, see
+  `normalize_outcome()`), `raw_outcome` (the runtime's original string,
+  kept for diagnostics -- e.g. Agent Crew's real `"failed:dispatcher_timeout"`
+  normalizes to `outcome="failed"` with `raw_outcome` preserved verbatim).
+  Timestamps accept unix epoch (int/float) or an ISO-8601 string via
+  `parse_flexible_timestamp()` -- Agent Crew's real lifecycle events use a
+  `ts` ISO-8601 field, not a `timestamp` epoch int.
 - **`ContextLifecycleEvent`** -- one append-only lifecycle event:
   `context_created`, `context_resumed`, `context_compacted`,
   `context_reset`, `context_recovered`, `provider_fallback`,
@@ -46,11 +53,21 @@ under `extra` instead of dropped, and a missing/invalid enum-like field
 
 Reads Agent Crew's durable attribution JSONL and lifecycle-event JSONL (per
 `agent_crew` issue #202) from a file path. It never imports `agent_crew` --
-if #202 has not shipped in a given checkout, or Agent Crew is not installed
-at all, this adapter still works against the documented contract in
-`tests/fixtures/agent_crew/` (see that directory's `README.md`). A missing
-file, malformed line, or unrecognized event type degrades gracefully
-(skipped/empty) instead of raising.
+if Agent Crew is not installed at all, this adapter still works against the
+documented contract in `tests/fixtures/agent_crew/` (see that directory's
+`README.md`). A missing file, malformed line, or unrecognized event type
+degrades gracefully (skipped/empty) instead of raising.
+
+**Reconciliation**: real Agent Crew `attribution.jsonl` is snapshot/event-like
+-- a task gets a dispatch row, zero or more progress-update rows, and a
+terminal row, all sharing the same `task_id` (quota-core issue #58). Call
+`reconcile_attribution_by_task(attributions)` after `read_attribution_jsonl()`
+to collapse this to one row per `task_id` (the terminal row when one exists,
+else the most recently updated in-progress row) before correlating or
+running analytics -- reading every raw line as an independent task execution
+will double/triple-count real data. See
+`tests/fixtures/agent_crew/real_contract/README.md` for the golden fixtures
+(sanitized, derived from real production output) this was validated against.
 
 ## Token components per provider (`token_components.py`)
 
@@ -83,13 +100,13 @@ so one unit of usage is never double-counted across several tasks.
 
 ## Known limitations / follow-ups
 
-- **Not yet wired to quota-core's own live provider readers.** This PR adds
-  the schema, adapter, and correlation/analytics primitives and exercises
-  them against `ProviderUsageRecord`s built from fixtures/tests. It does not
-  yet add the glue that constructs `ProviderUsageRecord`s automatically from
-  `quota_core.adapters.claude`/`codex`/`gemini`'s live session readers --
-  intentionally left for a follow-up once `agent_crew#202` lands with real
-  attribution data to correlate against, rather than guessed at now.
+- **Not yet wired to quota-core's own live provider readers.** The schema,
+  adapter, and correlation/analytics primitives are validated against real
+  Agent Crew `attribution.jsonl`/`context_events.jsonl` output (issue #58 --
+  see `tests/fixtures/agent_crew/real_contract/`), but there is still no glue
+  that constructs `ProviderUsageRecord`s automatically from
+  `quota_core.adapters.claude`/`codex`/`gemini`'s live session readers.
+  Left for a follow-up once there's a concrete consumer that needs it.
 - **`before_after_compact` assumes `context_id` continuity across a
   compact/reset** -- see that function's docstring.
 

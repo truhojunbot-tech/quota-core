@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.15 - 2026-08-22
+
+Fixes `quota_core.context_economics`'s Agent Crew adapter to conform to the
+real `agent_crew` telemetry contract instead of the pre-#202 synthetic
+fixtures it was built against (issue #58, P0):
+
+- Lifecycle events use Agent Crew's real `ts` (ISO-8601) field, not the
+  synthetic `timestamp` (epoch int) -- both are now accepted via
+  `parse_flexible_timestamp()`.
+- Terminal success is Agent Crew's real `outcome="completed"` (and
+  colon-delimited failures like `"failed:dispatcher_timeout"`), normalized
+  via the new `normalize_outcome()` into `success | failed | unknown`, with
+  the original string preserved as `raw_outcome` for diagnostics.
+- New `reconcile_attribution_by_task()`: real `attribution.jsonl` is
+  snapshot/event-like (dispatch + progress-update + terminal rows sharing
+  one `task_id`), not one row per task -- this collapses it to the terminal
+  (or latest) row per task instead of triple-counting real data.
+- `provider` is derived from `agent` (claude/codex/gemini) when the real
+  contract's row doesn't include a separate `provider` field, instead of
+  staying incorrectly unknown.
+- Added `tests/fixtures/agent_crew/real_contract/`: sanitized golden
+  fixtures derived from real production `agent_crew` output, plus an
+  end-to-end contract test (fixture -> adapter -> reconciliation ->
+  correlation -> `TaskEconomicsRecord`) and regression tests for each of the
+  four confirmed mismatches.
+- Existing public snapshot/session/context-economics APIs remain backward
+  compatible (full suite: 105/105 passing).
+
 ## 0.1.14 - 2026-08-21
 
 Adds `quota_core.context_economics`: a provider-neutral context-economics /
