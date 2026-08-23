@@ -126,29 +126,54 @@ will double/triple-count real data. See
 `tests/fixtures/agent_crew/real_contract/README.md` for the golden fixtures
 (sanitized, derived from real production output) this was validated against.
 
-**`tasks.db` `error_info` enrichment** (round-1 review of issue #60):
-`attribution.jsonl`'s own failure reason is, in real local data, almost
-always an uninformative bare `exit_1`/`dispatcher_timeout` -- worse, the
-majority of real tasks that Agent Crew's own dispatcher marked
+**`tasks.db` `error_info`/`status` enrichment** (round-1 and round-2 review
+of issue #60): `attribution.jsonl`'s own failure reason is, in real local
+data, almost always an uninformative bare `exit_1`/`dispatcher_timeout` --
+worse, the majority of real tasks that Agent Crew's own dispatcher marked
 `status="failed"` (with a specific `error_info` reason) never got a
 terminal row written to `attribution.jsonl` at all, so their `outcome` stays
 `None` ("still in progress") and they are invisible to
 `attribution.jsonl`-only classification. `tasks.db`'s `error_info` column
-(`{"reason": "<tag>"}`, keyed by the same `task_id`) is the richer source:
-`read_task_error_reasons(db_path)` reads it standalone, and
-`enrich_with_task_error_reasons(attributions, db_path)` joins it onto an
-existing attribution list, doing two things: (1) backfilling
-`outcome="failed"` (plus derived `failure_reason`/`failure_category`/
-`retryable`) for a task `tasks.db` marks `status="failed"` but
-`attribution.jsonl` never terminated -- the highest-yield case in real local
-data (321 of 413 real observed `tasks.db` error rows are exactly this
-shape); and (2) preferring the richer `tasks.db` reason over an existing
-bare `attribution.jsonl` reason when a task already has `outcome="failed"`
-in both. `attribution.jsonl`'s own explicit non-`None` outcome (`success`,
-`unknown`, or an already-set `failed`) is never overridden.
+(`{"reason": "<tag>"}`, keyed by the same `task_id`) and its `status` column
+are the richer source: `read_task_error_reasons(db_path)` reads
+`error_info` standalone, and `enrich_with_task_error_reasons(attributions,
+db_path)` joins both onto an existing attribution list, doing three things:
+(1) backfilling `outcome="failed"` (plus derived
+`failure_reason`/`failure_category`/`retryable`) for a task `tasks.db`
+marks `status="failed"` but `attribution.jsonl` never terminated -- the
+highest-yield case in real local data (321 of 413 real observed `tasks.db`
+error rows are exactly this shape); (2) the symmetric case (round-2 review):
+backfilling `outcome="success"` for a task `tasks.db` marks
+`status="completed"` but `attribution.jsonl` never terminated either --
+without this, only failures could ever be backfilled, which skewed the
+reported failure rate on real local data from an ~11% jsonl-only
+understatement to a ~75% overstatement (worse than the original bug); and
+(3) preferring the richer `tasks.db` reason over an existing bare
+`attribution.jsonl` reason when a task already has `outcome="failed"` in
+both. `attribution.jsonl`'s own explicit non-`None` outcome (`success`,
+`unknown`, or an already-set `failed`) is never overridden by this
+function on its own.
+
 `read_attribution_jsonl_with_task_errors(attribution_path, tasks_db_path)`
-is the one-call convenience wrapper. All of this is optional, best-effort
-enrichment -- a missing/unreadable `tasks.db` degrades silently back to
+is the one-call convenience wrapper -- `read_attribution_jsonl`, then
+`reconcile_attribution_by_task`, then `enrich_with_task_error_reasons`, in
+that order. **Reconciliation runs before enrichment, not after** (round-3
+review): reconciliation's own tiebreak (a task's terminal row always beats
+an in-progress row; latest timestamp only breaks ties within the same tier)
+only guarantees "`attribution.jsonl`'s own terminal call always wins" while
+"terminal" still means "`attribution.jsonl` itself reported an outcome". If
+enrichment ran first, every one of a task's rows -- including its
+still-in-progress ones -- could pick up an outcome from `tasks.db` before
+reconciliation ever saw them, collapsing the tiebreak to "latest timestamp
+wins" and letting a `tasks.db`-backfilled row outrank a real, explicit
+terminal row from `attribution.jsonl` whenever it happened to carry a later
+timestamp. Reconciling the raw stream first means the tiebreak only ever
+treats an `attribution.jsonl`-native terminal outcome as terminal; the
+`tasks.db` backfill is then applied per task, strictly after, and only to a
+task whose winning row still has `outcome=None` -- so it can add
+information but can never outrank an explicit terminal call regardless of
+timestamps. All of this enrichment is optional, best-effort -- a
+missing/unreadable `tasks.db` degrades silently back to
 `attribution.jsonl`-only behavior, never a hard dependency.
 
 ## Token components per provider (`token_components.py`)

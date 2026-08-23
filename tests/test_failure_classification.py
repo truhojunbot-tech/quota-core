@@ -718,6 +718,49 @@ class TasksDbEnrichmentTests(unittest.TestCase):
         self.assertEqual(records[0].outcome, "failed")
         self.assertEqual(records[0].failure_reason, "agy_quota_exhausted")
 
+    def test_reconciliation_runs_before_enrichment_terminal_row_always_wins(self):
+        """Round-3 review regression: read_attribution_jsonl_with_task_errors
+        used to enrich (backfill outcome from tasks.db status) *before*
+        reconciling duplicate rows per task. Once every row for a task has
+        *some* outcome, reconcile_attribution_by_task's "terminal beats
+        in-progress" tiebreak collapses to "latest timestamp wins" -- so a
+        tasks.db-backfilled in-progress row could outrank a real, explicit
+        terminal row from attribution.jsonl itself if the backfilled row
+        happened to carry a later timestamp, contradicting the documented
+        contract that attribution.jsonl's own terminal call always wins.
+
+        Here t1 has a real terminal row (outcome="failed:exit_1",
+        updated_at=100) and a later non-terminal progress row (outcome=None,
+        updated_at=200). tasks.db says status="completed" (a real conflict:
+        the DB thinks the task ultimately succeeded). Enrich-then-reconcile
+        would backfill the progress row to outcome="success" at the later
+        timestamp and let it win over the real terminal "failed" row.
+        Reconcile-then-enrich must pick the real terminal row regardless of
+        the later, DB-backfilled timestamp."""
+
+        attribution_path = _write_jsonl([
+            {
+                "runtime": "agent_crew",
+                "task_id": "t1",
+                "agent": "claude",
+                "outcome": "failed:exit_1",
+                "updated_at": 100,
+            },
+            {
+                "runtime": "agent_crew",
+                "task_id": "t1",
+                "agent": "claude",
+                "outcome": "",
+                "updated_at": 200,
+            },
+        ])
+        db_path = _build_tasks_db([("t1", "completed", None)])
+        records = read_attribution_jsonl_with_task_errors(attribution_path, db_path)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].outcome, "failed")
+        self.assertEqual(records[0].failure_reason, "exit_1")
+        self.assertIsNone(records[0].extra.get("outcome_source"))
+
 
 if __name__ == "__main__":
     unittest.main()

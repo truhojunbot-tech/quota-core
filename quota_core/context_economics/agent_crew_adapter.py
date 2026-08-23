@@ -367,8 +367,8 @@ def read_attribution_jsonl_with_task_errors(
     attribution_path: str | Path,
     tasks_db_path: str | Path,
 ) -> list[RuntimeAttribution]:
-    """Convenience: :func:`read_attribution_jsonl`, :func:`enrich_with_task_error_reasons`,
-    then :func:`reconcile_attribution_by_task`.
+    """Convenience: :func:`read_attribution_jsonl`, :func:`reconcile_attribution_by_task`,
+    then :func:`enrich_with_task_error_reasons`.
 
     This is the recommended entry point for a caller that has both files
     available (the normal case -- both live under the same
@@ -380,21 +380,37 @@ def read_attribution_jsonl_with_task_errors(
     review of quota-core issue #60): real ``attribution.jsonl`` is
     snapshot/event-like -- a single task can have a dispatch row, zero or
     more progress rows, and a terminal row, all sharing one ``task_id`` (see
-    :func:`reconcile_attribution_by_task`). Enrichment runs on the raw,
-    unreconciled stream and independently backfills every one of a task's
-    non-terminal rows that still has ``outcome=None``, so skipping
-    reconciliation here left a caller that counts rows directly (e.g. a
-    failure-rate computation) multiplying a single real outcome across every
-    duplicate row for that task -- measured on real local data, this alone
-    inflated an already-wrong ~75% failure rate to ~96%. Reconciling here
-    collapses those duplicates back to one row per task, the same contract
-    :func:`read_attribution_jsonl` callers already rely on when they
-    reconcile explicitly.
+    :func:`reconcile_attribution_by_task`). Reading every raw line as an
+    independent task execution double/triple-counts the same task, so a
+    caller that counts rows directly (e.g. a failure-rate computation) would
+    multiply a single real outcome across every duplicate row for that
+    task -- measured on real local data, an earlier version of this that
+    skipped reconciliation entirely inflated an already-wrong ~75% failure
+    rate to ~96%.
+
+    Reconciliation runs *before* enrichment (round-3 review of quota-core
+    issue #60), not after: reconciliation's own tiebreak picks a task's
+    terminal row over any in-progress row, but that only holds while
+    "terminal" still means "``attribution.jsonl`` itself reported an
+    outcome". Enriching first would give every one of a task's rows *some*
+    outcome (including its still-in-progress rows, backfilled from
+    ``tasks.db`` ``status``) before reconciliation ever ran, collapsing the
+    tiebreak to "latest timestamp wins" for every task -- so a ``tasks.db``
+    backfill on a non-terminal row could outrank a real, explicit terminal
+    row from ``attribution.jsonl`` itself whenever the backfilled row
+    happened to carry a later timestamp, contradicting the documented
+    contract that ``attribution.jsonl``'s own terminal call always wins (see
+    :func:`reconcile_attribution_by_task`). Reconciling the raw stream first
+    means the tiebreak only ever sees an ``attribution.jsonl``-native
+    terminal outcome as "terminal" -- a ``tasks.db`` backfill is applied
+    afterward, strictly per task, and only when that task's winning row still
+    has ``outcome=None``, so it can add information but never outrank an
+    explicit terminal call regardless of timestamps.
     """
 
     attributions = read_attribution_jsonl(attribution_path)
-    enriched = enrich_with_task_error_reasons(attributions, tasks_db_path)
-    return reconcile_attribution_by_task(enriched)
+    reconciled = reconcile_attribution_by_task(attributions)
+    return enrich_with_task_error_reasons(reconciled, tasks_db_path)
 
 
 def _reconciliation_key(attribution: RuntimeAttribution) -> tuple[int, float]:
