@@ -57,6 +57,126 @@ NormalizedOutcome = Literal["success", "failed", "unknown"]
 _SUCCESS_OUTCOME_PREFIXES = {"success", "completed", "done", "ok"}
 _FAILURE_OUTCOME_PREFIXES = {"failed", "error", "cancelled", "canceled", "timeout"}
 
+FailureCategory = Literal[
+    "context_or_policy",
+    "provider_or_transport",
+    "runtime_or_dispatcher",
+    "work_product_or_test",
+    "cancelled",
+    "unknown",
+]
+
+_FAILURE_CATEGORIES: tuple[str, ...] = (
+    "context_or_policy",
+    "provider_or_transport",
+    "runtime_or_dispatcher",
+    "work_product_or_test",
+    "cancelled",
+    "unknown",
+)
+
+# quota-core issue #60: classify a failed task's raw reason into a small
+# public category set so context-age/compact-policy reports can strip out
+# failures that are not evidence about context handling. Markers below are
+# grounded in reason strings actually observed locally (2026-08), not
+# guessed:
+#
+# - `dispatcher_timeout`, `exit_1`, `agy_quota_exhausted`, `no_result_submitted`
+#   -- from `~/.agent_crew/*/tasks.db` `tasks.error_info` (`{"reason": ...}`)
+#   and the matching colon-encoded `attribution.jsonl` `outcome` values
+#   (`"failed:dispatcher_timeout"`, `"failed:exit_1"`).
+# - `claude_429`, `claude_throttle`, `gemini_capacity`,
+#   `gemini_resource_exhausted`, `codex_capacity`, `agy_quota_exhausted`,
+#   `agy_timeout` -- agent_crew's own dispatcher transient-error detector
+#   (`_detect_transient_error_in_log` in agent_crew's `server.py`, read
+#   read-only from the local agent_crew checkout for ground truth; quota_core
+#   does not import agent_crew). These are exactly the signatures agent_crew
+#   already treats as "upstream throttle, requeue" rather than a real
+#   failure.
+#
+# `agy_subscriber_lag` / the "subscriber fell behind" AGY streaming-backpressure
+# signature from issue #60's agent_crew#205/#206 incident is genuinely defined
+# in agent_crew's own dispatcher (`server.py:258-262`'s docstring, implemented
+# at `server.py:299-300`: `if "subscriber fell behind updates" in tail: return
+# "agy_subscriber_lag"`) -- it is real, shipped code, not a guess. What is
+# true is only that no task has *failed* with that reason in any locally
+# observed `error_info`/`outcome` value as of this change (round-1 review,
+# 2026-08: corrected from an earlier, wrong "absent/unconfirmed" claim here).
+# It is included below alongside the other AGY transient tags.
+#
+# NOTE: despite the name, the markers below are NOT a true `agy_`-prefix
+# match -- they are three literal tags (`agy_quota`, `agy_timeout`,
+# `agy_subscriber`) matched by substring, same as every other marker in this
+# tuple. A reason like `agy_transient` or `agy_stream_error` would NOT match
+# any of these and falls through to `"unknown"`. A real `agy_` prefix rule
+# was considered and deliberately not implemented: the only `agy_`-tagged
+# reasons actually observed locally are the three literal tags already
+# listed here (see `agent_crew_adapter.py`'s tasks.db error_info enrichment),
+# so generalizing to every future `agy_*` tag would be exactly the kind of
+# unguessed/unevidenced category fabrication issue #60 forbids.
+_PROVIDER_TRANSPORT_MARKERS: tuple[str, ...] = (
+    "429",
+    "throttle",
+    "rate_limit",
+    "capacity",
+    "resource_exhausted",
+    "quota_exhausted",
+    "subscriber_lag",
+    "subscriber_fell_behind",
+    "backpressure",
+    "agy_quota",
+    "agy_timeout",
+    "agy_subscriber",
+)
+
+# `dispatcher_timeout` is agent_crew's *own* orchestration layer giving up on
+# a task past its deadline -- distinct from `agy_timeout` above (the
+# underlying provider CLI/tool itself hanging, which agent_crew already
+# treats as a transient provider/transport signature). `no_result_submitted`
+# is the same shape: the dispatcher never got a terminal result from the
+# agent process, which is an orchestration/runtime failure mode, not
+# evidence about the task's own context or work product.
+_RUNTIME_DISPATCHER_MARKERS: tuple[str, ...] = (
+    "dispatcher",
+    "no_result_submitted",
+    "orchestrat",
+)
+
+# A bare/generic nonzero exit code (`exit_1`, `exit_code_137`, ...) is
+# evidence-free: a crash, an OOM kill, a network drop, and a genuine failing
+# test all produce an identical bare exit code, so it must NOT positively
+# identify a "work product" (test/lint/assertion) failure -- round-1 review
+# of quota-core issue #60 flagged this as the exact "false precision" the
+# issue's own acceptance criteria forbid ("do not fabricate a category when
+# evidence is insufficient"). Deliberately no `exit_*` marker is listed here;
+# a bare exit code now falls through every marker table below to the
+# `"unknown"` default, which is the honest bucket for it. `work_product_or_test`
+# is reserved for reasons that positively identify a test/lint/assertion
+# failure -- none of these markers are reachable from any reason string
+# observed locally as of this change (same situation as
+# `_CONTEXT_POLICY_MARKERS` below); they exist so a future producer that
+# starts tagging this is picked up automatically.
+_WORK_PRODUCT_MARKERS: tuple[str, ...] = (
+    "test_fail",
+    "lint_fail",
+    "assertion",
+)
+
+# No reason string observed locally (attribution.jsonl outcome / tasks.db
+# error_info.reason) currently encodes a context/policy cause -- Agent
+# Crew's real contract has no field that positively attributes a failure to
+# stale/overlong context or a bad compact/resume decision (see
+# agent_crew_adapter.py's module docstring). These markers exist so a future
+# producer that *does* start tagging this is picked up automatically instead
+# of requiring another quota_core release; today they should never match.
+_CONTEXT_POLICY_MARKERS: tuple[str, ...] = (
+    "context_stale",
+    "context_overflow",
+    "compact_fail",
+    "resume_fail",
+    "context_or_policy",
+)
+
 # Real Agent Crew attribution rows only ever set `agent` to one of these --
 # there is no separate `provider` field in the real contract. Used to derive
 # `provider` when the source data doesn't supply one explicitly, per
@@ -81,6 +201,130 @@ def normalize_outcome(raw: str | None) -> NormalizedOutcome | None:
     if prefix in _FAILURE_OUTCOME_PREFIXES:
         return "failed"
     return "unknown"
+
+
+def extract_failure_reason(raw_outcome: str | None) -> str | None:
+    """Extract the colon-delimited reason segment from a raw outcome string.
+
+    Mirrors :func:`normalize_outcome`'s own prefix split:
+    ``"failed:dispatcher_timeout"`` -> ``"dispatcher_timeout"``. Returns
+    ``None`` for a bare ``"failed"`` (no reason reported) or an empty/missing
+    raw outcome -- never fabricates a reason that was not actually there.
+    """
+
+    if not raw_outcome or ":" not in raw_outcome:
+        return None
+    _, _, reason = raw_outcome.partition(":")
+    reason = reason.strip()
+    return reason or None
+
+
+def classify_failure_category(
+    outcome: NormalizedOutcome | None,
+    raw_outcome: str | None,
+) -> FailureCategory | None:
+    """Map a failed task's raw outcome/reason to the public failure-category set.
+
+    Returns ``None`` when ``outcome`` is not ``"failed"`` -- category is not
+    applicable to a success or an in-progress/unknown-outcome task. For a
+    genuine failure, defaults to ``"unknown"`` whenever the reason is missing
+    or does not match a recognized pattern; this function never guesses a
+    more specific category than the evidence supports (quota-core issue #60:
+    "do not fabricate a category when evidence is insufficient").
+
+    ``"context_or_policy"`` is currently unreachable from any reason string
+    Agent Crew's real contract is observed to emit -- see the module-level
+    marker tables above and ``agent_crew_adapter.py``'s docstring for the
+    missing producer metadata this would need.
+    """
+
+    if outcome != "failed":
+        return None
+    reason = extract_failure_reason(raw_outcome)
+    candidate = reason if reason is not None else (raw_outcome or "").strip()
+    lowered = candidate.lower()
+    if not lowered:
+        return "unknown"
+    if lowered in {"cancelled", "canceled"} or "cancel" in lowered:
+        return "cancelled"
+    if any(marker in lowered for marker in _CONTEXT_POLICY_MARKERS):
+        return "context_or_policy"
+    if any(marker in lowered for marker in _PROVIDER_TRANSPORT_MARKERS):
+        return "provider_or_transport"
+    if any(marker in lowered for marker in _RUNTIME_DISPATCHER_MARKERS):
+        return "runtime_or_dispatcher"
+    if any(marker in lowered for marker in _WORK_PRODUCT_MARKERS):
+        return "work_product_or_test"
+    return "unknown"
+
+
+# agent_crew's own dispatcher (`_detect_transient_error_in_log` in
+# agent_crew's `server.py:231-300`, read read-only for ground truth) splits
+# its transient-error tags into two explicit, disjoint groups -- not a single
+# "provider/transport = retryable" rule. Round-1 review of quota-core issue
+# #60 caught that deriving retryability from the coarse `failure_category`
+# instead of these specific tags gets the single most common real failure
+# reason wrong: `agy_quota_exhausted` is 321 of 413 (78%) of every failure
+# reason observed locally in `~/.agent_crew/*/tasks.db`, and the dispatcher's
+# own comment calls it "clear reason; no point in immediate retry" -- i.e.
+# explicitly NOT retryable, even though it classifies as
+# `"provider_or_transport"`.
+_RETRYABLE_REASON_TAGS: tuple[str, ...] = (
+    "claude_429",
+    "claude_throttle",
+    "gemini_capacity",
+    "gemini_resource_exhausted",
+    "codex_capacity",
+    "agy_timeout",
+    "agy_subscriber_lag",
+)
+
+# agent_crew's own "exhausted for hours+; retry is futile" group.
+_NONRETRYABLE_REASON_TAGS: tuple[str, ...] = (
+    "gemini_quota_exhausted",
+    "gemini_ineligible_tier",
+    "agy_quota_exhausted",
+)
+
+
+def infer_retryable(reason: str | None) -> bool | None:
+    """Best-effort retryability derived from the specific failure reason tag.
+
+    Mirrors agent_crew's own dispatcher (``_detect_transient_error_in_log``)
+    verbatim: its explicitly-retryable tag group
+    (:data:`_RETRYABLE_REASON_TAGS`) and its explicitly-non-retryable tag
+    group (:data:`_NONRETRYABLE_REASON_TAGS`), matched by substring against
+    ``reason`` the same way :func:`classify_failure_category`'s marker tables
+    work. Deliberately does **not** derive from the coarser
+    ``failure_category`` -- ``"provider_or_transport"`` alone conflates the
+    two groups and gets ``agy_quota_exhausted`` (78% of all real observed
+    failures locally) wrong.
+
+    A reason containing ``"max_retries"`` (e.g. the real observed
+    ``transient_agy_timeout_max_retries`` /
+    ``transient_agy_subscriber_lag_max_retries`` tags in
+    ``~/.agent_crew/*/tasks.db`` ``error_info``) is treated as non-retryable
+    regardless of which tag it otherwise matches: the reason string itself
+    documents that agent_crew's own dispatcher already exhausted its retry
+    budget for this task, so claiming it is still retryable would
+    contradict the evidence it's derived from.
+
+    Returns ``None`` when ``reason`` is missing or matches neither explicit
+    tag group -- there isn't enough evidence to claim retryability either
+    way, and a guessed ``True``/``False`` would overstate what agent_crew's
+    dispatcher actually encodes for it.
+    """
+
+    if not reason:
+        return None
+    lowered = reason.lower()
+    if "max_retries" in lowered:
+        return False
+    if any(tag in lowered for tag in _NONRETRYABLE_REASON_TAGS):
+        return False
+    if any(tag in lowered for tag in _RETRYABLE_REASON_TAGS):
+        return True
+    return None
 
 
 def parse_flexible_timestamp(value: Any) -> int | None:
@@ -203,6 +447,10 @@ class RuntimeAttribution:
     updated_at: int | None = None
     outcome: NormalizedOutcome | None = None
     raw_outcome: str | None = None
+    failure_reason: str | None = None
+    failure_category: FailureCategory | None = None
+    retryable: bool | None = None
+    terminal_source: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -246,6 +494,10 @@ class TaskEconomicsRecord:
     completed_at: int | None = None
     outcome: NormalizedOutcome | None = None
     raw_outcome: str | None = None
+    failure_reason: str | None = None
+    failure_category: FailureCategory | None = None
+    retryable: bool | None = None
+    terminal_source: str | None = None
     attribution_confidence: AttributionConfidence = "low"
     attribution_notes: tuple[str, ...] = ()
 
@@ -318,6 +570,10 @@ def attribution_to_dict(attribution: RuntimeAttribution) -> dict[str, Any]:
         "updated_at": attribution.updated_at,
         "outcome": attribution.outcome,
         "raw_outcome": attribution.raw_outcome,
+        "failure_reason": attribution.failure_reason,
+        "failure_category": attribution.failure_category,
+        "retryable": attribution.retryable,
+        "terminal_source": attribution.terminal_source,
         "extra": dict(attribution.extra),
     }
 
@@ -337,6 +593,26 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
       (claude/codex/gemini); otherwise it stays unknown rather than guessed,
     - empty-string optional fields (Agent Crew writes ``""`` for "not set",
       e.g. ``provider_session_id``) normalize to ``None``.
+    - ``raw_outcome``/``failure_reason``/``failure_category``/``retryable``
+      (quota-core issue #60) are derived from ``outcome`` when the
+      corresponding key is *absent* from ``data``: ``raw_outcome`` falls
+      back to the raw ``outcome`` string, ``failure_reason`` from the
+      colon-delimited suffix of a real ``"failed:<reason>"`` outcome,
+      ``failure_category`` via :func:`classify_failure_category`, and
+      ``retryable`` via :func:`infer_retryable`. A future producer that
+      supplies one of these keys explicitly -- **including an explicit
+      ``null``** -- wins over the derived value; ``key in data`` (not
+      ``data.get(key) is None``) is what distinguishes "absent, please
+      derive" from "explicitly null, leave it null" (round-1 review of
+      issue #60: a naive ``.get()`` check could not tell these apart, so an
+      explicit null could never survive a to_dict/from_dict round-trip, and
+      setting one field could silently fabricate an unrelated sibling
+      field). An explicit-but-invalid value (wrong type, or a
+      ``failure_category`` not in the known set) is treated the same as
+      absent and still gets derived, rather than kept as garbage.
+      ``terminal_source`` has no derivation -- Agent Crew's current contract
+      does not expose it at all (see ``agent_crew_adapter.py``), so it stays
+      ``None`` unless a source dict explicitly provides one.
 
     Unknown top-level keys are preserved under ``extra`` so forward-compatible
     fields are not silently dropped. Missing/older fields fall back to safe
@@ -347,7 +623,8 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         "runtime", "task_id", "schema_version", "project", "task_type", "role", "agent",
         "provider", "model", "context_id", "provider_session_id", "context_policy",
         "context_generation", "session_task_index", "previous_task_id", "retry_of",
-        "fallback_of", "started_at", "completed_at", "updated_at", "outcome", "raw_outcome", "extra",
+        "fallback_of", "started_at", "completed_at", "updated_at", "outcome", "raw_outcome",
+        "failure_reason", "failure_category", "retryable", "terminal_source", "extra",
     }
     extra = dict(data.get("extra") or {}) if isinstance(data.get("extra"), dict) else {}
     for key, value in data.items():
@@ -378,7 +655,78 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
     if provider is None and agent is not None and agent.lower() in _KNOWN_AGENT_PROVIDERS:
         provider = agent.lower()
 
-    raw_outcome = _opt_str("outcome")
+    # Real Agent Crew producer dicts only ever set "outcome" (the raw string,
+    # e.g. "failed:dispatcher_timeout"), never "raw_outcome" at all.
+    # attribution_to_dict's own output always sets *both* keys: "outcome" is
+    # already the *normalized* value (one of "success"/"failed"/"unknown"/
+    # None) and "raw_outcome" is the original raw string, which may
+    # legitimately be None (e.g. for a directly-constructed record that
+    # never had a raw source, or an in-progress task). Those are two
+    # different shapes of "no value" that must not be conflated: an absent
+    # "raw_outcome" key means "derive it from outcome, per the real
+    # contract"; a present "raw_outcome" key whose value is None means "this
+    # really has no raw outcome, don't fabricate one from outcome" (round-1
+    # review: the old `_opt_str(...) is None` check could not tell these
+    # apart, so `RuntimeAttribution(outcome="failed", raw_outcome=None)`
+    # incorrectly round-tripped to `raw_outcome="failed"`).
+    if "raw_outcome" in data:
+        raw_outcome = _opt_str("raw_outcome")
+    else:
+        raw_outcome = _opt_str("outcome")
+
+    # Round-1's fix above (correctly) stopped deriving `raw_outcome` from
+    # `outcome` unconditionally, but it went further and also stopped
+    # respecting an already-normalized "outcome" key entirely -- `outcome`
+    # was *always* re-derived from `raw_outcome` via `normalize_outcome`,
+    # even when the dict already carried a valid normalized value (exactly
+    # the shape `attribution_to_dict` itself emits). That silently dropped
+    # `outcome` on every round-trip where `raw_outcome` was `None`, e.g.
+    # `RuntimeAttribution(outcome="failed")` -> to_dict -> from_dict came
+    # back as `outcome=None` (round-2 review regression, quota-core issue
+    # #60). Fix: "outcome" and "raw_outcome" are independent keys, each
+    # resolved from its own presence in `data` -- when "outcome" is present
+    # and is already a valid `NormalizedOutcome` (or explicit None), trust
+    # it as-is; otherwise (the real Agent Crew contract shape, e.g.
+    # "failed:dispatcher_timeout" or "") normalize it the same way as
+    # before. "outcome" absent entirely still falls back to deriving from
+    # `raw_outcome`, unchanged from round-1.
+    if "outcome" in data:
+        _raw_outcome_field = data.get("outcome")
+        if _raw_outcome_field is None or _raw_outcome_field in ("success", "failed", "unknown"):
+            outcome = _raw_outcome_field  # type: ignore[assignment]
+        else:
+            outcome = normalize_outcome(str(_raw_outcome_field))
+    else:
+        outcome = normalize_outcome(raw_outcome)
+
+    if "failure_reason" in data:
+        failure_reason = _opt_str("failure_reason")
+    else:
+        failure_reason = extract_failure_reason(raw_outcome)
+
+    if "failure_category" in data:
+        _raw_failure_category = data.get("failure_category")
+        if _raw_failure_category is None:
+            failure_category = None
+        elif _raw_failure_category in _FAILURE_CATEGORIES:
+            failure_category = _raw_failure_category
+        else:
+            # Present but not a recognized category -- garbage, not a
+            # deliberate null; derive instead of keeping it.
+            failure_category = classify_failure_category(outcome, raw_outcome)
+    else:
+        failure_category = classify_failure_category(outcome, raw_outcome)
+
+    if "retryable" in data:
+        _raw_retryable = data.get("retryable")
+        if _raw_retryable is None:
+            retryable = None
+        elif isinstance(_raw_retryable, bool):
+            retryable = _raw_retryable
+        else:
+            retryable = infer_retryable(failure_reason)
+    else:
+        retryable = infer_retryable(failure_reason)
 
     return RuntimeAttribution(
         runtime=str(data.get("runtime") or "unknown"),
@@ -401,8 +749,12 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         started_at=parse_flexible_timestamp(data.get("started_at")),
         completed_at=parse_flexible_timestamp(data.get("completed_at")),
         updated_at=parse_flexible_timestamp(data.get("updated_at")),
-        outcome=normalize_outcome(raw_outcome),
+        outcome=outcome,
         raw_outcome=raw_outcome,
+        failure_reason=failure_reason,
+        failure_category=failure_category,  # type: ignore[arg-type]
+        retryable=retryable,
+        terminal_source=_opt_str("terminal_source"),
         extra=extra,
     )
 
@@ -492,6 +844,10 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "completed_at": record.completed_at,
         "outcome": record.outcome,
         "raw_outcome": record.raw_outcome,
+        "failure_reason": record.failure_reason,
+        "failure_category": record.failure_category,
+        "retryable": record.retryable,
+        "terminal_source": record.terminal_source,
         "attribution_confidence": record.attribution_confidence,
         "attribution_notes": list(record.attribution_notes),
     }
@@ -507,6 +863,13 @@ def validate_attribution_dict(data: dict[str, Any]) -> tuple[str, ...]:
         errors.append("task_id must be a non-empty string")
     if "context_policy" in data and data.get("context_policy") not in _CONTEXT_POLICIES:
         errors.append("context_policy must be one of resume|compact|fresh|unknown")
+    if "failure_category" in data and data.get("failure_category") not in _FAILURE_CATEGORIES:
+        errors.append(
+            "failure_category must be one of context_or_policy|provider_or_transport|"
+            "runtime_or_dispatcher|work_product_or_test|cancelled|unknown"
+        )
+    if "retryable" in data and data.get("retryable") is not None and not isinstance(data.get("retryable"), bool):
+        errors.append("retryable must be a boolean or null")
     for key in ("context_generation", "session_task_index"):
         value = data.get(key)
         if value is not None and not isinstance(value, int):
@@ -527,7 +890,11 @@ __all__ = [
     "LifecycleEventType",
     "AttributionConfidence",
     "NormalizedOutcome",
+    "FailureCategory",
     "normalize_outcome",
+    "extract_failure_reason",
+    "classify_failure_category",
+    "infer_retryable",
     "parse_flexible_timestamp",
     "TokenComponents",
     "token_components_total",

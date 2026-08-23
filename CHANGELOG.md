@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.16 - 2026-08-23
+
+Adds failure cause/classification to `quota_core.context_economics` so raw
+task failure is no longer treated as automatic context-policy evidence
+(issue #60). Motivated by the real `agent_crew#205`/`#206` incident: 31
+tester failures over ~21 hours caused by AGY's transient "subscriber fell
+behind updates" streaming/backpressure error that agent_crew's dispatcher
+had not yet classified as retriable.
+
+- `RuntimeAttribution`/`TaskEconomicsRecord` gain `failure_reason`,
+  `failure_category`, `retryable`, and `terminal_source`, alongside the
+  existing `outcome`/`raw_outcome`.
+- New `classify_failure_category()` maps a raw `"failed:<reason>"` outcome
+  into a small public category set (`context_or_policy`,
+  `provider_or_transport`, `runtime_or_dispatcher`, `work_product_or_test`,
+  `cancelled`, `unknown`), grounded in reason strings actually observed in
+  `~/.agent_crew/*/tasks.db` `error_info` / `attribution.jsonl` `outcome`
+  (`dispatcher_timeout`, `exit_1`, `agy_quota_exhausted`,
+  `no_result_submitted`) and agent_crew's own dispatcher transient-error
+  tags. Never fabricates a specific category from insufficient evidence --
+  defaults to `unknown`.
+- New `infer_retryable()` mirrors which categories agent_crew's dispatcher
+  currently auto-retries (only `provider_or_transport`).
+- `attribution_from_dict` derives all of the above from `outcome`
+  automatically; an explicit value in the source dict always wins.
+- New `stratified_failure_rates()`, merged into `context_age_vs_failure_rate`,
+  `compare_context_policies`, and `compact_analysis.before_after_compact`'s
+  before/after windows: exposes `provider_or_runtime_operational`,
+  `policy_relevant`, `cancelled`, and `unknown` failure counts/rates
+  alongside the existing raw rate, plus a `"warning"` key when every
+  observed failure's cause is unrecognized. Existing keys
+  (`failure_rate`/`count`/`success_rate`) are unchanged.
+- Regression fixture `tests/fixtures/agent_crew/agy_incident/` models the
+  AGY incident and proves it classifies as `provider_or_transport` (not
+  `context_or_policy`) and is excluded from `policy_relevant_failure_rate`.
+- Backward compatible: older telemetry with only a bare `outcome="failed"`
+  (no reason) still parses and classifies as `unknown`, not dropped.
+- Full suite: 139/139 passing.
+
 ## 0.1.15 - 2026-08-22
 
 Fixes `quota_core.context_economics`'s Agent Crew adapter to conform to the

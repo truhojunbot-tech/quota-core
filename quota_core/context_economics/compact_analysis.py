@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from .analytics import stratified_failure_rates, unknown_cause_warning
 from .schema import ContextLifecycleEvent, TaskEconomicsRecord, token_components_total
 
 _RESET_EVENT_TYPES = {"context_compacted", "context_reset"}
@@ -22,17 +23,28 @@ def _task_timestamp(record: TaskEconomicsRecord) -> int | None:
     return record.started_at
 
 
-def _window_stats(records: list[TaskEconomicsRecord]) -> dict[str, float | int | None]:
+def _window_stats(records: list[TaskEconomicsRecord]) -> dict[str, float | int | None | str]:
     totals = [token_components_total(r.tokens) for r in records]
     known_totals = [float(t) for t in totals if t is not None]
     outcomes = [r.outcome for r in records if r.outcome is not None]
     durations = [r.duration_seconds for r in records if r.duration_seconds is not None]
-    return {
+    stats: dict[str, float | int | None | str] = {
         "task_count": len(records),
         "avg_tokens": (sum(known_totals) / len(known_totals)) if known_totals else None,
         "success_rate": (sum(1 for o in outcomes if o == "success") / len(outcomes)) if outcomes else None,
         "avg_duration_seconds": (sum(durations) / len(durations)) if durations else None,
     }
+    # quota-core issue #60: expose the same policy-relevant vs
+    # provider/runtime-operational failure split here as
+    # analytics.context_age_vs_failure_rate, so a before/after compact
+    # comparison isn't read as "compact made things worse" when the "after"
+    # window's failures were actually a provider outage or dispatcher bug.
+    stratified = stratified_failure_rates(records)
+    stats.update(stratified)
+    warning = unknown_cause_warning(stratified)
+    if warning is not None:
+        stats["warning"] = warning
+    return stats
 
 
 def before_after_compact(
