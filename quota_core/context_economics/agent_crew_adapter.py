@@ -190,52 +190,123 @@ def read_task_error_reasons(db_path: str | Path) -> dict[str, str]:
     return {task_id: entry.reason for task_id, entry in _read_task_error_info(db_path).items()}
 
 
+def _read_task_statuses(db_path: str | Path) -> dict[str, str]:
+    """Read ``{task_id: status}`` for *every* row in Agent Crew's ``tasks.db``,
+    regardless of whether ``error_info`` is set.
+
+    Complements :func:`_read_task_error_info`, which only covers rows that
+    carry a JSON ``error_info`` reason. In real local data, ``error_info`` is
+    populated *exclusively* for ``status="failed"`` rows -- never for
+    ``status="completed"`` -- so a symmetric success backfill in
+    :func:`enrich_with_task_error_reasons` needs this separate, unfiltered
+    read to see ``status="completed"`` rows at all. Without it, only
+    failures could ever be backfilled from ``tasks.db``, which silently
+    skews the failure rate upward whenever ``attribution.jsonl`` leaves many
+    tasks' ``outcome`` unterminated (round-2 review of quota-core issue #60:
+    measured on real local data, this asymmetry inflated the failure rate
+    from an ~11% jsonl-only understatement to a ~75% overstatement -- worse
+    than the bug it was meant to fix).
+
+    Returns an empty dict -- never raises -- under the same tolerant-failure
+    contract as :func:`_read_task_error_info`: a missing/unreadable db, or a
+    ``tasks`` table without the expected columns, degrades silently.
+    """
+
+    path = Path(db_path)
+    if not path.exists():
+        return {}
+
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+
+    statuses: dict[str, str] = {}
+    try:
+        try:
+            cursor = conn.execute("SELECT task_id, status FROM tasks")
+            rows = cursor.fetchall()
+        except sqlite3.Error:
+            return {}
+        for task_id, status in rows:
+            if not task_id or not status:
+                continue
+            statuses[str(task_id)] = str(status)
+    finally:
+        conn.close()
+    return statuses
+
+
 def enrich_with_task_error_reasons(
     attributions: Iterable[RuntimeAttribution],
     db_path: str | Path,
 ) -> list[RuntimeAttribution]:
-    """Join ``tasks.db``'s richer failure data onto ``attribution.jsonl`` records
-    by ``task_id`` (quota-core issue #60 round-1 review).
+    """Join ``tasks.db``'s richer task-state data onto ``attribution.jsonl``
+    records by ``task_id`` (quota-core issue #60).
 
-    Two distinct real-data gaps this closes, in order of how much of the
-    real local failure population each affects:
+    Three distinct real-data gaps this closes:
 
-    1. **The dominant case (321 of 413 -- 78% -- of every real observed
-       tasks.db error_info row locally, all ``agy_quota_exhausted``):** the
-       task's own ``tasks.db`` row has ``status="failed"`` with a reason, but
-       its ``attribution.jsonl`` stream never wrote a terminal row at all --
-       the reconciled attribution's ``outcome`` is ``None`` ("still in
-       progress"), silently hiding a real, permanent failure. When this
-       happens, this backfills ``outcome="failed"`` (and the derived
-       ``raw_outcome``/``failure_reason``/``failure_category``/``retryable``)
-       from ``tasks.db`` alone. An attribution row with any other explicit
-       outcome (``"success"``, ``"unknown"``, or an already-set ``"failed"``)
-       is never overridden this way -- ``attribution.jsonl``'s own terminal
-       call always wins when it exists.
-    2. **The minority case:** the attribution row already has
+    1. **The dominant failure case (round-1 review; 78% of every real
+       observed ``tasks.db`` ``error_info`` row locally, all
+       ``agy_quota_exhausted``):** the task's own ``tasks.db`` row has
+       ``status="failed"``, but its ``attribution.jsonl`` stream never wrote
+       a terminal row at all -- the reconciled attribution's ``outcome`` is
+       ``None`` ("still in progress"), silently hiding a real, permanent
+       failure. When this happens, this backfills ``outcome="failed"`` from
+       ``tasks.db`` alone, and additionally pulls in the richer
+       ``error_info`` reason (and the derived ``failure_category``/
+       ``retryable``) when that row also has one.
+    2. **The symmetric success case (round-2 review; this was the missing
+       half of case 1):** the task's ``tasks.db`` row has
+       ``status="completed"`` but ``attribution.jsonl`` never wrote a
+       terminal row either. Case 1 alone backfilled only failures into
+       ``outcome`` and never backfilled the matching successes, which made
+       the *reported* failure rate on real local data go from an ~11%
+       understatement (jsonl-only, the original bug) to a ~75%
+       overstatement (only-failures-backfilled) -- worse than the bug it
+       replaced, because every newly-visible failure entered the numerator
+       while the far more numerous newly-visible successes never entered
+       the denominator. This backfills ``outcome="success"`` from
+       ``tasks.db`` alone for exactly this shape.
+    3. **The minority case:** the attribution row already has
        ``outcome="failed"``, but its own reason (the colon-delimited
        ``outcome`` suffix) is a less specific bare tag (e.g. ``exit_1``) than
-       ``tasks.db``'s triaged one. ``failure_category``/``retryable`` are
-       re-derived from the richer reason.
+       ``tasks.db``'s triaged ``error_info`` one. ``failure_category``/
+       ``retryable`` are re-derived from the richer reason.
 
-    A task with no ``tasks.db`` match at all (including when the db is
-    entirely missing/unreadable -- see :func:`_read_task_error_info`) keeps
-    its original ``attribution.jsonl``-only classification unchanged; this
-    enrichment is additive, never a hard dependency.
+    An attribution row with any other explicit, already-terminal outcome
+    (``"success"``, ``"unknown"``, or an already-set ``"failed"`` with no
+    richer reason available) is never overridden this way --
+    ``attribution.jsonl``'s own terminal call always wins when it exists. A
+    task with no ``tasks.db`` match at all (including when the db is
+    entirely missing/unreadable) keeps its original ``attribution.jsonl``
+    -only classification unchanged; this enrichment is additive, never a
+    hard dependency.
+
+    Deliberately conservative about which ``tasks.db`` ``status`` values are
+    treated as authoritative: only the two literal values actually observed
+    driving the real terminal population (``"failed"``, ``"completed"``) are
+    backfilled. Other real observed statuses (``"needs_human"``,
+    ``"pending"``, ``"blocked"``, ``"in_progress"``, ``"cancelled"``) are
+    left alone -- they are not evidence of a definite success or failure,
+    and guessing one would be exactly the kind of unevidenced fabrication
+    issue #60 forbids.
     """
 
     info = _read_task_error_info(db_path)
-    if not info:
+    statuses = _read_task_statuses(db_path)
+    if not info and not statuses:
         return list(attributions)
 
     enriched: list[RuntimeAttribution] = []
     for a in attributions:
         entry = info.get(a.task_id)
-        if entry is None:
-            enriched.append(a)
-            continue
+        status = statuses.get(a.task_id)
 
         if a.outcome == "failed":
+            if entry is None:
+                enriched.append(a)
+                continue
             richer_reason = entry.reason
             if not richer_reason or richer_reason == a.failure_reason:
                 enriched.append(a)
@@ -250,21 +321,41 @@ def enrich_with_task_error_reasons(
                     extra={**a.extra, "failure_reason_source": "tasks_db"},
                 )
             )
-        elif a.outcome is None and entry.status == "failed":
+        elif a.outcome is None and status == "failed":
             # attribution.jsonl never terminated this task at all, but
-            # tasks.db's own dispatcher marked it status=failed with a
-            # reason -- this is the single highest-yield case in real local
-            # data (see docstring above).
-            category = classify_failure_category("failed", f"failed:{entry.reason}")
+            # tasks.db's own dispatcher marked it status=failed -- this is
+            # the single highest-yield case in real local data (see
+            # docstring above). `entry` (the error_info reason) may still be
+            # unavailable even though status="failed" (real local data has
+            # 49 such rows alongside 416 that do carry a reason) -- backfill
+            # outcome either way, just without a reason when none exists.
+            reason = entry.reason if entry is not None else None
+            raw_tag = f"failed:{reason}" if reason else "failed"
+            category = classify_failure_category("failed", raw_tag)
+            extra_update = {**a.extra, "outcome_source": "tasks_db_status"}
+            if reason:
+                extra_update["failure_reason_source"] = "tasks_db"
             enriched.append(
                 replace(
                     a,
                     outcome="failed",
-                    raw_outcome=a.raw_outcome or f"failed:{entry.reason}",
-                    failure_reason=entry.reason,
+                    raw_outcome=a.raw_outcome or raw_tag,
+                    failure_reason=reason,
                     failure_category=category,
-                    retryable=infer_retryable(entry.reason),
-                    extra={**a.extra, "failure_reason_source": "tasks_db", "outcome_source": "tasks_db_status"},
+                    retryable=infer_retryable(reason),
+                    extra=extra_update,
+                )
+            )
+        elif a.outcome is None and status == "completed":
+            # Symmetric counterpart to the branch above (round-2 review):
+            # tasks.db's dispatcher marked this task done, but
+            # attribution.jsonl never wrote a terminal row for it either.
+            enriched.append(
+                replace(
+                    a,
+                    outcome="success",
+                    raw_outcome=a.raw_outcome or "completed",
+                    extra={**a.extra, "outcome_source": "tasks_db_status"},
                 )
             )
         else:
@@ -276,17 +367,34 @@ def read_attribution_jsonl_with_task_errors(
     attribution_path: str | Path,
     tasks_db_path: str | Path,
 ) -> list[RuntimeAttribution]:
-    """Convenience: :func:`read_attribution_jsonl` followed by
-    :func:`enrich_with_task_error_reasons`.
+    """Convenience: :func:`read_attribution_jsonl`, :func:`enrich_with_task_error_reasons`,
+    then :func:`reconcile_attribution_by_task`.
 
     This is the recommended entry point for a caller that has both files
     available (the normal case -- both live under the same
     ``~/.agent_crew/<project>/`` directory). Falls back to
     ``attribution.jsonl``-only behavior automatically if ``tasks_db_path``
     doesn't exist or isn't readable.
+
+    Always reconciles to one row per ``task_id`` before returning (round-2
+    review of quota-core issue #60): real ``attribution.jsonl`` is
+    snapshot/event-like -- a single task can have a dispatch row, zero or
+    more progress rows, and a terminal row, all sharing one ``task_id`` (see
+    :func:`reconcile_attribution_by_task`). Enrichment runs on the raw,
+    unreconciled stream and independently backfills every one of a task's
+    non-terminal rows that still has ``outcome=None``, so skipping
+    reconciliation here left a caller that counts rows directly (e.g. a
+    failure-rate computation) multiplying a single real outcome across every
+    duplicate row for that task -- measured on real local data, this alone
+    inflated an already-wrong ~75% failure rate to ~96%. Reconciling here
+    collapses those duplicates back to one row per task, the same contract
+    :func:`read_attribution_jsonl` callers already rely on when they
+    reconcile explicitly.
     """
 
-    return enrich_with_task_error_reasons(read_attribution_jsonl(attribution_path), tasks_db_path)
+    attributions = read_attribution_jsonl(attribution_path)
+    enriched = enrich_with_task_error_reasons(attributions, tasks_db_path)
+    return reconcile_attribution_by_task(enriched)
 
 
 def _reconciliation_key(attribution: RuntimeAttribution) -> tuple[int, float]:

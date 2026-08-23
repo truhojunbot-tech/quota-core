@@ -296,6 +296,29 @@ class RoundTripFidelityTests(unittest.TestCase):
         record = attribution_from_dict({"runtime": "agent_crew", "task_id": "t1", "outcome": "failed:dispatcher_timeout"})
         self.assertEqual(record.raw_outcome, "failed:dispatcher_timeout")
 
+    def test_outcome_itself_survives_round_trip_with_no_raw_outcome(self):
+        # Round-2 review regression: round-1's raw_outcome fix went too far
+        # and also stopped populating `outcome` correctly -- a directly
+        # constructed record with only `outcome` set (no `raw_outcome`, the
+        # shape attribution_to_dict emits for a record that never had a raw
+        # source) came back as outcome=None after a to_dict/from_dict cycle,
+        # silently turning a terminal failure into "in progress". Covers
+        # both terminal values plus the genuinely-in-progress None case.
+        for outcome in ("failed", "success", "unknown", None):
+            with self.subTest(outcome=outcome):
+                original = RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome=outcome)
+                restored = attribution_from_dict(attribution_to_dict(original))
+                self.assertEqual(restored.outcome, outcome)
+                self.assertIsNone(restored.raw_outcome)
+
+    def test_outcome_only_record_round_trips_identically(self):
+        # The exact repro from round-2 review: construct a record with only
+        # `outcome` set, nothing else, and confirm the full record survives
+        # a round trip unchanged.
+        original = RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed")
+        restored = attribution_from_dict(attribution_to_dict(original))
+        self.assertEqual(restored, original)
+
 
 class BackwardCompatibilityTests(unittest.TestCase):
     """Older telemetry with only outcome=failed (no reason) must still parse
@@ -489,6 +512,17 @@ class UnknownCauseWarningTests(unittest.TestCase):
         self.assertNotIn("warning", comparison["fresh"])
 
 
+def _write_jsonl(rows: list[dict]) -> Path:
+    """Write a minimal real-shaped ``attribution.jsonl`` file and return its path."""
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    path = tmp_dir / "attribution.jsonl"
+    with path.open("w", encoding="utf-8") as fp:
+        for row in rows:
+            fp.write(json.dumps(row) + "\n")
+    return path
+
+
 def _build_tasks_db(rows: list[tuple[str, str, dict | None]]) -> Path:
     """Build a minimal real-shaped tasks.db: (task_id, status, error_info-dict-or-None)."""
 
@@ -607,6 +641,82 @@ class TasksDbEnrichmentTests(unittest.TestCase):
         # failed:exit_1 -- tasks.db's richer agy_quota_exhausted must win.
         self.assertEqual(record.failure_reason, "agy_quota_exhausted")
         self.assertEqual(record.failure_category, "provider_or_transport")
+
+    def test_enrich_backfills_success_when_attribution_never_terminated(self):
+        """Round-2 review: the symmetric counterpart to
+        test_enrich_backfills_outcome_when_attribution_never_terminated.
+        Round-1's fix only ever backfilled outcome="failed" from tasks.db,
+        never outcome="success" from status="completed" -- on real local
+        data that asymmetry took the failure rate from an ~11% jsonl-only
+        understatement to a ~75% overstatement (worse than the original
+        bug), because every newly-visible failure entered the numerator
+        while the far more numerous newly-visible successes never entered
+        the denominator."""
+
+        db_path = _build_tasks_db([("t1", "completed", None)])
+        attributions = [RuntimeAttribution(runtime="agent_crew", task_id="t1")]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(len(enriched), 1)
+        record = enriched[0]
+        self.assertEqual(record.outcome, "success")
+        self.assertEqual(record.raw_outcome, "completed")
+        self.assertEqual(record.extra.get("outcome_source"), "tasks_db_status")
+        self.assertIsNone(record.failure_reason)
+        self.assertIsNone(record.failure_category)
+
+    def test_enrich_success_backfill_never_overrides_an_explicit_outcome(self):
+        db_path = _build_tasks_db([("t1", "completed", None)])
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1")
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "failed")
+
+    def test_enrich_does_not_guess_outcome_for_ambiguous_statuses(self):
+        # needs_human/pending/blocked/in_progress are real observed
+        # tasks.db statuses that are not positive evidence of either a
+        # success or a failure -- must not be backfilled either way.
+        for status in ("needs_human", "pending", "blocked", "in_progress"):
+            with self.subTest(status=status):
+                db_path = _build_tasks_db([("t1", status, None)])
+                attributions = [RuntimeAttribution(runtime="agent_crew", task_id="t1")]
+                enriched = enrich_with_task_error_reasons(attributions, db_path)
+                self.assertIsNone(enriched[0].outcome)
+
+    def test_enrich_backfills_failed_even_without_an_error_info_reason(self):
+        # Real local data has tasks.db rows with status="failed" but no
+        # error_info reason at all (49 of 465 real observed failed rows,
+        # alongside 416 that do carry one) -- these must still backfill
+        # outcome, just without a reason, rather than being skipped because
+        # they're absent from the error_info-only read.
+        db_path = _build_tasks_db([("t1", "failed", None)])
+        attributions = [RuntimeAttribution(runtime="agent_crew", task_id="t1")]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        record = enriched[0]
+        self.assertEqual(record.outcome, "failed")
+        self.assertEqual(record.raw_outcome, "failed")
+        self.assertIsNone(record.failure_reason)
+        self.assertEqual(record.failure_category, "unknown")
+
+    def test_recommended_entry_point_reconciles_duplicate_rows_per_task(self):
+        """Round-2 review regression (codex finding): read_attribution_jsonl_with_task_errors
+        enriched every duplicate attribution.jsonl row for a task
+        independently and never reconciled afterward, so a task with e.g. a
+        dispatch row plus a progress row (both outcome=None in the real
+        event-stream shape) came back as *two* separately-backfilled rows
+        for one real task -- multiplying the failure count for any caller
+        that counts rows directly, on top of Blocker 1's asymmetry. On real
+        local data this took the already-wrong ~75% failure rate to ~96%."""
+
+        attribution_path = _write_jsonl([
+            {"runtime": "agent_crew", "task_id": "t1", "agent": "claude", "outcome": ""},
+            {"runtime": "agent_crew", "task_id": "t1", "agent": "claude", "outcome": ""},
+        ])
+        db_path = _build_tasks_db([("t1", "failed", {"reason": "agy_quota_exhausted"})])
+        records = read_attribution_jsonl_with_task_errors(attribution_path, db_path)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].outcome, "failed")
+        self.assertEqual(records[0].failure_reason, "agy_quota_exhausted")
 
 
 if __name__ == "__main__":

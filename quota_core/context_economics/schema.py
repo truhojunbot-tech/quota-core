@@ -657,21 +657,47 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
 
     # Real Agent Crew producer dicts only ever set "outcome" (the raw string,
     # e.g. "failed:dispatcher_timeout"), never "raw_outcome" at all.
-    # attribution_to_dict's own output always sets *both* keys (the
-    # normalized "outcome" and the raw "raw_outcome", which may legitimately
-    # be None e.g. for an in-progress task). Those are two different shapes
-    # of "no value" that must not be conflated: an absent "raw_outcome" key
-    # means "derive it from outcome, per the real contract"; a present
-    # "raw_outcome" key whose value is None means "this really has no raw
-    # outcome, don't fabricate one from outcome" (round-1 review: the old
-    # `_opt_str(...) is None` check could not tell these apart, so
-    # `RuntimeAttribution(outcome="failed", raw_outcome=None)` incorrectly
-    # round-tripped to `raw_outcome="failed"`).
+    # attribution_to_dict's own output always sets *both* keys: "outcome" is
+    # already the *normalized* value (one of "success"/"failed"/"unknown"/
+    # None) and "raw_outcome" is the original raw string, which may
+    # legitimately be None (e.g. for a directly-constructed record that
+    # never had a raw source, or an in-progress task). Those are two
+    # different shapes of "no value" that must not be conflated: an absent
+    # "raw_outcome" key means "derive it from outcome, per the real
+    # contract"; a present "raw_outcome" key whose value is None means "this
+    # really has no raw outcome, don't fabricate one from outcome" (round-1
+    # review: the old `_opt_str(...) is None` check could not tell these
+    # apart, so `RuntimeAttribution(outcome="failed", raw_outcome=None)`
+    # incorrectly round-tripped to `raw_outcome="failed"`).
     if "raw_outcome" in data:
         raw_outcome = _opt_str("raw_outcome")
     else:
         raw_outcome = _opt_str("outcome")
-    outcome = normalize_outcome(raw_outcome)
+
+    # Round-1's fix above (correctly) stopped deriving `raw_outcome` from
+    # `outcome` unconditionally, but it went further and also stopped
+    # respecting an already-normalized "outcome" key entirely -- `outcome`
+    # was *always* re-derived from `raw_outcome` via `normalize_outcome`,
+    # even when the dict already carried a valid normalized value (exactly
+    # the shape `attribution_to_dict` itself emits). That silently dropped
+    # `outcome` on every round-trip where `raw_outcome` was `None`, e.g.
+    # `RuntimeAttribution(outcome="failed")` -> to_dict -> from_dict came
+    # back as `outcome=None` (round-2 review regression, quota-core issue
+    # #60). Fix: "outcome" and "raw_outcome" are independent keys, each
+    # resolved from its own presence in `data` -- when "outcome" is present
+    # and is already a valid `NormalizedOutcome` (or explicit None), trust
+    # it as-is; otherwise (the real Agent Crew contract shape, e.g.
+    # "failed:dispatcher_timeout" or "") normalize it the same way as
+    # before. "outcome" absent entirely still falls back to deriving from
+    # `raw_outcome`, unchanged from round-1.
+    if "outcome" in data:
+        _raw_outcome_field = data.get("outcome")
+        if _raw_outcome_field is None or _raw_outcome_field in ("success", "failed", "unknown"):
+            outcome = _raw_outcome_field  # type: ignore[assignment]
+        else:
+            outcome = normalize_outcome(str(_raw_outcome_field))
+    else:
+        outcome = normalize_outcome(raw_outcome)
 
     if "failure_reason" in data:
         failure_reason = _opt_str("failure_reason")
