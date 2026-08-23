@@ -11,6 +11,8 @@ See ``docs/context-economics.md`` for the full public contract.
 from __future__ import annotations
 
 from .analytics import (
+    PARTIAL_UNKNOWN_FAILURE_CAUSE_RATE_THRESHOLD,
+    PARTIAL_UNKNOWN_FAILURE_CAUSE_WARNING,
     UNKNOWN_FAILURE_CAUSE_WARNING,
     cache_creation_per_successful_task,
     cache_read_per_task,
@@ -22,6 +24,7 @@ from .analytics import (
     stratified_failure_rates,
     tokens_per_outcome,
     tokens_per_successful_task,
+    unknown_cause_warning,
 )
 from .compact_analysis import before_after_compact
 from .correlate import ProviderUsageRecord, correlate_task_economics
@@ -101,6 +104,9 @@ __all__ = [
     "context_age_vs_failure_rate",
     "compare_context_policies",
     "stratified_failure_rates",
+    "unknown_cause_warning",
     "UNKNOWN_FAILURE_CAUSE_WARNING",
+    "PARTIAL_UNKNOWN_FAILURE_CAUSE_WARNING",
+    "PARTIAL_UNKNOWN_FAILURE_CAUSE_RATE_THRESHOLD",
     "before_after_compact",
 ]

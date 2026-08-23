@@ -63,21 +63,42 @@ existing `outcome`/`raw_outcome`. `failure_category` is one of:
   (rate limits, capacity exhaustion, streaming backpressure).
 - `runtime_or_dispatcher` -- the orchestrator's own operational failures
   (dispatcher timeout, no result ever submitted).
-- `work_product_or_test` -- the agent's own process/tests failed on their
-  merits (e.g. a nonzero exit code).
+- `work_product_or_test` -- a reason that *positively* identifies a
+  test/lint/assertion failure on the agent's own merits. A bare/generic
+  nonzero exit code (`exit_1`, `exit_code_137`, ...) does **not** qualify --
+  it is evidence-free (a crash, an OOM kill, and a genuine failing test all
+  produce the same bare exit code) and classifies as `unknown` instead
+  (round-1 review of issue #60 caught an earlier version of this that
+  treated any `exit_*` reason as work-product evidence).
 - `cancelled` -- the task was cancelled, not a failure on the merits.
-- `unknown` -- a failed task with no recognizable reason. Never fabricated
-  into a more specific category.
+- `unknown` -- a failed task with no recognizable reason, or only an
+  evidence-free one like a bare exit code. Never fabricated into a more
+  specific category.
 
 `classify_failure_category(outcome, raw_outcome)` derives this from a raw
-`"failed:<reason>"`-style outcome; `infer_retryable(category)` derives a
-best-effort `True`/`False`/`None` mirroring which categories agent_crew's
-own dispatcher currently auto-retries (only `provider_or_transport`).
+`"failed:<reason>"`-style outcome; `infer_retryable(reason)` derives a
+best-effort `True`/`False`/`None` from the *specific reason tag* (not the
+coarser category), mirroring agent_crew's own dispatcher
+(`_detect_transient_error_in_log`) verbatim: its explicitly-retryable tag
+group (`claude_429`, `claude_throttle`, `gemini_capacity`,
+`gemini_resource_exhausted`, `codex_capacity`, `agy_timeout`,
+`agy_subscriber_lag`) and its explicitly-non-retryable group
+(`gemini_quota_exhausted`, `gemini_ineligible_tier`, `agy_quota_exhausted`).
+Deriving from the coarser `failure_category` instead (an earlier version of
+this) got the single most common real failure reason wrong:
+`agy_quota_exhausted` is 321 of 413 (78%) of every failure reason observed
+locally, and the dispatcher's own comment calls it "clear reason; no point
+in immediate retry" even though it shares a `provider_or_transport` category
+with genuinely-retryable tags. A reason containing `"max_retries"` (the
+dispatcher's own retry loop already gave up) is always non-retryable
+regardless of which tag it otherwise matches.
 `attribution_from_dict` populates all of this automatically from `outcome`
 when a source dict does not supply the fields explicitly; explicit values
-always win over the derived ones. Older telemetry with only a bare
-`outcome="failed"` (no reason) still parses -- it classifies as `unknown`,
-not dropped.
+-- including an explicit `null` -- always win over the derived ones (a
+present-but-invalid value, e.g. an unrecognized `failure_category` string,
+is treated the same as absent and still gets derived). Older telemetry with
+only a bare `outcome="failed"` (no reason) still parses -- it classifies as
+`unknown`, not dropped.
 
 This exists so context-age and resume/compact/fresh comparisons don't treat
 a provider outage or dispatcher bug as evidence about context handling --
@@ -104,6 +125,31 @@ running analytics -- reading every raw line as an independent task execution
 will double/triple-count real data. See
 `tests/fixtures/agent_crew/real_contract/README.md` for the golden fixtures
 (sanitized, derived from real production output) this was validated against.
+
+**`tasks.db` `error_info` enrichment** (round-1 review of issue #60):
+`attribution.jsonl`'s own failure reason is, in real local data, almost
+always an uninformative bare `exit_1`/`dispatcher_timeout` -- worse, the
+majority of real tasks that Agent Crew's own dispatcher marked
+`status="failed"` (with a specific `error_info` reason) never got a
+terminal row written to `attribution.jsonl` at all, so their `outcome` stays
+`None` ("still in progress") and they are invisible to
+`attribution.jsonl`-only classification. `tasks.db`'s `error_info` column
+(`{"reason": "<tag>"}`, keyed by the same `task_id`) is the richer source:
+`read_task_error_reasons(db_path)` reads it standalone, and
+`enrich_with_task_error_reasons(attributions, db_path)` joins it onto an
+existing attribution list, doing two things: (1) backfilling
+`outcome="failed"` (plus derived `failure_reason`/`failure_category`/
+`retryable`) for a task `tasks.db` marks `status="failed"` but
+`attribution.jsonl` never terminated -- the highest-yield case in real local
+data (321 of 413 real observed `tasks.db` error rows are exactly this
+shape); and (2) preferring the richer `tasks.db` reason over an existing
+bare `attribution.jsonl` reason when a task already has `outcome="failed"`
+in both. `attribution.jsonl`'s own explicit non-`None` outcome (`success`,
+`unknown`, or an already-set `failed`) is never overridden.
+`read_attribution_jsonl_with_task_errors(attribution_path, tasks_db_path)`
+is the one-call convenience wrapper. All of this is optional, best-effort
+enrichment -- a missing/unreadable `tasks.db` degrades silently back to
+`attribution.jsonl`-only behavior, never a hard dependency.
 
 ## Token components per provider (`token_components.py`)
 
@@ -157,16 +203,25 @@ you need it, so the underlying components stay visible.
 
 `stratified_failure_rates(records)` (issue #60) breaks a "not succeeded"
 rate down by `failure_category`: `provider_or_runtime_operational`,
-`policy_relevant`, `cancelled`, `unknown` -- each with its own count and
-rate, alongside the raw `raw_failure_rate`. `context_age_vs_failure_rate`
-and `compare_context_policies` both merge this breakdown into their existing
-output (backward compatible -- the pre-existing `failure_rate`/`count`/
-`success_rate` keys are unchanged) and add a `"warning"` key
-(`UNKNOWN_FAILURE_CAUSE_WARNING`) when every observed failure in a group has
-an unrecognized cause, so `policy_relevant_failure_rate` is never silently
-read as meaningful when there is no actual cause evidence behind it.
-`compact_analysis.before_after_compact`'s before/after windows expose the
-same breakdown for the same reason.
+`work_product_or_test`, `policy_relevant`, `cancelled`, `unknown` -- each
+with its own count and rate, alongside the raw `raw_failure_rate`.
+`work_product_or_test` is its own bucket, not folded into `policy_relevant`
+(round-1 review of issue #60: folding it in meant `policy_relevant` silently
+included ordinary test/lint failures unrelated to context/compact policy --
+`policy_relevant` now contains only `context_or_policy`-caused failures, the
+signal context-age/compact comparisons should actually read).
+`context_age_vs_failure_rate` and `compare_context_policies` both merge this
+breakdown into their existing output (backward compatible -- the
+pre-existing `failure_rate`/`count`/`success_rate` keys are unchanged) and
+add a `"warning"` key (via `unknown_cause_warning()`) when a large share of
+the failures observed in a group have an unrecognized cause --
+`UNKNOWN_FAILURE_CAUSE_WARNING` when *all* of them are unknown,
+`PARTIAL_UNKNOWN_FAILURE_CAUSE_WARNING` when at least
+`PARTIAL_UNKNOWN_FAILURE_CAUSE_RATE_THRESHOLD` (50%) are (added in round-1
+review -- the original warning was all-or-nothing, so a group that was e.g.
+90% unknown reported a confident-looking `policy_relevant_failure_rate` with
+no warning at all). `compact_analysis.before_after_compact`'s before/after
+windows expose the same breakdown for the same reason.
 
 ## Compact before/after analysis (`compact_analysis.py`)
 

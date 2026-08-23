@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from .analytics import UNKNOWN_FAILURE_CAUSE_WARNING, stratified_failure_rates
+from .analytics import stratified_failure_rates, unknown_cause_warning
 from .schema import ContextLifecycleEvent, TaskEconomicsRecord, token_components_total
 
 _RESET_EVENT_TYPES = {"context_compacted", "context_reset"}
@@ -41,8 +41,9 @@ def _window_stats(records: list[TaskEconomicsRecord]) -> dict[str, float | int |
     # window's failures were actually a provider outage or dispatcher bug.
     stratified = stratified_failure_rates(records)
     stats.update(stratified)
-    if stratified["raw_failure_count"] and stratified["unknown_count"] == stratified["raw_failure_count"]:
-        stats["warning"] = UNKNOWN_FAILURE_CAUSE_WARNING
+    warning = unknown_cause_warning(stratified)
+    if warning is not None:
+        stats["warning"] = warning
     return stats
 
 

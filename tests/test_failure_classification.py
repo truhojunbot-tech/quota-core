@@ -11,6 +11,9 @@ context caused a task to fail.
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -19,6 +22,7 @@ from quota_core.context_economics import (
     RuntimeAttribution,
     TaskEconomicsRecord,
     TokenComponents,
+    PARTIAL_UNKNOWN_FAILURE_CAUSE_WARNING,
     UNKNOWN_FAILURE_CAUSE_WARNING,
     attribution_from_dict,
     attribution_to_dict,
@@ -32,7 +36,12 @@ from quota_core.context_economics import (
     stratified_failure_rates,
     validate_attribution_dict,
 )
-from quota_core.context_economics.agent_crew_adapter import read_attribution_jsonl
+from quota_core.context_economics.agent_crew_adapter import (
+    enrich_with_task_error_reasons,
+    read_attribution_jsonl,
+    read_attribution_jsonl_with_task_errors,
+    read_task_error_reasons,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "agent_crew"
 AGY_FIXTURE = FIXTURES / "agy_incident" / "attribution.jsonl"
@@ -78,10 +87,25 @@ class ClassifyFailureCategoryTests(unittest.TestCase):
         # Real observed value: ~/.agent_crew/alpha_engine/tasks.db error_info.
         self.assertEqual(classify_failure_category("failed", "failed:no_result_submitted"), "runtime_or_dispatcher")
 
-    def test_exit_1_is_work_product_or_test(self):
-        # Real observed value: ~/.agent_crew/alpha_engine/tasks.db error_info
-        # (by far the most common failure reason there).
-        self.assertEqual(classify_failure_category("failed", "failed:exit_1"), "work_product_or_test")
+    def test_exit_1_is_unknown_not_work_product(self):
+        # Round-1 review of issue #60: a bare/generic exit code is
+        # evidence-free -- a crash, an OOM kill, and a genuine failing test
+        # all produce the same bare exit_1/exit_code_137, so it must not
+        # positively identify a "work product" (test/lint/assertion)
+        # failure. "unknown" is the honest bucket, per the issue's own "do
+        # not fabricate a category when evidence is insufficient" rule.
+        self.assertEqual(classify_failure_category("failed", "failed:exit_1"), "unknown")
+
+    def test_other_bare_exit_codes_are_also_unknown(self):
+        # exit_code_137 (SIGKILL/OOM) must not be misfiled as work_product_or_test.
+        self.assertEqual(classify_failure_category("failed", "failed:exit_code_137"), "unknown")
+        self.assertEqual(classify_failure_category("failed", "failed:exit_1_agy_transient"), "unknown")
+
+    def test_positively_identified_test_failure_is_work_product_or_test(self):
+        # work_product_or_test is reserved for reasons that positively
+        # identify a test/lint/assertion failure -- none are reachable from
+        # real data yet, but the marker still exists for a future producer.
+        self.assertEqual(classify_failure_category("failed", "failed:test_fail"), "work_product_or_test")
 
     def test_agy_quota_exhausted_is_provider_or_transport(self):
         # Real observed value: ~/.agent_crew/alpha_engine/tasks.db error_info.
@@ -122,17 +146,50 @@ class ClassifyFailureCategoryTests(unittest.TestCase):
 
 
 class InferRetryableTests(unittest.TestCase):
-    def test_provider_or_transport_is_retryable(self):
-        self.assertTrue(infer_retryable("provider_or_transport"))
+    """Round-1 review of issue #60: infer_retryable must mirror agent_crew's
+    own dispatcher tag lists (_detect_transient_error_in_log) exactly, not
+    the coarser failure_category -- deriving from category alone got
+    agy_quota_exhausted (78% of every real observed local failure reason)
+    wrong, since it shares a category with genuinely-retryable tags."""
 
-    def test_unknown_is_neither_true_nor_false(self):
-        self.assertIsNone(infer_retryable("unknown"))
+    def test_dispatcher_retryable_tags_are_retryable(self):
+        for reason in (
+            "claude_429",
+            "claude_throttle",
+            "gemini_capacity",
+            "gemini_resource_exhausted",
+            "codex_capacity",
+            "agy_timeout",
+            "agy_subscriber_lag",
+        ):
+            with self.subTest(reason=reason):
+                self.assertTrue(infer_retryable(reason))
+
+    def test_dispatcher_nonretryable_tags_are_not_retryable(self):
+        # agent_crew's own dispatcher comment calls this group "clear
+        # reason; no point in immediate retry" -- agy_quota_exhausted alone
+        # is 321/413 (78%) of every real observed local failure reason, so
+        # this is the single highest-stakes case to get right.
+        for reason in ("gemini_quota_exhausted", "gemini_ineligible_tier", "agy_quota_exhausted"):
+            with self.subTest(reason=reason):
+                self.assertFalse(infer_retryable(reason))
+
+    def test_unrecognized_reason_is_neither_true_nor_false(self):
+        self.assertIsNone(infer_retryable("dispatcher_timeout"))
+        self.assertIsNone(infer_retryable("no_result_submitted"))
+        self.assertIsNone(infer_retryable("exit_1"))
+        self.assertIsNone(infer_retryable("totally_novel_thing"))
         self.assertIsNone(infer_retryable(None))
+        self.assertIsNone(infer_retryable(""))
 
-    def test_other_known_categories_are_not_retryable(self):
-        for category in ("runtime_or_dispatcher", "work_product_or_test", "cancelled", "context_or_policy"):
-            with self.subTest(category=category):
-                self.assertFalse(infer_retryable(category))  # type: ignore[arg-type]
+    def test_max_retries_suffixed_reason_is_not_retryable_even_if_tag_matches(self):
+        # Real observed tasks.db error_info reasons: the dispatcher's own
+        # retry loop already gave up on these -- the reason string itself
+        # documents that, so claiming retryable=True would contradict the
+        # evidence it's derived from, even though "agy_timeout"/
+        # "agy_subscriber_lag" would otherwise match the retryable list.
+        self.assertFalse(infer_retryable("transient_agy_timeout_max_retries"))
+        self.assertFalse(infer_retryable("transient_agy_subscriber_lag_max_retries"))
 
 
 class AttributionDerivationTests(unittest.TestCase):
@@ -145,7 +202,11 @@ class AttributionDerivationTests(unittest.TestCase):
         )
         self.assertEqual(record.failure_reason, "dispatcher_timeout")
         self.assertEqual(record.failure_category, "runtime_or_dispatcher")
-        self.assertFalse(record.retryable)
+        # dispatcher_timeout is agent_crew's own orchestration layer giving
+        # up -- it is not one of the dispatcher's two explicit retry-tag
+        # lists (see InferRetryableTests), so retryable is honestly unknown,
+        # not guessed False.
+        self.assertIsNone(record.retryable)
 
     def test_explicit_fields_win_over_derived_ones(self):
         record = attribution_from_dict(
@@ -174,7 +235,66 @@ class AttributionDerivationTests(unittest.TestCase):
         record = attribution_from_dict(
             {"runtime": "agent_crew", "task_id": "t1", "outcome": "failed:exit_1", "failure_category": "not_a_real_category"}
         )
-        self.assertEqual(record.failure_category, "work_product_or_test")
+        self.assertEqual(record.failure_category, "unknown")
+
+    def test_explicit_null_retryable_is_respected_not_derived(self):
+        # Round-1 review of issue #60: validate_attribution_dict explicitly
+        # allows null for retryable/failure_reason/failure_category, but the
+        # old `if not isinstance(retryable, bool): retryable = infer(...)`
+        # check could not distinguish "key absent" from "key explicitly
+        # null" -- an explicit null was silently overwritten with a guess.
+        record = attribution_from_dict(
+            {
+                "runtime": "agent_crew",
+                "task_id": "t1",
+                "outcome": "failed:agy_quota_exhausted",
+                "retryable": None,
+                "failure_reason": None,
+                "failure_category": None,
+            }
+        )
+        self.assertIsNone(record.retryable)
+        self.assertIsNone(record.failure_reason)
+        self.assertIsNone(record.failure_category)
+
+    def test_absent_keys_still_derive_as_before(self):
+        # Same outcome, but the three keys are simply absent (the real
+        # producer shape) -- must still derive, unlike the explicit-null case above.
+        record = attribution_from_dict({"runtime": "agent_crew", "task_id": "t1", "outcome": "failed:agy_quota_exhausted"})
+        self.assertFalse(record.retryable)
+        self.assertEqual(record.failure_reason, "agy_quota_exhausted")
+        self.assertEqual(record.failure_category, "provider_or_transport")
+
+
+class RoundTripFidelityTests(unittest.TestCase):
+    """Round-1 review of issue #60: attribution_to_dict/attribution_from_dict
+    must only derive a field when its key is *absent*, never when it is
+    present-and-null, and must never fabricate a sibling field just because
+    an unrelated field was explicitly set."""
+
+    def test_raw_outcome_explicit_none_survives_round_trip_with_failed_outcome(self):
+        original = RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome=None)
+        restored = attribution_from_dict(attribution_to_dict(original))
+        self.assertIsNone(restored.raw_outcome)
+
+    def test_raw_outcome_explicit_none_survives_round_trip_with_success_outcome(self):
+        original = RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="success", raw_outcome=None)
+        restored = attribution_from_dict(attribution_to_dict(original))
+        self.assertIsNone(restored.raw_outcome)
+
+    def test_only_terminal_source_set_does_not_fabricate_siblings(self):
+        original = RuntimeAttribution(runtime="agent_crew", task_id="t1", terminal_source="agent_reported")
+        restored = attribution_from_dict(attribution_to_dict(original))
+        self.assertEqual(restored, original)
+        self.assertIsNone(restored.failure_reason)
+        self.assertIsNone(restored.failure_category)
+        self.assertIsNone(restored.retryable)
+
+    def test_real_producer_shape_without_raw_outcome_key_still_derives(self):
+        # Real Agent Crew producer dicts never set "raw_outcome" at all --
+        # this must still fall back to deriving it from "outcome".
+        record = attribution_from_dict({"runtime": "agent_crew", "task_id": "t1", "outcome": "failed:dispatcher_timeout"})
+        self.assertEqual(record.raw_outcome, "failed:dispatcher_timeout")
 
 
 class BackwardCompatibilityTests(unittest.TestCase):
@@ -261,12 +381,21 @@ class AgyIncidentRegressionTests(unittest.TestCase):
         # not policy_relevant -- this is the core regression this fixture
         # exists to catch.
         self.assertEqual(rates["provider_or_runtime_operational_count"], 4)
-        # Only the exit_1 failure is policy-relevant (a real work-product failure).
-        self.assertEqual(rates["policy_relevant_count"], 1)
-        # The bare "failed" (no reason) task is unknown, not silently dropped.
-        self.assertEqual(rates["unknown_count"], 1)
+        # No failure in this fixture positively identifies a context/policy
+        # cause -- policy_relevant stays 0. exit_1 is a bare, evidence-free
+        # exit code (round-1 review of issue #60): it is neither
+        # work_product_or_test nor policy_relevant, it's unknown.
+        self.assertEqual(rates["policy_relevant_count"], 0)
+        self.assertEqual(rates["work_product_or_test_count"], 0)
+        # The bare "failed" (no reason) task AND the exit_1 task are both
+        # unknown, not silently dropped or misfiled as work-product evidence.
+        self.assertEqual(rates["unknown_count"], 2)
         self.assertEqual(
-            rates["provider_or_runtime_operational_count"] + rates["policy_relevant_count"] + rates["unknown_count"] + rates["cancelled_count"],
+            rates["provider_or_runtime_operational_count"]
+            + rates["work_product_or_test_count"]
+            + rates["policy_relevant_count"]
+            + rates["unknown_count"]
+            + rates["cancelled_count"],
             rates["raw_failure_count"],
         )
 
@@ -284,8 +413,12 @@ class AgyIncidentRegressionTests(unittest.TestCase):
                 self.assertEqual(by_age[age]["failure_rate"], 1.0)
                 self.assertEqual(by_age[age]["policy_relevant_failure_rate"], 0.0)
                 self.assertEqual(by_age[age]["provider_or_runtime_operational_failure_rate"], 1.0)
-        # session_task_index 11 (exit_1) genuinely is policy-relevant.
-        self.assertEqual(by_age[11]["policy_relevant_failure_rate"], 1.0)
+        # session_task_index 11 (exit_1) is a bare exit code -- evidence-free,
+        # so it is unknown, not policy-relevant (round-1 review of issue #60;
+        # previously this asserted the opposite, which was the exact "false
+        # precision" bug the review caught).
+        self.assertEqual(by_age[11]["policy_relevant_failure_rate"], 0.0)
+        self.assertEqual(by_age[11]["unknown_failure_rate"], 1.0)
 
     def test_compare_context_policies_exposes_the_same_stratification(self):
         records = _agy_incident_records()
@@ -294,13 +427,19 @@ class AgyIncidentRegressionTests(unittest.TestCase):
         self.assertEqual(resume["count"], 12)
         self.assertEqual(resume["raw_failure_count"], 6)
         self.assertEqual(resume["provider_or_runtime_operational_count"], 4)
-        self.assertEqual(resume["policy_relevant_count"], 1)
+        self.assertEqual(resume["policy_relevant_count"], 0)
+        self.assertEqual(resume["unknown_count"], 2)
+        # 2 of 6 failures unknown (33%) is below the 50% partial-warning
+        # threshold, so no warning here -- see UnknownCauseWarningTests for
+        # the >=50% case.
         self.assertNotIn("warning", resume)
 
 
 class UnknownCauseWarningTests(unittest.TestCase):
     """Acceptance criteria: resume/compact/fresh comparison exposes an
-    explicit warning when failure causes are unavailable."""
+    explicit warning when failure causes are unavailable -- including,
+    since round-1 review of issue #60, when they are only *mostly*
+    unavailable, not just when they are entirely unavailable."""
 
     def test_warning_present_when_every_failure_is_unclassified(self):
         records = [
@@ -312,13 +451,34 @@ class UnknownCauseWarningTests(unittest.TestCase):
         self.assertIn("warning", comparison["fresh"])
         self.assertEqual(comparison["fresh"]["warning"], UNKNOWN_FAILURE_CAUSE_WARNING)
 
-    def test_no_warning_when_at_least_one_failure_is_classified(self):
+    def test_partial_warning_present_when_at_least_half_unclassified(self):
+        # Round-1 review of issue #60: the original warning was all-or-
+        # nothing, so a group that is e.g. 50%+ (but not 100%) unknown
+        # reported a confident-looking policy_relevant_failure_rate with no
+        # warning at all. 1 of 2 failures classified, 1 unknown -- exactly
+        # the 50% threshold.
         records = [
             TaskEconomicsRecord(
                 task_id="a", runtime="agent_crew", context_policy="fresh",
-                outcome="failed", raw_outcome="failed:exit_1", failure_category="work_product_or_test",
+                outcome="failed", raw_outcome="failed:test_fail", failure_category="work_product_or_test",
             ),
             TaskEconomicsRecord(task_id="b", runtime="agent_crew", context_policy="fresh", outcome="failed", raw_outcome="failed"),
+        ]
+        comparison = compare_context_policies(records)
+        self.assertIn("warning", comparison["fresh"])
+        self.assertEqual(comparison["fresh"]["warning"], PARTIAL_UNKNOWN_FAILURE_CAUSE_WARNING)
+
+    def test_no_warning_when_most_failures_are_classified(self):
+        records = [
+            TaskEconomicsRecord(
+                task_id="a", runtime="agent_crew", context_policy="fresh",
+                outcome="failed", raw_outcome="failed:test_fail", failure_category="work_product_or_test",
+            ),
+            TaskEconomicsRecord(
+                task_id="b", runtime="agent_crew", context_policy="fresh",
+                outcome="failed", raw_outcome="failed:agy_quota_exhausted", failure_category="provider_or_transport",
+            ),
+            TaskEconomicsRecord(task_id="c", runtime="agent_crew", context_policy="fresh", outcome="failed", raw_outcome="failed"),
         ]
         comparison = compare_context_policies(records)
         self.assertNotIn("warning", comparison["fresh"])
@@ -327,6 +487,126 @@ class UnknownCauseWarningTests(unittest.TestCase):
         records = [TaskEconomicsRecord(task_id="a", runtime="agent_crew", context_policy="fresh", outcome="success")]
         comparison = compare_context_policies(records)
         self.assertNotIn("warning", comparison["fresh"])
+
+
+def _build_tasks_db(rows: list[tuple[str, str, dict | None]]) -> Path:
+    """Build a minimal real-shaped tasks.db: (task_id, status, error_info-dict-or-None)."""
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    db_path = tmp_dir / "tasks.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, error_info TEXT)"
+    )
+    for task_id, status, error_info in rows:
+        conn.execute(
+            "INSERT INTO tasks (task_id, status, error_info) VALUES (?, ?, ?)",
+            (task_id, status, json.dumps(error_info) if error_info is not None else None),
+        )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+class TasksDbEnrichmentTests(unittest.TestCase):
+    """quota-core issue #60 round-1 review: the adapter must also read
+    tasks.db's error_info -- real attribution.jsonl reasons alone left the
+    vast majority of real observed local failures unclassified, because most
+    never got a terminal outcome row written to attribution.jsonl at all
+    (321 of 413 real observed tasks.db error_info rows locally are exactly
+    this shape: status=failed with a reason, but no attribution.jsonl
+    terminal row)."""
+
+    def test_read_task_error_reasons_parses_json_reason_column(self):
+        db_path = _build_tasks_db([
+            ("t1", "failed", {"reason": "agy_quota_exhausted"}),
+            ("t2", "done", None),
+            ("t3", "failed", {"reason": "exit_1"}),
+        ])
+        reasons = read_task_error_reasons(db_path)
+        self.assertEqual(reasons, {"t1": "agy_quota_exhausted", "t3": "exit_1"})
+
+    def test_read_task_error_reasons_missing_db_returns_empty_dict_not_raise(self):
+        self.assertEqual(read_task_error_reasons(Path("/nonexistent/tasks.db")), {})
+
+    def test_read_task_error_reasons_malformed_error_info_is_skipped(self):
+        db_path = _build_tasks_db([("t1", "failed", None)])
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE tasks SET error_info = 'not valid json' WHERE task_id = 't1'")
+        conn.commit()
+        conn.close()
+        self.assertEqual(read_task_error_reasons(db_path), {})
+
+    def test_enrich_backfills_outcome_when_attribution_never_terminated(self):
+        """The single highest-yield real case: attribution.jsonl's own
+        stream never wrote a terminal row for this task (outcome=None,
+        "still in progress"), but tasks.db's dispatcher already marked it
+        status=failed with a reason. Must not stay silently invisible."""
+
+        db_path = _build_tasks_db([("t1", "failed", {"reason": "agy_quota_exhausted"})])
+        attributions = [RuntimeAttribution(runtime="agent_crew", task_id="t1")]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(len(enriched), 1)
+        record = enriched[0]
+        self.assertEqual(record.outcome, "failed")
+        self.assertEqual(record.failure_reason, "agy_quota_exhausted")
+        self.assertEqual(record.failure_category, "provider_or_transport")
+        self.assertFalse(record.retryable)
+        self.assertEqual(record.extra.get("outcome_source"), "tasks_db_status")
+
+    def test_enrich_does_not_backfill_when_tasks_db_status_is_not_failed(self):
+        # tasks.db shows this task eventually succeeded (status != "failed")
+        # even though it briefly carried an error_info from an earlier
+        # attempt -- must not be turned into a fabricated failure.
+        db_path = _build_tasks_db([("t1", "done", {"reason": "exit_1"})])
+        attributions = [RuntimeAttribution(runtime="agent_crew", task_id="t1")]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertIsNone(enriched[0].outcome)
+
+    def test_enrich_never_overrides_an_explicit_non_failed_outcome(self):
+        db_path = _build_tasks_db([("t1", "failed", {"reason": "agy_quota_exhausted"})])
+        attributions = [RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="success", raw_outcome="completed")]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "success")
+        self.assertIsNone(enriched[0].failure_reason)
+
+    def test_enrich_prefers_richer_reason_over_bare_attribution_reason(self):
+        db_path = _build_tasks_db([("t1", "failed", {"reason": "agy_quota_exhausted"})])
+        attributions = [
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1",
+                failure_reason="exit_1", failure_category="unknown", retryable=None,
+            )
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        record = enriched[0]
+        self.assertEqual(record.failure_reason, "agy_quota_exhausted")
+        self.assertEqual(record.failure_category, "provider_or_transport")
+        self.assertFalse(record.retryable)
+        self.assertEqual(record.extra.get("failure_reason_source"), "tasks_db")
+
+    def test_enrich_leaves_record_unchanged_when_reasons_already_match(self):
+        db_path = _build_tasks_db([("t1", "failed", {"reason": "exit_1"})])
+        original = RuntimeAttribution(
+            runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1",
+            failure_reason="exit_1", failure_category="unknown",
+        )
+        enriched = enrich_with_task_error_reasons([original], db_path)
+        self.assertEqual(enriched[0], original)
+
+    def test_enrich_is_a_no_op_when_db_is_missing_not_a_hard_dependency(self):
+        attributions = [RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1")]
+        enriched = enrich_with_task_error_reasons(attributions, Path("/nonexistent/tasks.db"))
+        self.assertEqual(enriched, attributions)
+
+    def test_read_attribution_jsonl_with_task_errors_end_to_end(self):
+        db_path = _build_tasks_db([("agy-tester-11", "failed", {"reason": "agy_quota_exhausted"})])
+        records = read_attribution_jsonl_with_task_errors(AGY_FIXTURE, db_path)
+        record = next(r for r in records if r.task_id == "agy-tester-11")
+        # Fixture's own attribution.jsonl already reports this task as
+        # failed:exit_1 -- tasks.db's richer agy_quota_exhausted must win.
+        self.assertEqual(record.failure_reason, "agy_quota_exhausted")
+        self.assertEqual(record.failure_category, "provider_or_transport")
 
 
 if __name__ == "__main__":
