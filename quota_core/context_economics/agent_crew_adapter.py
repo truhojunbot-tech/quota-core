@@ -12,6 +12,27 @@ development is not blocked on Agent Crew's release schedule. Parsing is
 deliberately tolerant: unknown event types are skipped, missing/older
 fields fall back to safe defaults, and unrecognized top-level keys are
 preserved under each record's ``extra`` dict rather than dropped.
+
+Failure classification (quota-core issue #60): real Agent Crew
+``attribution.jsonl`` rows only ever expose a failure reason as the
+colon-delimited suffix of ``outcome`` (e.g. ``"failed:dispatcher_timeout"``).
+``schema.attribution_from_dict`` derives ``failure_reason``/
+``failure_category``/``retryable`` from that suffix via
+``schema.classify_failure_category`` -- this adapter does not need its own
+parsing for that. What Agent Crew's current contract does *not* expose,
+and which would materially improve classification if a future producer
+added it:
+
+- a distinct ``terminal_source`` field (e.g. ``"agent_reported"`` vs
+  ``"dispatcher"`` vs ``"provider"``) -- today the only signal is the
+  ``reason`` substring itself, so ``terminal_source`` stays ``None`` unless
+  a source dict explicitly supplies it;
+- any field that positively attributes a failure to context/policy
+  causation (stale context, a bad compact/resume decision) -- there is
+  currently no such signal anywhere in ``tasks.db``'s ``error_info`` column
+  or ``attribution.jsonl``'s ``outcome``, so ``"context_or_policy"`` is
+  presently unreachable from real data (see ``schema.py``'s
+  ``_CONTEXT_POLICY_MARKERS``).
 """
 
 from __future__ import annotations

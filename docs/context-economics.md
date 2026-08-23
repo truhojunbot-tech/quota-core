@@ -49,6 +49,42 @@ under `extra` instead of dropped, and a missing/invalid enum-like field
   (`TokenComponents`), `attribution_confidence` (`high | medium | low`), and
   `attribution_notes` explaining how/why the join was made.
 
+## Failure classification (issue #60)
+
+`RuntimeAttribution` and `TaskEconomicsRecord` both carry `failure_reason`
+(the runtime-specific reason string, e.g. `"dispatcher_timeout"`),
+`failure_category`, `retryable`, and `terminal_source`, alongside the
+existing `outcome`/`raw_outcome`. `failure_category` is one of:
+
+- `context_or_policy` -- evidence the failure was caused by stale/overlong
+  context or a bad compact/resume decision. Not reachable from any reason
+  string Agent Crew's real contract currently emits (see below).
+- `provider_or_transport` -- upstream provider/transport transient errors
+  (rate limits, capacity exhaustion, streaming backpressure).
+- `runtime_or_dispatcher` -- the orchestrator's own operational failures
+  (dispatcher timeout, no result ever submitted).
+- `work_product_or_test` -- the agent's own process/tests failed on their
+  merits (e.g. a nonzero exit code).
+- `cancelled` -- the task was cancelled, not a failure on the merits.
+- `unknown` -- a failed task with no recognizable reason. Never fabricated
+  into a more specific category.
+
+`classify_failure_category(outcome, raw_outcome)` derives this from a raw
+`"failed:<reason>"`-style outcome; `infer_retryable(category)` derives a
+best-effort `True`/`False`/`None` mirroring which categories agent_crew's
+own dispatcher currently auto-retries (only `provider_or_transport`).
+`attribution_from_dict` populates all of this automatically from `outcome`
+when a source dict does not supply the fields explicitly; explicit values
+always win over the derived ones. Older telemetry with only a bare
+`outcome="failed"` (no reason) still parses -- it classifies as `unknown`,
+not dropped.
+
+This exists so context-age and resume/compact/fresh comparisons don't treat
+a provider outage or dispatcher bug as evidence about context handling --
+see the real `agent_crew#205`/`#206` AGY "subscriber fell behind" incident
+in `tests/fixtures/agent_crew/agy_incident/README.md` and
+`tests/test_failure_classification.py`.
+
 ## Agent Crew adapter (`agent_crew_adapter.py`)
 
 Reads Agent Crew's durable attribution JSONL and lifecycle-event JSONL (per
@@ -118,6 +154,19 @@ successful task, tokens per outcome, context age vs token usage, context age
 vs failure rate, resume/compact/fresh comparison). There is intentionally no
 single composite `efficiency_score` -- compose one from these primitives if
 you need it, so the underlying components stay visible.
+
+`stratified_failure_rates(records)` (issue #60) breaks a "not succeeded"
+rate down by `failure_category`: `provider_or_runtime_operational`,
+`policy_relevant`, `cancelled`, `unknown` -- each with its own count and
+rate, alongside the raw `raw_failure_rate`. `context_age_vs_failure_rate`
+and `compare_context_policies` both merge this breakdown into their existing
+output (backward compatible -- the pre-existing `failure_rate`/`count`/
+`success_rate` keys are unchanged) and add a `"warning"` key
+(`UNKNOWN_FAILURE_CAUSE_WARNING`) when every observed failure in a group has
+an unrecognized cause, so `policy_relevant_failure_rate` is never silently
+read as meaningful when there is no actual cause evidence behind it.
+`compact_analysis.before_after_compact`'s before/after windows expose the
+same breakdown for the same reason.
 
 ## Compact before/after analysis (`compact_analysis.py`)
 

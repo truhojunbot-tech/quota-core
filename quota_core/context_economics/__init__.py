@@ -11,6 +11,7 @@ See ``docs/context-economics.md`` for the full public contract.
 from __future__ import annotations
 
 from .analytics import (
+    UNKNOWN_FAILURE_CAUSE_WARNING,
     cache_creation_per_successful_task,
     cache_read_per_task,
     compare_context_policies,
@@ -18,6 +19,7 @@ from .analytics import (
     context_age_vs_token_usage,
     failed_retry_token_waste,
     fresh_input_per_successful_task,
+    stratified_failure_rates,
     tokens_per_outcome,
     tokens_per_successful_task,
 )
@@ -28,6 +30,7 @@ from .schema import (
     SCHEMA_VERSION,
     ContextLifecycleEvent,
     ContextPolicy,
+    FailureCategory,
     LifecycleEventType,
     NormalizedOutcome,
     RuntimeAttribution,
@@ -35,6 +38,9 @@ from .schema import (
     TokenComponents,
     attribution_from_dict,
     attribution_to_dict,
+    classify_failure_category,
+    extract_failure_reason,
+    infer_retryable,
     lifecycle_event_from_dict,
     lifecycle_event_to_dict,
     normalize_outcome,
@@ -58,7 +64,11 @@ __all__ = [
     "ContextPolicy",
     "LifecycleEventType",
     "NormalizedOutcome",
+    "FailureCategory",
     "normalize_outcome",
+    "extract_failure_reason",
+    "classify_failure_category",
+    "infer_retryable",
     "parse_flexible_timestamp",
     "reconcile_attribution_by_task",
     "TokenComponents",
@@ -90,5 +100,7 @@ __all__ = [
     "context_age_vs_token_usage",
     "context_age_vs_failure_rate",
     "compare_context_policies",
+    "stratified_failure_rates",
+    "UNKNOWN_FAILURE_CAUSE_WARNING",
     "before_after_compact",
 ]
