@@ -350,6 +350,20 @@ Given the above, **this PR implements a real, tested subset of issue #62's
 scope, not the full issue** -- see that issue's own acceptance-criteria
 checklist for which boxes this PR checks and which remain open.
 
+**On causal interpretation** (issue #62: "documentation states what can and
+cannot be interpreted causally"): every number here is a descriptive
+aggregate over whatever attributions a caller passes in -- a mean, a rate,
+a percentile, a per-mode breakdown. None of it establishes that a given
+`mode` or pack composition *caused* a particular token count, latency, or
+degraded rate; a difference between `retrieval_mode_comparison`'s groups
+could equally reflect which kind of task tends to get dispatched with that
+mode, not the mode's own effect. Nothing in this module performs matching,
+controls for confounders, or computes statistical significance -- read
+every function here as "what happened", not "why it happened" or "what
+would happen if you changed the mode". The still-deferred "Context Pack
+value indicators" work (above) is precisely where a controlled/matched
+comparison would need to be built before any causal claim is defensible.
+
 ## Compact before/after analysis (`compact_analysis.py`)
 
 `before_after_compact(records, events, n=5)` compares up to `n` tasks

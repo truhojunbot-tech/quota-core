@@ -208,6 +208,17 @@ class ContextCompositionTests(unittest.TestCase):
         self.assertEqual(result["mean_total_tokens"], 2000.0)
         self.assertEqual(result["category_totals"], {"mandatory": 800, "authoritative": 2800, "episodic": 400})
 
+    def test_category_share_is_fraction_of_grand_total(self):
+        packs = [
+            context_pack_attribution_from_event(
+                _real_shape_event(tokens_by_category={"mandatory": 300, "authoritative": 700})
+            )
+        ]
+        result = context_composition(packs)
+        self.assertEqual(result["category_totals"], {"mandatory": 300, "authoritative": 700})
+        self.assertAlmostEqual(result["category_share"]["mandatory"], 0.3)
+        self.assertAlmostEqual(result["category_share"]["authoritative"], 0.7)
+
     def test_missing_total_tokens_excluded_from_mean_not_treated_as_zero(self):
         known = context_pack_attribution_from_event(_real_shape_event(total_tokens=1000))
         unknown = ContextPackAttribution(task_id="t2")  # no total_tokens at all
@@ -241,6 +252,17 @@ class ContextPackEfficiencyTests(unittest.TestCase):
         result = context_pack_efficiency([zero_candidates])
         self.assertEqual(result["candidate_selected_known_count"], 0)
         self.assertIsNone(result["mean_compression_ratio"])
+
+    def test_mean_stale_and_conflict_counts(self):
+        packs = [
+            context_pack_attribution_from_event(_real_shape_event(stale_count=0, conflict_count=1)),
+            context_pack_attribution_from_event(_real_shape_event(stale_count=4, conflict_count=3)),
+        ]
+        result = context_pack_efficiency(packs)
+        self.assertEqual(result["stale_known_count"], 2)
+        self.assertEqual(result["mean_stale_count"], 2.0)
+        self.assertEqual(result["conflict_known_count"], 2)
+        self.assertEqual(result["mean_conflict_count"], 2.0)
 
     def test_latency_percentiles(self):
         packs = [
