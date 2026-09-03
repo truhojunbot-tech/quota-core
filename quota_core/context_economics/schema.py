@@ -30,6 +30,7 @@ LifecycleEventType = Literal[
     "task_started",
     "task_completed",
     "task_failed",
+    "context_pack_built",
 ]
 
 _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
@@ -42,6 +43,7 @@ _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
     "task_started",
     "task_completed",
     "task_failed",
+    "context_pack_built",
 )
 
 _CONTEXT_POLICIES: tuple[str, ...] = ("resume", "compact", "fresh", "unknown")
@@ -468,6 +470,111 @@ class ContextLifecycleEvent:
     provider_session_id: str | None = None
     provider: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ContextPackAttribution:
+    """One task dispatch's Context Pack telemetry (quota-core#62).
+
+    Consumer-side mirror of Agent Crew #239's real producer contract
+    (``ContextPack.telemetry()`` in ``agent_crew/context_pack.py``, emitted
+    as a ``"context_pack_built"`` :class:`ContextLifecycleEvent`). quota-core
+    does not import agent_crew -- this dataclass and its parser
+    (:func:`context_pack_attribution_from_event`) only depend on the JSONL
+    wire shape, which may gain fields over time; anything this repo's
+    installed version doesn't recognize is simply not extracted, never
+    guessed. Every field the producer might not populate stays ``None``
+    (or an empty ``dict``/``list`` for a collection) rather than a
+    misleading zero -- "no pack" and "pack with zero of something" must
+    stay distinguishable to a caller.
+    """
+
+    task_id: str | None = None
+    project: str | None = None
+    context_id: str | None = None
+    context_generation: int | None = None
+    role: str | None = None
+    agent: str | None = None
+    mode: str | None = None
+    context_pack_id: str | None = None
+    context_pack_hash: str | None = None
+    context_pack_schema_version: int | None = None
+    candidate_count: int | None = None
+    selected_count: int | None = None
+    total_tokens: int | None = None
+    tokens_by_category: dict[str, int] = field(default_factory=dict)
+    stale_count: int | None = None
+    conflict_count: int | None = None
+    latency_ms: float | None = None
+    degraded: bool | None = None
+    degraded_reason: str | None = None
+    budget: dict[str, Any] = field(default_factory=dict)
+    timestamp: int | None = None
+
+
+def context_pack_attribution_from_event(event: ContextLifecycleEvent) -> ContextPackAttribution | None:
+    """Extract a :class:`ContextPackAttribution` from one lifecycle event.
+
+    Returns ``None`` for any event that isn't ``"context_pack_built"`` --
+    callers filtering a mixed lifecycle-event stream can call this
+    unconditionally and discard the ``None`` results, the same pattern
+    :func:`lifecycle_event_from_dict` itself uses for unrecognized types.
+
+    The real producer telemetry rides in ``event.extra`` (every top-level
+    key ``lifecycle_event_from_dict`` doesn't recognize as one of its own
+    fixed columns lands there, by that function's own tolerant-parsing
+    design) -- this function does not re-parse raw JSON itself, so it
+    stays correct regardless of how the caller obtained the event.
+    """
+
+    if event.event_type != "context_pack_built":
+        return None
+
+    extra = event.extra
+
+    def _opt_int(key: str) -> int | None:
+        value = extra.get(key)
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    def _opt_float(key: str) -> float | None:
+        value = extra.get(key)
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    def _opt_str(key: str) -> str | None:
+        value = extra.get(key)
+        return value if isinstance(value, str) else None
+
+    def _opt_bool(key: str) -> bool | None:
+        value = extra.get(key)
+        return value if isinstance(value, bool) else None
+
+    def _opt_dict(key: str) -> dict:
+        value = extra.get(key)
+        return dict(value) if isinstance(value, dict) else {}
+
+    return ContextPackAttribution(
+        task_id=event.task_id,
+        project=event.project,
+        context_id=event.context_id,
+        context_generation=_opt_int("context_generation"),
+        role=_opt_str("role"),
+        agent=_opt_str("agent"),
+        mode=_opt_str("mode"),
+        context_pack_id=_opt_str("context_pack_id"),
+        context_pack_hash=_opt_str("context_pack_hash"),
+        context_pack_schema_version=_opt_int("context_pack_schema_version"),
+        candidate_count=_opt_int("candidate_count"),
+        selected_count=_opt_int("selected_count"),
+        total_tokens=_opt_int("total_tokens"),
+        tokens_by_category=_opt_dict("tokens_by_category"),
+        stale_count=_opt_int("stale_count"),
+        conflict_count=_opt_int("conflict_count"),
+        latency_ms=_opt_float("latency_ms"),
+        degraded=_opt_bool("degraded"),
+        degraded_reason=_opt_str("degraded_reason"),
+        budget=_opt_dict("budget"),
+        timestamp=event.timestamp,
+    )
 
 
 @dataclass(frozen=True)

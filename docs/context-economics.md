@@ -248,6 +248,71 @@ review -- the original warning was all-or-nothing, so a group that was e.g.
 no warning at all). `compact_analysis.before_after_compact`'s before/after
 windows expose the same breakdown for the same reason.
 
+## Context Pack economics (`context_pack_analytics.py`, quota-core#62)
+
+Consumes Agent Crew #239's real Context Pack producer contract: a
+`"context_pack_built"` `ContextLifecycleEvent` emitted alongside the other
+lifecycle events in the same `context_events.jsonl` stream, carrying
+`ContextPack.telemetry()`'s fields (`context_pack_id`/`hash`/
+`schema_version`, `mode`, `role`, `candidate_count`, `selected_count`,
+`total_tokens`, `tokens_by_category` -- `mandatory`/`authoritative`/
+`episodic`/`procedural` -- `stale_count`, `conflict_count`, `latency_ms`,
+`degraded`, `degraded_reason`, `budget`) plus dispatch-time identifiers
+(`task_id`, `project`, `agent`, `context_id`, `context_generation`).
+
+`schema.ContextPackAttribution` is the normalized record; `schema.
+context_pack_attribution_from_event(event)` extracts one from a lifecycle
+event (`None` for any other event type), and `agent_crew_adapter.
+context_pack_attributions_from_events(events)` filters a full lifecycle
+stream down to just these. As with the rest of this package, quota-core
+does not import `agent_crew` -- only the documented JSONL wire shape.
+
+Three read-only analysis functions:
+
+- `context_composition(attributions)` -- aggregate token composition
+  (`mandatory`/`authoritative`/`episodic`/`procedural` totals and shares),
+  mean pack size.
+- `context_pack_efficiency(attributions)` -- candidate→selected compression
+  ratio, latency p50/p95, degraded/stale/conflict rates.
+- `retrieval_mode_comparison(attributions)` -- the above two, broken down
+  per `mode` (e.g. `lexical`/`semantic`/`hybrid`/`unknown`), each carrying
+  its own `sample_size` so a comparison never hides how thin one side is.
+
+Every rate/mean is computed over only the attributions that actually report
+the relevant field, with its own `*_known_count` denominator reported
+alongside it -- a field no producer version has started emitting yet stays
+absent from the aggregate, never a fabricated zero that would silently drag
+a rate down.
+
+### Known limitations
+
+- **No real production telemetry exists yet, for two independent reasons.**
+  `AGENT_CREW_CONTEXT_PACK` (the feature's own opt-in flag) is not set
+  anywhere on the fleet this was developed against, AND the real producer
+  call site (`server.py`'s dispatcher) currently raises `TypeError` on
+  every attempt to record this event (`role` is passed both explicitly and
+  via `**ContextPack.telemetry()`, which also contains a `role` key) --
+  reported as `agent_crew#258`, not fixed here since it is that repo's
+  code. Either gap alone would already mean zero real events; both apply
+  today. This module's fixtures are therefore derived directly from
+  reading `agent_crew`'s real source (`context_pack.py`'s `telemetry()`
+  method and `server.py`'s call site) rather than from a real captured
+  golden fixture like issue #58's `tests/fixtures/agent_crew/
+  real_contract/` -- re-derive against real data once both gaps close.
+- **"Context Pack value indicators" and "compact/retrieval interaction"
+  are not implemented here.** Both need a real paired sample (tasks run
+  with vs without a pack, or compact events correlated with pack telemetry
+  for the same task) to be meaningful; building them against fixtures
+  today would only prove the arithmetic works, not that the comparison
+  means anything. Left for a follow-up issue once real paired data exists.
+- **No cross-check against `TaskEconomicsRecord`'s `failure_category`.**
+  Distinguishing a context-policy-relevant retrieval failure from an
+  unrelated provider/runtime failure (issue #62's "stratify provider/
+  runtime incidents from context-policy-relevant failures" acceptance
+  criterion) requires joining Context Pack attributions with the existing
+  failure-classification pipeline by `task_id` -- not done in this module,
+  which only aggregates the pack telemetry itself.
+
 ## Compact before/after analysis (`compact_analysis.py`)
 
 `before_after_compact(records, events, n=5)` compares up to `n` tasks

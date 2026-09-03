@@ -27,11 +27,20 @@ from .analytics import (
     unknown_cause_warning,
 )
 from .compact_analysis import before_after_compact
+from .context_pack_analytics import (
+    context_composition,
+    context_pack_efficiency,
+    retrieval_mode_comparison,
+)
 from .correlate import ProviderUsageRecord, correlate_task_economics
-from .agent_crew_adapter import reconcile_attribution_by_task
+from .agent_crew_adapter import (
+    context_pack_attributions_from_events,
+    reconcile_attribution_by_task,
+)
 from .schema import (
     SCHEMA_VERSION,
     ContextLifecycleEvent,
+    ContextPackAttribution,
     ContextPolicy,
     FailureCategory,
     LifecycleEventType,
@@ -42,6 +51,7 @@ from .schema import (
     attribution_from_dict,
     attribution_to_dict,
     classify_failure_category,
+    context_pack_attribution_from_event,
     extract_failure_reason,
     infer_retryable,
     lifecycle_event_from_dict,
@@ -77,6 +87,12 @@ __all__ = [
     "TokenComponents",
     "RuntimeAttribution",
     "ContextLifecycleEvent",
+    "ContextPackAttribution",
+    "context_pack_attribution_from_event",
+    "context_pack_attributions_from_events",
+    "context_composition",
+    "context_pack_efficiency",
+    "retrieval_mode_comparison",
     "TaskEconomicsRecord",
     "ProviderUsageRecord",
     "attribution_to_dict",
