@@ -252,6 +252,21 @@ class ContextPackEfficiencyTests(unittest.TestCase):
         self.assertEqual(result["latency_ms_p50"], 300)
         self.assertEqual(result["latency_ms_p95"], 500)
 
+    def test_latency_p50_matches_true_nearest_rank_not_round_half_formula(self):
+        """quota-core#62 review found the original implementation used
+        round(pct * (n-1)) -- a different, undocumented method that happens
+        to agree with true nearest-rank (ceil(pct*n), 1-indexed) on the
+        5-element sample above but diverges on a 4-element one: p50 of
+        [10,20,30,40] is 20 under nearest-rank, was 30 under the old
+        formula."""
+
+        packs = [
+            context_pack_attribution_from_event(_real_shape_event(latency_ms=float(v)))
+            for v in (10, 20, 30, 40)
+        ]
+        result = context_pack_efficiency(packs)
+        self.assertEqual(result["latency_ms_p50"], 20)
+
 
 class RetrievalModeComparisonTests(unittest.TestCase):
     def test_groups_by_mode_with_sample_sizes(self):

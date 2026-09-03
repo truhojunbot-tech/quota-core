@@ -312,6 +312,43 @@ a rate down.
   criterion) requires joining Context Pack attributions with the existing
   failure-classification pipeline by `task_id` -- not done in this module,
   which only aggregates the pack telemetry itself.
+- **"Working-context" tokens are not covered.** Issue #62 asks that
+  mandatory/authoritative/episodic AND working-context token components
+  stay separate. The first three come from the Context Pack itself
+  (`tokens_by_category`); working context is the ongoing provider
+  conversation, a wholly different data source this module doesn't touch
+  (already handled, for Claude/Codex/Gemini, by the existing
+  `TaskEconomicsRecord`/provider-usage-record machinery elsewhere in this
+  package). Combining the two per task requires a report-layer join by
+  `task_id` this module does not perform.
+- **No "legacy vs Context Pack" comparison.** `retrieval_mode_comparison`
+  compares modes (lexical/semantic/hybrid/unknown) *among tasks that have*
+  pack telemetry -- it cannot also show tasks with NO
+  `context_pack_built` event at all, since this module only ever sees
+  `ContextPackAttribution`s that already exist. That comparison needs the
+  full attribution population (Context Pack ones and non-pack ones
+  together), which is a report-layer concern.
+- **No generated report artifact.** This PR is a library layer
+  (schema + parser + analysis functions), not a CLI or a committed report
+  file like `quota-ops`'s `context_efficiency_report.py`. Issue #62's "at
+  least one production-shaped Context Pack Efficiency report can be
+  generated" acceptance criterion is therefore NOT met by this PR alone --
+  wiring these functions into an actual report generator (most naturally
+  in `quota-ops`, mirroring how Claude/Gemini/Codex usage got wired into
+  `context_efficiency_report.py`) is left for a follow-up.
+- **Retry/recovery is not deduplicated per task.** Each
+  `context_pack_built` event parses independently; if a task is retried
+  and gets a second, refreshed pack, `context_composition`/
+  `context_pack_efficiency` will include BOTH events if both are passed
+  in. This is honest at the event level (nothing is silently dropped or
+  double-counted *within* this module), but a caller wanting a per-task
+  answer (issue #62's "retry/recovery does not double-count a task"
+  criterion) must decide which of a task's multiple pack events to use --
+  this module does not make that choice for them.
+
+Given the above, **this PR implements a real, tested subset of issue #62's
+scope, not the full issue** -- see that issue's own acceptance-criteria
+checklist for which boxes this PR checks and which remain open.
 
 ## Compact before/after analysis (`compact_analysis.py`)
 

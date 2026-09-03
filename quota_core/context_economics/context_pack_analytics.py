@@ -23,6 +23,7 @@ must never silently drag a rate toward zero.
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from typing import Iterable
 
@@ -32,12 +33,22 @@ from .schema import ContextPackAttribution
 def _percentile(values: list[float], pct: float) -> float | None:
     """Nearest-rank percentile over ``values`` (0.0-1.0). ``None`` for an
     empty list -- there is no percentile of nothing, and 0 would misrepresent
-    "no data" as "zero latency"."""
+    "no data" as "zero latency".
+
+    The standard nearest-rank definition: ``rank = ceil(pct * n)`` (1-indexed,
+    clamped to ``[1, n]``). An earlier version of this function instead used
+    ``round(pct * (n - 1))`` -- a different, undocumented method that agrees
+    with nearest-rank at the extremes (p50/p95 of a 5-element sample) but
+    diverges elsewhere, e.g. p50 of ``[10, 20, 30, 40]`` is 20 under
+    nearest-rank but was 30 under the old formula. Fixed to match what the
+    docstring has always claimed.
+    """
 
     if not values:
         return None
     ordered = sorted(values)
-    idx = min(len(ordered) - 1, max(0, round(pct * (len(ordered) - 1))))
+    rank = math.ceil(pct * len(ordered))
+    idx = min(len(ordered) - 1, max(0, rank - 1))
     return ordered[idx]
 
 
