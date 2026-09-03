@@ -120,6 +120,15 @@ private ops -> quota_core
 
 See [docs/public-private-boundary.md](docs/public-private-boundary.md) for the full split contract.
 
+## Autonomous Collaboration Baseline
+
+`quota_core` is the resource constitution: SSOT for `budget`, `quota`, and
+`scope` as used by the fleet of autonomous bots that depend on it. The
+cross-cutting governance vocabulary (`HOLD`/`VETO`/`STOP`, delegation,
+reporting) is owned separately by each deployment's own org-wide policy
+layer, outside this repo. See
+[docs/autonomous-collaboration-baseline.md](docs/autonomous-collaboration-baseline.md).
+
 ## Privacy And Safety
 
 `quota_core demo` performs no network calls and reads no real provider data.
