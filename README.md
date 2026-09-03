@@ -122,9 +122,11 @@ See [docs/public-private-boundary.md](docs/public-private-boundary.md) for the f
 
 ## Autonomous Collaboration Baseline
 
-`quota_core` is the resource constitution / budget authority for a fleet of
-autonomous bots operating on shared infrastructure: it defines `budget`,
-`quota`, `scope`, `HOLD`, `VETO`, and `STOP`. See
+`quota_core` is the resource constitution: SSOT for `budget`, `quota`, and
+`scope` as used by the fleet of autonomous bots that depend on it. The
+cross-cutting governance vocabulary (`HOLD`/`VETO`/`STOP`, delegation,
+reporting) is owned separately by each deployment's own org-wide policy
+layer, outside this repo. See
 [docs/autonomous-collaboration-baseline.md](docs/autonomous-collaboration-baseline.md).
 
 ## Privacy And Safety

@@ -1,110 +1,101 @@
-# Autonomous Collaboration Baseline
+# Autonomous Collaboration Baseline -- resource constitution
 
 ## Purpose
 
-This document is the resource constitution for a fleet of autonomous bots (each an
-independent long-running Claude Code session) that read and write shared
-infrastructure -- crontab, GitHub repos, tmux sessions, shared git clones -- without
-a human approving every action. It defines the vocabulary and role boundaries the
-fleet uses to stay coordinated instead of colliding, and it is the SSOT (single
-source of truth) for the terms `budget`, `quota`, `scope`, `HOLD`, `VETO`, and
-`STOP`.
+A fleet of autonomous bots operating on shared infrastructure needs a
+cross-cutting governance baseline (autonomy, HOLD/VETO/STOP semantics,
+delegation, a shared reporting convention, closed-loop verification) that
+every bot layers its own domain policy under. Owning and auditing that
+org-wide baseline is out of scope for `quota_core` -- it belongs to whatever
+policy-coordination role a given deployment designates for that job (a
+"chief of staff" role in this fleet's private operations layer; see that
+layer's own documentation for who holds it and where it is tracked).
 
-`quota_core` owns this document because it already owns cross-bot usage
-accounting (see [reporting-semantics.md](reporting-semantics.md) and
-[data-ingestion-architecture.md](data-ingestion-architecture.md)) -- budget and
-quota are meaningless without a shared definition of what is being measured.
-Enforcement of these terms at runtime is a `quota-ops` concern; see that repo's
-`docs/autonomous-collaboration-baseline.md` for how the definitions here get
-applied to a live fleet.
+This document is `quota_core`'s contribution to that baseline: the piece the
+org-wide baseline is expected to delegate to a resource/budget authority,
+typically phrased along the lines of:
+
+> Budget & Resource: agents and any resource-authority/enforcement package
+> must respect resource/budget/scope constraints.
+
+`quota_core` owns this because it already owns cross-bot usage accounting
+(see [reporting-semantics.md](reporting-semantics.md) and
+[data-ingestion-architecture.md](data-ingestion-architecture.md)) -- budget
+and quota are meaningless without a shared definition of what is being
+measured. This document is the SSOT for the terms `budget`, `quota`, and
+`scope` as used by anything that depends on `quota_core`. It is **not** the
+SSOT for `HOLD`, `VETO`, or `STOP` -- those are cross-cutting governance
+signals owned by the org-wide baseline described above; this document only
+describes what a bot's budget/quota/scope state looks like when one of those
+signals arrives, so that a runtime-enforcement layer (private operations,
+not this public repo) has something concrete to enforce against.
 
 ## Roles
 
 | Role | Owner | Responsibility |
 |---|---|---|
-| Resource constitution / budget authority | `quota_core` (this repo) | Defines what budget, quota, and scope mean; owns the generic snapshot/attribution schema those terms are measured against. Public, provider-agnostic, no bot registry. |
-| Runtime enforcement / operational guardrail | `quota-ops` | Applies the constitution to one live fleet: watches real usage against real limits, executes HOLD/VETO/STOP, alerts on drift. Private, fleet-specific. |
-| Execution orchestration | Agent Crew | Runs the actual multi-agent task graph (implementer/reviewer/tester) that budget and scope apply to. |
-| Policy coordination / cross-bot routing | Alfred | Chief-of-staff role: rolls out or audits fleet-wide policy (like this baseline), routes work that crosses a single bot's domain, and is the first escalation point for anything a bot cannot resolve or execute itself. |
+| Org-wide baseline (autonomy, HOLD/VETO/STOP, delegation, reporting) | A deployment's policy-coordination layer (outside this repo) | Defines and audits the cross-cutting governance vocabulary every bot layers its own domain policy under. |
+| Resource constitution (this repo) | `quota_core` | Defines budget/quota/scope vocabulary and the generic snapshot/attribution schema those terms are measured against. Public, provider-agnostic, no bot registry. |
+| Runtime enforcement / operational guardrail | A private operations overlay | Applies this repo's resource vocabulary, under the org baseline's HOLD/VETO/STOP governance, to one live fleet: watches real usage against real limits and alerts on drift. Private, fleet-specific. |
+| Execution orchestration | A multi-agent task runner (e.g. Agent Crew) | Runs the actual multi-agent task graph (implementer/reviewer/tester) that budget and scope apply to. |
 
-Dependency direction follows the existing public/private boundary: `quota-ops`,
-Agent Crew, and Alfred may depend on definitions in `quota_core`; `quota_core`
-must never depend on any of them (no `agent_crew` import, no bot names, no
-fleet-specific thresholds).
+Dependency direction follows the existing public/private boundary: private
+operations, task runners, and policy-coordination code may depend on
+definitions in `quota_core`; `quota_core` must never depend on any of them
+(no imports of private-ops or orchestration packages, no bot names, no
+fleet-specific thresholds, and no copy of another layer's governance prose
+that could drift out of sync with its own SSOT -- link out to it by role,
+not by name).
 
-## Terms
+## Terms (quota_core SSOT)
 
 - **Budget** -- a bounded allotment of a countable resource (tokens, provider
   requests, wall-clock minutes, dollars) assigned to a task, a bot, or a time
   window. A budget is a number plus a unit plus a window; it is not itself an
   enforcement mechanism.
 - **Quota** -- the ceiling a provider or an internal policy imposes on a
-  resource over a window (e.g. Anthropic's 5-hour/7-day utilization, a
+  resource over a window (e.g. a provider's rolling utilization window, a
   per-repo issue-pickup rate). Quota is external or policy-imposed; budget is
   how a bot chooses to spend within a quota.
-- **Scope** -- the set of repos, files, processes, or GitHub issues an action
-  is allowed to touch. A bot staying in scope means it only writes to
-  resources it owns or has been explicitly delegated (see
+- **Scope** -- the set of repos, files, processes, or issues an action is
+  allowed to touch. A bot staying in scope means it only writes to resources
+  it owns or has been explicitly delegated (see
   [public-private-boundary.md](public-private-boundary.md) for the
   quota-core/quota-ops instance of this).
-- **HOLD** -- a request to pause new actions in a scope without discarding
-  in-flight work or state. A bot honoring a HOLD finishes or safely
-  checkpoints what is already running, then waits; it does not start new
-  units of work in the held scope until the HOLD is lifted.
-- **VETO** -- a rejection of one specific proposed or in-flight action. A
-  bot honoring a VETO abandons that action (rolling back any partial,
-  reversible side effect it already made) but continues other unaffected
-  work.
-- **STOP** -- an unconditional halt of a bot's autonomous activity in a
-  scope, broader than a single action (HOLD) or a single VETO. A bot
-  honoring a STOP ceases all autonomous action in that scope immediately,
-  including its own standing/scheduled work, and waits for explicit
-  human or Alfred instruction before resuming.
 
-HOLD/VETO/STOP are severity-ordered (STOP > VETO > HOLD) but are not
-interchangeable substitutes for each other -- a VETO on one action must not be
-treated as a HOLD on the whole scope, and a HOLD must not be silently
-downgraded to "proceed once nothing new shows up for a while."
+A bot that receives a `HOLD`, `VETO`, or `STOP` (as defined by its
+deployment's org-wide baseline) is being told to change its *behavior*;
+budget, quota, and scope are the *state* that behavior change acts on.
+Concretely: a `HOLD` on a scope means "stop spending budget in that scope";
+a `VETO` on an action means "that action's budget request is denied"; a
+`STOP` means "treat remaining budget in this scope as zero until lifted."
 
 ## Runaway prevention
 
-Autonomous, self-continuing work (an issue-driven backlog loop, a review loop,
-a delegation chain) must have a structural stop condition, not just a
-best-effort one:
+This elaborates a typical org baseline's "no recursive delegation, no task
+explosion, no unbounded review/fix loops" rule with resource-shaped detail:
 
 - **Recursive delegation** -- a bot delegating to another bot that could in
   turn delegate back must not be allowed to cycle. Delegation should be
   expressed as a directed edge in a fixed role graph (this document's Roles
-  table), not as an open-ended "ask whoever seems relevant."
+  table plus the deployment's own bot/repo inventory), not as an open-ended
+  "ask whoever seems relevant."
 - **Task explosion** -- a single triggering event (one issue, one alert)
   must not be allowed to fan out into unbounded child issues/tasks without a
-  human- or Alfred-visible checkpoint. Prefer a small number of
-  explicitly-scoped follow-up issues over an open-ended tree.
+  human-visible checkpoint. Prefer a small number of explicitly-scoped
+  follow-up issues over an open-ended tree.
 - **Retry/review loops** -- adversarial review or fix-and-retry cycles must
   have a fixed round budget. If a bounded number of rounds does not converge,
-  that is itself a result to report (see below), not a reason to keep
-  looping silently.
-
-## Reporting convention
-
-Because no human watches most of this activity in real time, autonomous
-findings must be legible after the fact from the artifact alone (a GitHub
-issue/PR/comment), tagged as one of:
-
-- `discovery` -- something true was found that nobody asked about (a bug, a
-  stale config, an outage) and is being surfaced before or alongside fixing
-  it.
-- `proposal` -- a course of action is suggested but not yet started, usually
-  because it crosses scope or needs a judgment call.
-- `blocker` -- work cannot proceed without something external (another
-  issue landing, a quota resetting, a human decision).
-- `result` -- a completed unit of work, closed with verifiable evidence
-  (tests, a diff, a measurement, a merged PR) rather than a narrative claim.
+  that is itself a result to report (per the org baseline's shared reporting
+  convention), not a reason to keep looping silently.
 
 ## Persistence
 
-This baseline is only useful if it survives a bot's own context compaction or
-process restart. Each bot that adopts it must reflect the parts relevant to
-its own role in its own persistent instructions (`CLAUDE.md` or equivalent),
-not only in this repo's docs -- a doc in a git repo is not on any bot's
-context-restoration path by default.
+Cross-cutting persistence (surviving context compaction, process restarts)
+is the org-wide policy-coordination layer's responsibility, typically via a
+versioned marker block in each bot's own persistent instructions. This
+document's job is narrower: give a runtime-enforcement layer and any other
+consumer a stable, versioned place to link to for what budget/quota/scope
+actually mean, so that marker block does not have to carry the full
+definition itself. `quota_core` has no bot session of its own to persist
+state in -- persistence is discharged by each downstream consumer.
