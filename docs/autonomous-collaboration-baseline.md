@@ -11,12 +11,10 @@ policy-coordination role a given deployment designates for that job (a
 "chief of staff" role in this fleet's private operations layer; see that
 layer's own documentation for who holds it and where it is tracked).
 
-This document is `quota_core`'s contribution to that baseline: the piece the
-org-wide baseline is expected to delegate to a resource/budget authority,
-typically phrased along the lines of:
-
-> Budget & Resource: agents and any resource-authority/enforcement package
-> must respect resource/budget/scope constraints.
+This document is `quota_core`'s contribution to that baseline: the resource
+and budget vocabulary an org-wide baseline typically delegates to a
+dedicated resource/budget authority rather than defining itself, since
+budget accounting is a domain in its own right.
 
 `quota_core` owns this because it already owns cross-bot usage accounting
 (see [reporting-semantics.md](reporting-semantics.md) and
