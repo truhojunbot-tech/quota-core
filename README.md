@@ -120,6 +120,13 @@ private ops -> quota_core
 
 See [docs/public-private-boundary.md](docs/public-private-boundary.md) for the full split contract.
 
+## Autonomous Collaboration Baseline
+
+`quota_core` is the resource constitution / budget authority for a fleet of
+autonomous bots operating on shared infrastructure: it defines `budget`,
+`quota`, `scope`, `HOLD`, `VETO`, and `STOP`. See
+[docs/autonomous-collaboration-baseline.md](docs/autonomous-collaboration-baseline.md).
+
 ## Privacy And Safety
 
 `quota_core demo` performs no network calls and reads no real provider data.
