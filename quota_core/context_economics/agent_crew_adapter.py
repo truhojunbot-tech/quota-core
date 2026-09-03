@@ -59,9 +59,11 @@ from typing import Iterable, Iterator, NamedTuple
 
 from .schema import (
     ContextLifecycleEvent,
+    ContextPackAttribution,
     RuntimeAttribution,
     attribution_from_dict,
     classify_failure_category,
+    context_pack_attribution_from_event,
     infer_retryable,
     lifecycle_event_from_dict,
 )
@@ -111,6 +113,27 @@ def read_lifecycle_events_jsonl(path: str | Path) -> list[ContextLifecycleEvent]
         if event is not None:
             events.append(event)
     return events
+
+
+def context_pack_attributions_from_events(
+    events: Iterable[ContextLifecycleEvent],
+) -> list[ContextPackAttribution]:
+    """Filter a lifecycle-event stream down to Context Pack telemetry
+    (quota-core#62, Agent Crew #239's producer contract).
+
+    Same file, same stream as :func:`read_lifecycle_events_jsonl` --
+    ``"context_pack_built"`` events are interleaved with the other lifecycle
+    event types in real ``context_events.jsonl`` data, not a separate file.
+    A caller that only wants Context Pack telemetry filters after reading
+    once; a caller that wants both keeps the original event list too.
+    """
+
+    attributions: list[ContextPackAttribution] = []
+    for event in events:
+        attribution = context_pack_attribution_from_event(event)
+        if attribution is not None:
+            attributions.append(attribution)
+    return attributions
 
 
 class _TaskErrorInfo(NamedTuple):
