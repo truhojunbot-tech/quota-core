@@ -152,7 +152,26 @@ understatement to a ~75% overstatement (worse than the original bug); and
 `attribution.jsonl` reason when a task already has `outcome="failed"` in
 both. `attribution.jsonl`'s own explicit non-`None` outcome (`success`,
 `unknown`, or an already-set `failed`) is never overridden by this
-function on its own.
+function on its own -- **unless** a provable late revision exists (see
+below).
+
+**Late-result reconciliation** (issue #66; Agent Crew #265/PR #267): a
+dispatcher wall can mark a task terminal in `attribution.jsonl` before the
+worker's real result arrives, and Agent Crew durably revises `tasks.db`'s
+`status` when that late result lands (`task_result_late`/
+`status_changed_at`). Without this, an already-terminal `attribution.jsonl`
+outcome kept winning unconditionally, reporting the stale pre-revision
+verdict forever even after Agent Crew itself accepted the correction.
+`enrich_with_task_error_reasons` now reconciles `outcome` to `tasks.db`'s
+current `status` (in either direction -- `failed`->`completed` or
+`completed`->`failed`) ONLY when `tasks.db.status_changed_at` is both
+present (Agent Crew only sets it non-zero when status actually moves) and
+strictly newer than the attribution row's own `updated_at`/`completed_at`
+reference timestamp; absent a provable ordering signal on both sides, the
+older unconditional "`attribution.jsonl` wins" behavior still applies. A
+`tasks.db` status of `timed_out` (Agent Crew #265's non-failure terminal
+state for a dispatcher-wall timeout) never participates in this
+reconciliation -- an unresolved timeout is not a verdict.
 
 `read_attribution_jsonl_with_task_errors(attribution_path, tasks_db_path)`
 is the one-call convenience wrapper -- `read_attribution_jsonl`, then

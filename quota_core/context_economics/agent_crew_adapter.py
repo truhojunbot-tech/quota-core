@@ -260,6 +260,54 @@ def _read_task_statuses(db_path: str | Path) -> dict[str, str]:
     return statuses
 
 
+def _read_task_status_changed_at(db_path: str | Path) -> dict[str, float]:
+    """Read ``{task_id: status_changed_at}`` from Agent Crew's ``tasks.db``
+    (quota-core issue #66).
+
+    Agent Crew PR #267 added this column so a late result revising an
+    already-terminal task's status is observable without reading the event
+    stream: the dispatcher only bumps it when ``status`` actually changes,
+    so it is the ordering signal :func:`enrich_with_task_error_reasons`
+    needs to tell "``tasks.db`` has a newer verdict than the
+    ``attribution.jsonl`` row we already have" from "``tasks.db`` just
+    happens to currently read differently for some unrelated reason".
+
+    Same tolerant-failure contract as :func:`_read_task_statuses`: a
+    missing/unreadable db, or a ``tasks`` table predating this column
+    (``ALTER TABLE ... DEFAULT 0`` migration not yet applied on some older
+    local copy), degrades to an empty dict rather than raising -- callers
+    must treat "no signal available" as "cannot prove which side is newer",
+    never as "assume unchanged".
+    """
+
+    path = Path(db_path)
+    if not path.exists():
+        return {}
+
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+
+    changes: dict[str, float] = {}
+    try:
+        try:
+            cursor = conn.execute("SELECT task_id, status_changed_at FROM tasks")
+            rows = cursor.fetchall()
+        except sqlite3.Error:
+            return {}
+        for task_id, status_changed_at in rows:
+            if not task_id or not status_changed_at:
+                continue
+            try:
+                changes[str(task_id)] = float(status_changed_at)
+            except (TypeError, ValueError):
+                continue
+    finally:
+        conn.close()
+    return changes
+
+
 def enrich_with_task_error_reasons(
     attributions: Iterable[RuntimeAttribution],
     db_path: str | Path,
@@ -267,8 +315,29 @@ def enrich_with_task_error_reasons(
     """Join ``tasks.db``'s richer task-state data onto ``attribution.jsonl``
     records by ``task_id`` (quota-core issue #60).
 
-    Three distinct real-data gaps this closes:
+    Four distinct real-data gaps this closes:
 
+    0. **The late-revision case (quota-core issue #66; Agent Crew #265/PR
+       #267):** a dispatcher wall can mark a task terminal (``failed``) and
+       ``attribution.jsonl`` records that snapshot, but the worker's actual
+       result arrives later and Agent Crew durably revises ``tasks.db``'s
+       ``status`` to ``"completed"`` (or, in principle, the reverse). Before
+       this case existed, an already-terminal ``attribution.jsonl`` outcome
+       always won unconditionally (see the "never overridden" note below),
+       which kept reporting the *stale* pre-revision verdict forever even
+       after Agent Crew itself accepted and recorded the correction. This
+       reconciles ``outcome`` to match ``tasks.db`` ONLY when
+       ``tasks.db.status_changed_at`` (see :func:`_read_task_status_changed_at`)
+       is both present (non-zero -- Agent Crew only bumps it when status
+       actually moves) and strictly newer than the attribution row's own
+       ``updated_at``/``completed_at`` reference timestamp; without a
+       provable ordering signal on both sides, the older unconditional
+       "attribution.jsonl wins" behavior still applies rather than guessing
+       which side is current. Deliberately status-literal like cases 1-2
+       below: a ``tasks.db`` status of ``"timed_out"`` (Agent Crew #265's
+       new non-failure terminal state for a dispatcher-wall timeout) never
+       matches this reconciliation, so an unresolved timeout is never
+       counted as a success or a failure by this function.
     1. **The dominant failure case (round-1 review; 78% of every real
        observed ``tasks.db`` ``error_info`` row locally, all
        ``agy_quota_exhausted``):** the task's own ``tasks.db`` row has
@@ -300,7 +369,8 @@ def enrich_with_task_error_reasons(
     An attribution row with any other explicit, already-terminal outcome
     (``"success"``, ``"unknown"``, or an already-set ``"failed"`` with no
     richer reason available) is never overridden this way --
-    ``attribution.jsonl``'s own terminal call always wins when it exists. A
+    ``attribution.jsonl``'s own terminal call always wins when it exists,
+    UNLESS case 0 above's provable-newer-revision signal fires. A
     task with no ``tasks.db`` match at all (including when the db is
     entirely missing/unreadable) keeps its original ``attribution.jsonl``
     -only classification unchanged; this enrichment is additive, never a
@@ -318,6 +388,7 @@ def enrich_with_task_error_reasons(
 
     info = _read_task_error_info(db_path)
     statuses = _read_task_statuses(db_path)
+    status_changes = _read_task_status_changed_at(db_path)
     if not info and not statuses:
         return list(attributions)
 
@@ -325,6 +396,57 @@ def enrich_with_task_error_reasons(
     for a in attributions:
         entry = info.get(a.task_id)
         status = statuses.get(a.task_id)
+        changed_at = status_changes.get(a.task_id)
+        reference_ts = a.updated_at if a.updated_at is not None else a.completed_at
+        revision_is_newer = changed_at is not None and reference_ts is not None and changed_at > reference_ts
+
+        if a.outcome == "failed" and status == "completed" and revision_is_newer:
+            # Case 0: tasks.db durably revised a stale failed snapshot to a
+            # later valid completion (Agent Crew #265/PR #267's
+            # task_result_late path) -- reconcile forward rather than
+            # keeping the pre-revision verdict forever.
+            enriched.append(
+                replace(
+                    a,
+                    outcome="success",
+                    raw_outcome="completed",
+                    failure_reason=None,
+                    failure_category=None,
+                    retryable=None,
+                    extra={
+                        **a.extra,
+                        "outcome_source": "tasks_db_late_result",
+                        "previous_outcome": "failed",
+                        "status_changed_at": changed_at,
+                    },
+                )
+            )
+            continue
+
+        if a.outcome == "success" and status == "failed" and revision_is_newer:
+            # Symmetric counterpart to case 0: a task recorded as
+            # successful was later durably revised to failed (a late
+            # failure discovered after an initially-accepted result).
+            reason = entry.reason if entry is not None else None
+            raw_tag = f"failed:{reason}" if reason else "failed"
+            category = classify_failure_category("failed", raw_tag)
+            enriched.append(
+                replace(
+                    a,
+                    outcome="failed",
+                    raw_outcome=raw_tag,
+                    failure_reason=reason,
+                    failure_category=category,
+                    retryable=infer_retryable(reason),
+                    extra={
+                        **a.extra,
+                        "outcome_source": "tasks_db_late_result",
+                        "previous_outcome": "success",
+                        "status_changed_at": changed_at,
+                    },
+                )
+            )
+            continue
 
         if a.outcome == "failed":
             if entry is None:

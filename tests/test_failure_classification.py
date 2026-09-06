@@ -523,8 +523,19 @@ def _write_jsonl(rows: list[dict]) -> Path:
     return path
 
 
-def _build_tasks_db(rows: list[tuple[str, str, dict | None]]) -> Path:
-    """Build a minimal real-shaped tasks.db: (task_id, status, error_info-dict-or-None)."""
+def _build_tasks_db(
+    rows: list[tuple[str, str, dict | None]],
+    *,
+    status_changed_at: dict[str, float] | None = None,
+) -> Path:
+    """Build a minimal real-shaped tasks.db: (task_id, status, error_info-dict-or-None).
+
+    ``status_changed_at`` (quota-core issue #66) is deliberately opt-in and
+    only adds the column when a caller passes one -- most existing tests
+    exercise the pre-#267 schema shape (column absent entirely), which is
+    itself the tolerant-degradation path
+    :func:`_read_task_status_changed_at` must degrade gracefully against.
+    """
 
     tmp_dir = Path(tempfile.mkdtemp())
     db_path = tmp_dir / "tasks.db"
@@ -532,11 +543,16 @@ def _build_tasks_db(rows: list[tuple[str, str, dict | None]]) -> Path:
     conn.execute(
         "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT, error_info TEXT)"
     )
+    if status_changed_at is not None:
+        conn.execute("ALTER TABLE tasks ADD COLUMN status_changed_at REAL DEFAULT 0")
     for task_id, status, error_info in rows:
         conn.execute(
             "INSERT INTO tasks (task_id, status, error_info) VALUES (?, ?, ?)",
             (task_id, status, json.dumps(error_info) if error_info is not None else None),
         )
+    if status_changed_at:
+        for task_id, ts in status_changed_at.items():
+            conn.execute("UPDATE tasks SET status_changed_at = ? WHERE task_id = ?", (ts, task_id))
     conn.commit()
     conn.close()
     return db_path
@@ -672,6 +688,7 @@ class TasksDbEnrichmentTests(unittest.TestCase):
         enriched = enrich_with_task_error_reasons(attributions, db_path)
         self.assertEqual(enriched[0].outcome, "failed")
 
+
     def test_enrich_does_not_guess_outcome_for_ambiguous_statuses(self):
         # needs_human/pending/blocked/in_progress are real observed
         # tasks.db statuses that are not positive evidence of either a
@@ -764,3 +781,141 @@ class TasksDbEnrichmentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LateResultReconciliationTests(unittest.TestCase):
+    """quota-core issue #66 (Agent Crew #265/PR #267): a dispatcher wall can
+    mark a task terminal, attribution.jsonl records that snapshot, but the
+    worker's real result arrives later and Agent Crew durably revises
+    tasks.db's status. Reconciliation must follow the newer, provable
+    revision -- not keep reporting the stale pre-revision verdict forever,
+    and not guess a direction when no ordering signal exists either."""
+
+    def test_late_completed_result_overrides_a_stale_failed_attribution(self):
+        db_path = _build_tasks_db(
+            [("t1", "completed", None)],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:dispatcher_timeout",
+                failure_reason="dispatcher_timeout", failure_category="runtime_or_dispatcher",
+                updated_at=1000,
+            )
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        record = enriched[0]
+        self.assertEqual(record.outcome, "success")
+        self.assertEqual(record.raw_outcome, "completed")
+        self.assertIsNone(record.failure_reason)
+        self.assertIsNone(record.failure_category)
+        self.assertIsNone(record.retryable)
+        self.assertEqual(record.extra.get("outcome_source"), "tasks_db_late_result")
+        self.assertEqual(record.extra.get("previous_outcome"), "failed")
+        self.assertEqual(record.extra.get("status_changed_at"), 2000.0)
+
+    def test_late_failed_result_overrides_a_stale_success_attribution(self):
+        """Symmetric direction: a task initially recorded as successful was
+        later durably revised to failed."""
+
+        db_path = _build_tasks_db(
+            [("t1", "failed", {"reason": "agy_quota_exhausted"})],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="success", raw_outcome="completed", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        record = enriched[0]
+        self.assertEqual(record.outcome, "failed")
+        self.assertEqual(record.failure_reason, "agy_quota_exhausted")
+        self.assertEqual(record.failure_category, "provider_or_transport")
+        self.assertEqual(record.extra.get("outcome_source"), "tasks_db_late_result")
+        self.assertEqual(record.extra.get("previous_outcome"), "success")
+
+    def test_stale_status_changed_at_does_not_override_a_newer_attribution(self):
+        """If tasks.db's revision timestamp is OLDER than the attribution
+        row's own reference timestamp, tasks.db is not the newer side --
+        must not reconcile."""
+
+        db_path = _build_tasks_db(
+            [("t1", "completed", None)],
+            status_changed_at={"t1": 500.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "failed")
+
+    def test_missing_status_changed_at_column_does_not_reconcile(self):
+        """The pre-#267 schema shape (column absent entirely) has no
+        revision signal at all -- must degrade to the old conservative
+        "attribution.jsonl wins" behavior, never guess a direction."""
+
+        db_path = _build_tasks_db([("t1", "completed", None)])  # no status_changed_at kwarg
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "failed")
+
+    def test_zero_status_changed_at_is_treated_as_no_signal_not_epoch_zero(self):
+        """Agent Crew's own ALTER TABLE default is 0 for rows whose status
+        has never moved -- 0 must mean "no revision recorded", not a
+        legitimate 1970 timestamp that is trivially "older" than everything."""
+
+        db_path = _build_tasks_db(
+            [("t1", "completed", None)],
+            status_changed_at={"t1": 0.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "failed")
+
+    def test_timed_out_status_is_never_reconciled_as_success_or_failure(self):
+        """Agent Crew #265's new non-failure terminal state for a
+        dispatcher-wall timeout must never be treated as evidence of either
+        outcome by this reconciliation, even with a fresh status_changed_at
+        -- an unresolved timeout is not a verdict."""
+
+        db_path = _build_tasks_db(
+            [("t1", "timed_out", None)],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "failed")
+
+    def test_falls_back_to_completed_at_when_updated_at_is_absent(self):
+        db_path = _build_tasks_db(
+            [("t1", "completed", None)],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1",
+                updated_at=None, completed_at=1000,
+            )
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "success")
+
+    def test_no_reference_timestamp_on_either_side_does_not_reconcile(self):
+        """Without ANY attribution-side timestamp to compare against, there
+        is nothing to prove tasks.db is newer -- must not guess."""
+
+        db_path = _build_tasks_db(
+            [("t1", "completed", None)],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1")
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "failed")
+
