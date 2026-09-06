@@ -323,6 +323,129 @@ def compare_context_policies(records: Iterable[TaskEconomicsRecord]) -> dict[str
     return result
 
 
+# quota-core issue #68: Agent Crew #278/#279 resolves a tester's actual
+# `effective_test_scope` (targeted vs full_suite) per dispatch, since #275
+# changed the default treatment from unconditional full-suite to targeted.
+# Two test tasks with the same role/provider/project can cost radically
+# different amounts depending on which treatment ran -- comparing them as one
+# undifferentiated cohort would attribute a scope change's cost delta to
+# something else entirely (context policy, provider variance, diff size).
+_KNOWN_TEST_SCOPES: frozenset[str] = frozenset({"targeted", "full_suite"})
+
+
+def test_treatment_cohorts(
+    records: Iterable[TaskEconomicsRecord],
+) -> dict[str, list[TaskEconomicsRecord]]:
+    """Partition records by Agent Crew #279's resolved `effective_test_scope`.
+
+    Three cohorts: `targeted`, `full_suite`, and `unknown` -- the last covers
+    both a `None` scope (never resolved: not a test task, or a pre-#279
+    historical row with no producer support yet) and any value this version
+    doesn't recognize, so a future scope name added upstream degrades to
+    "uncounted" rather than silently misclassified as one of the two known
+    treatments. Every record appears in exactly one cohort; callers get an
+    explicit sample-size denominator per cohort via `len(...)`.
+    """
+
+    cohorts: dict[str, list[TaskEconomicsRecord]] = {
+        "targeted": [], "full_suite": [], "unknown": [],
+    }
+    for r in records:
+        scope = r.effective_test_scope
+        cohorts[scope if scope in _KNOWN_TEST_SCOPES else "unknown"].append(r)
+    return cohorts
+
+
+def test_treatment_failure_rates(
+    records: Iterable[TaskEconomicsRecord],
+) -> dict[str, dict[str, float | int | None]]:
+    """:func:`stratified_failure_rates` computed separately per test-scope cohort.
+
+    Targeted and full_suite are never pooled -- a pooled rate would let a
+    scope-mix shift (e.g. more full_suite runs this week) masquerade as a
+    context-policy or provider effect. Each cohort's result carries its own
+    `observed_count`, so a caller can see immediately when one side of a
+    targeted-vs-full_suite comparison has too few samples to mean anything
+    (this function makes no significance claim itself). The `unknown` cohort
+    is included for completeness, not for comparison -- most of it is
+    non-test-task records, which is a different population entirely from
+    "test task with a treatment we couldn't resolve".
+    """
+
+    return {
+        name: stratified_failure_rates(rows)
+        for name, rows in test_treatment_cohorts(records).items()
+    }
+
+
+def lock_wait_summary(records: Iterable[TaskEconomicsRecord]) -> dict[str, float | int | None]:
+    """Scheduler lock-wait accounting for Agent Crew #272/#278's per-worktree
+    test-stage lock, kept strictly separate from provider execution time and
+    token economics.
+
+    ⛔ `lock_wait_seconds` measures time a test task spent deferred behind
+      another test task holding the same worktree's lock -- BEFORE the
+      provider process is dispatched. It is never added into
+      `duration_seconds`, any token total, or `stratified_failure_rates`:
+      doing so would relabel scheduler contention as provider/context cost.
+      A deferred attempt does not even get its own attribution row (the
+      dispatcher writes none until the lock is acquired, per #279), so there
+      is no separate "task record" to double-count here in the first place --
+      this function only aggregates the wait already folded into the one
+      record the eventually-dispatched attempt produced.
+
+    `known_count` excludes records where `lock_wait_seconds is None` (not a
+    test task, or a pre-#279 historical row) from every average -- a `None`
+    is "never measured", not zero contention, and must not pull the mean
+    toward zero. `total_row_count` (unlike `stratified_failure_rates`'s
+    `observed_count`, which only counts outcome-bearing rows) is every row
+    passed in, since a row with no outcome yet can still carry a known
+    lock-wait measurement -- the two functions' denominators are not the
+    same population and are named differently on purpose so they are never
+    confused when read side by side.
+    """
+
+    rows = list(records)
+    known = [r for r in rows if r.lock_wait_seconds is not None]
+    waits = [r.lock_wait_seconds for r in known if r.lock_wait_seconds is not None]
+    # A record with a known lock_wait_seconds always has a known
+    # lock_defer_count too on real producer data (both columns are written
+    # together in one UPDATE) -- but `or 0` would silently treat a
+    # hypothetical missing defer_count as "measured, zero defers" rather
+    # than "not measured", the exact confusion this module exists to avoid
+    # elsewhere. Filtered explicitly instead.
+    known_defer_counts = [r.lock_defer_count for r in known if r.lock_defer_count is not None]
+    # Same reasoning as known_defer_counts above: a row with a known
+    # lock_wait_seconds but a None lock_defer_count has an UNKNOWN deferred
+    # status, not a known "not deferred" (0) one -- `(x or 0) > 0` would
+    # silently fold that unknown into "not deferred", the same
+    # None-as-zero mistake this function exists to avoid elsewhere.
+    #
+    # ⛔`deferred_count` alone cannot express that distinction to a caller --
+    #   without `defer_known_count` as its explicit denominator, "not in
+    #   deferred_count" is indistinguishable from "known not deferred"
+    #   (round-3 review: an earlier version of this comment claimed the
+    #   unknown row "counts toward neither deferred_count nor its implicit
+    #   complement", but with no defer-specific denominator exposed there
+    #   was no complement to speak of -- `known_count - deferred_count`
+    #   silently included the unknown row on the "not deferred" side).
+    #   `defer_known_count` makes the true complement
+    #   (`defer_known_count - deferred_count`, "known not deferred")
+    #   computable, rather than merely making `deferred_count` itself
+    #   correct in isolation.
+    deferred = [r for r in known if r.lock_defer_count is not None and r.lock_defer_count > 0]
+    return {
+        "total_row_count": len(rows),
+        "known_count": len(known),
+        "unknown_count": len(rows) - len(known),
+        "defer_known_count": len(known_defer_counts),
+        "deferred_count": len(deferred),
+        "total_lock_wait_seconds": sum(waits) if known else None,
+        "mean_lock_wait_seconds": _mean(waits) if known else None,
+        "max_lock_defer_count": max(known_defer_counts) if known_defer_counts else None,
+    }
+
+
 __all__ = [
     "fresh_input_per_successful_task",
     "cache_creation_per_successful_task",
@@ -338,4 +461,7 @@ __all__ = [
     "UNKNOWN_FAILURE_CAUSE_WARNING",
     "PARTIAL_UNKNOWN_FAILURE_CAUSE_WARNING",
     "PARTIAL_UNKNOWN_FAILURE_CAUSE_RATE_THRESHOLD",
+    "test_treatment_cohorts",
+    "test_treatment_failure_rates",
+    "lock_wait_summary",
 ]
