@@ -152,7 +152,32 @@ understatement to a ~75% overstatement (worse than the original bug); and
 `attribution.jsonl` reason when a task already has `outcome="failed"` in
 both. `attribution.jsonl`'s own explicit non-`None` outcome (`success`,
 `unknown`, or an already-set `failed`) is never overridden by this
-function on its own.
+function on its own -- **unless** a provable late revision exists (see
+below).
+
+**Late-result reconciliation** (issue #66; Agent Crew #265/PR #267): a
+dispatcher wall can mark a task terminal in `attribution.jsonl` before the
+worker's real result arrives, and Agent Crew durably revises `tasks.db`'s
+`status` when that late result lands (`task_result_late`/
+`status_changed_at`). Without this, an already-terminal `attribution.jsonl`
+outcome kept winning unconditionally, reporting the stale pre-revision
+verdict forever even after Agent Crew itself accepted the correction.
+`enrich_with_task_error_reasons` now reconciles `outcome` to `tasks.db`'s
+current `status` ONLY when `tasks.db.status_changed_at` is both present
+(Agent Crew only sets it non-zero when status actually moves) and strictly
+newer than the attribution row's own `updated_at`/`completed_at` reference
+timestamp; absent a provable ordering signal on both sides, the older
+unconditional "`attribution.jsonl` wins" behavior still applies. Two
+target states: `tasks.db` status `completed`/`failed` reconciles a stale
+`failed`/`success`/`unknown` attribution outcome to match (`unknown` is
+included because `normalize_outcome()` maps an attribution-side
+`"timed_out"` tag straight to `"unknown"`, so it is the same stale-verdict
+shape once Agent Crew's attribution writer starts emitting that tag);
+`tasks.db` status `timed_out` resets a stale `failed`/`success`/`unknown`
+outcome to `None` ("not yet terminal") rather than either terminal
+verdict, so `stratified_failure_rates` (which excludes `outcome is None`
+from every count/rate) never counts an unresolved timeout as a success or
+a failure.
 
 `read_attribution_jsonl_with_task_errors(attribution_path, tasks_db_path)`
 is the one-call convenience wrapper -- `read_attribution_jsonl`, then
