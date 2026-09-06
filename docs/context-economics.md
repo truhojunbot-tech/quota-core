@@ -313,12 +313,18 @@ only appearing as prose in the tester's own summary:
   `observed_count` makes an under-sampled side of a comparison visible
   rather than implied.
 - `analytics.lock_wait_summary(records)` aggregates scheduler-delay
-  telemetry -- `known_count`/`unknown_count`, total/mean
+  telemetry -- `total_row_count`/`known_count`/`unknown_count`, total/mean
   `lock_wait_seconds` (excluding unknown rows from the mean rather than
-  treating them as zero), and `max_lock_defer_count`. This is kept strictly
-  separate from `duration_seconds` and every token total: lock wait is
-  dispatcher scheduling delay *before* the provider process starts, and
-  folding it into provider/context economics would relabel scheduler
+  treating them as zero), `max_lock_defer_count`, and `deferred_count`
+  alongside its own denominator `defer_known_count` (rows with a known
+  `lock_defer_count`) -- a caller wanting "known not deferred" computes
+  `defer_known_count - deferred_count`, never `known_count - deferred_count`,
+  since a row can have a known `lock_wait_seconds` but an unknown
+  `lock_defer_count` and must not be folded into "not deferred" either way.
+  This is kept strictly separate from `duration_seconds` and every token
+  total: lock wait is dispatcher scheduling delay *before* the provider
+  process starts, and folding it into provider/context economics would
+  relabel scheduler
   contention as provider or context cost.
 - `tests/fixtures/agent_crew/test_treatment/` is a production-shaped fixture
   covering a non-test task (all five fields `null`), an uncontended test
