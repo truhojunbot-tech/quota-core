@@ -415,7 +415,14 @@ def lock_wait_summary(records: Iterable[TaskEconomicsRecord]) -> dict[str, float
     # than "not measured", the exact confusion this module exists to avoid
     # elsewhere. Filtered explicitly instead.
     known_defer_counts = [r.lock_defer_count for r in known if r.lock_defer_count is not None]
-    deferred = [r for r in known if (r.lock_defer_count or 0) > 0]
+    # Same reasoning as known_defer_counts above: a row with a known
+    # lock_wait_seconds but a None lock_defer_count has an UNKNOWN deferred
+    # status, not a known "not deferred" (0) one -- `(x or 0) > 0` would
+    # silently fold that unknown into "not deferred", the same
+    # None-as-zero mistake this function exists to avoid elsewhere. Such a
+    # row counts toward neither `deferred_count` nor its implicit
+    # complement.
+    deferred = [r for r in known if r.lock_defer_count is not None and r.lock_defer_count > 0]
     return {
         "total_row_count": len(rows),
         "known_count": len(known),

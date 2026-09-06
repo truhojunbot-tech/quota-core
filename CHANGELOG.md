@@ -29,7 +29,7 @@ test-stage lock's scheduling delay into provider execution time.
   dispatch, and a pre-#279 historical row missing the new keys entirely.
 - Backward compatible: existing `RuntimeAttribution`/`TaskEconomicsRecord`
   consumers are unaffected; the five new fields default to `None`.
-- Full suite: 228/228 passing.
+- Full suite: 231/231 passing.
 
 ## 0.1.17 - 2026-09-06
 
