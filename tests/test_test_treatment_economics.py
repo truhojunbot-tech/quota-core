@@ -313,20 +313,27 @@ class LockWaitSummaryTests(unittest.TestCase):
         self.assertEqual(summary["known_count"], 1)
         self.assertIsNone(summary["max_lock_defer_count"])
 
-    def test_a_known_wait_with_no_known_defer_count_is_not_counted_as_not_deferred(self):
-        # Round-2 review (codex): the same known-wait/unknown-defer-count
-        # row must not be silently folded into "not deferred" either --
-        # `(None or 0) > 0` is False, which would make an unknown deferred
-        # status indistinguishable from a genuinely observed zero.
-        records = [_record(task_id="a", lock_wait_seconds=5.0, lock_defer_count=None)]
+    def test_defer_known_count_exposes_the_true_complement_of_deferred_count(self):
+        # Round-3 review (codex): `deferred_count` alone cannot distinguish
+        # "known not deferred" from "unknown deferred status" -- both look
+        # like "not in deferred_count" to a caller with no denominator of
+        # its own. `defer_known_count` (new this round) makes the real
+        # complement (defer_known_count - deferred_count) computable: one
+        # row has an unknown defer count (excluded from defer_known_count
+        # entirely), one has a known real deferral, one has a known zero.
+        records = [
+            _record(task_id="a", lock_wait_seconds=5.0, lock_defer_count=None),   # unknown
+            _record(task_id="b", lock_wait_seconds=10.0, lock_defer_count=2),      # known, deferred
+            _record(task_id="c", lock_wait_seconds=0.0, lock_defer_count=0),       # known, not deferred
+        ]
         summary = lock_wait_summary(records)
-        self.assertEqual(summary["deferred_count"], 0)
-        # And it must not be miscounted as deferred either, once a real
-        # deferral exists elsewhere in the same input -- deferred_count
-        # only reflects rows with a POSITIVELY known defer_count > 0.
-        records_with_a_real_deferral = records + [_record(task_id="b", lock_wait_seconds=10.0, lock_defer_count=2)]
-        summary2 = lock_wait_summary(records_with_a_real_deferral)
-        self.assertEqual(summary2["deferred_count"], 1)
+        self.assertEqual(summary["known_count"], 3)
+        self.assertEqual(summary["defer_known_count"], 2)  # excludes the unknown row
+        self.assertEqual(summary["deferred_count"], 1)
+        # True complement: 2 - 1 = 1 known-not-deferred row (task "c") --
+        # NOT known_count - deferred_count (3 - 1 = 2), which would
+        # incorrectly fold task "a"'s unknown status into "not deferred".
+        self.assertEqual(summary["defer_known_count"] - summary["deferred_count"], 1)
 
 
 if __name__ == "__main__":

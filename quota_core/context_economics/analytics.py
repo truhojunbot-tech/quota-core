@@ -419,14 +419,26 @@ def lock_wait_summary(records: Iterable[TaskEconomicsRecord]) -> dict[str, float
     # lock_wait_seconds but a None lock_defer_count has an UNKNOWN deferred
     # status, not a known "not deferred" (0) one -- `(x or 0) > 0` would
     # silently fold that unknown into "not deferred", the same
-    # None-as-zero mistake this function exists to avoid elsewhere. Such a
-    # row counts toward neither `deferred_count` nor its implicit
-    # complement.
+    # None-as-zero mistake this function exists to avoid elsewhere.
+    #
+    # ⛔`deferred_count` alone cannot express that distinction to a caller --
+    #   without `defer_known_count` as its explicit denominator, "not in
+    #   deferred_count" is indistinguishable from "known not deferred"
+    #   (round-3 review: an earlier version of this comment claimed the
+    #   unknown row "counts toward neither deferred_count nor its implicit
+    #   complement", but with no defer-specific denominator exposed there
+    #   was no complement to speak of -- `known_count - deferred_count`
+    #   silently included the unknown row on the "not deferred" side).
+    #   `defer_known_count` makes the true complement
+    #   (`defer_known_count - deferred_count`, "known not deferred")
+    #   computable, rather than merely making `deferred_count` itself
+    #   correct in isolation.
     deferred = [r for r in known if r.lock_defer_count is not None and r.lock_defer_count > 0]
     return {
         "total_row_count": len(rows),
         "known_count": len(known),
         "unknown_count": len(rows) - len(known),
+        "defer_known_count": len(known_defer_counts),
         "deferred_count": len(deferred),
         "total_lock_wait_seconds": sum(waits) if known else None,
         "mean_lock_wait_seconds": _mean(waits) if known else None,
