@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.17 - 2026-09-06
+
+Fixes `enrich_with_task_error_reasons()` letting a stale `attribution.jsonl`
+outcome win forever even after Agent Crew durably revised `tasks.db`'s
+status via a late-arriving result (issue #66; Agent Crew #265/PR #267's
+`task_result_late`/`status_changed_at`/`timed_out` contract).
+
+- Reconciles a stale `failed`/`success`/`unknown` outcome to `tasks.db`'s
+  newer `completed`/`failed` status, gated on `tasks.db.status_changed_at`
+  being both present and strictly newer than the attribution row's own
+  `updated_at`/`completed_at` -- never guesses a direction without a
+  provable ordering signal on both sides.
+- A `tasks.db` status of `timed_out` (Agent Crew's non-failure terminal
+  state for a dispatcher-wall timeout) resets a stale outcome to `None`
+  ("not yet terminal") rather than either verdict, so
+  `stratified_failure_rates` genuinely excludes an unresolved timeout from
+  every failure-rate count/rate instead of merely relabeling it.
+
 ## 0.1.16 - 2026-08-23
 
 Adds failure cause/classification to `quota_core.context_economics` so raw
