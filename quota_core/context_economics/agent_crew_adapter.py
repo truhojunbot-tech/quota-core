@@ -136,6 +136,30 @@ def context_pack_attributions_from_events(
     return attributions
 
 
+def test_stage_deferrals_for_task(
+    events: Iterable[ContextLifecycleEvent], task_id: str,
+) -> list[ContextLifecycleEvent]:
+    """Filter a lifecycle-event stream down to one task's `test_stage_deferred`
+    history (Agent Crew #272/#278, quota-core #68).
+
+    A lock-deferred attempt writes no attribution row at all -- the dispatcher
+    requeues the SAME `task_id` and tries again later, possibly across a
+    dispatcher restart, so these events (not a second attribution row) are
+    the only durable record that a deferral happened before the eventual
+    dispatch. The final attribution row already carries the *summed*
+    `lock_wait_seconds`/`lock_defer_count` (see `RuntimeAttribution`), so this
+    is for reconciling/auditing that summary against its individual events,
+    not for recomputing it -- summing this list's `defer_count`/
+    `lock_wait_seconds` `extra` values would double count relative to the
+    attribution row's own totals.
+    """
+
+    return [
+        e for e in events
+        if e.event_type == "test_stage_deferred" and e.task_id == task_id
+    ]
+
+
 class _TaskErrorInfo(NamedTuple):
     status: str | None
     reason: str

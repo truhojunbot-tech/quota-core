@@ -207,6 +207,11 @@ def correlate_task_economics(
                 failure_category=a.failure_category,
                 retryable=a.retryable,
                 terminal_source=a.terminal_source,
+                effective_test_scope=a.effective_test_scope,
+                test_scope_source=a.test_scope_source,
+                test_scope_hash=a.test_scope_hash,
+                lock_wait_seconds=a.lock_wait_seconds,
+                lock_defer_count=a.lock_defer_count,
                 attribution_confidence=confidence,  # type: ignore[arg-type]
                 attribution_notes=tuple(notes),
             )

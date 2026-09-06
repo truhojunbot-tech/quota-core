@@ -273,6 +273,61 @@ review -- the original warning was all-or-nothing, so a group that was e.g.
 no warning at all). `compact_analysis.before_after_compact`'s before/after
 windows expose the same breakdown for the same reason.
 
+## Tester treatment / lock-wait (issue #68)
+
+Agent Crew #275 changed the default tester treatment from unconditional
+full-suite to targeted tests; #278/#279 made that treatment (and the
+scheduler delay a per-worktree test-stage lock can impose) machine-readable
+on the same `task_attribution` row `attribution.jsonl` mirrors, instead of
+only appearing as prose in the tester's own summary:
+
+- `RuntimeAttribution`/`TaskEconomicsRecord` gain `effective_test_scope`
+  (`"targeted"` | `"full_suite"`), `test_scope_source` (`builtin`/`env`/
+  `operator`/`repo`), `test_scope_hash`, `lock_wait_seconds`, and
+  `lock_defer_count`. `None` means "no scope was ever resolved for this row"
+  (not a test task, or a pre-#279 historical row -- the key may be `null` or
+  absent entirely depending on when the line was written) -- never
+  fabricated as `"targeted"` or a zero wait. `lock_wait_seconds=0.0` is a
+  real measured value (dispatched with no contention) and stays
+  distinguishable from `None` (never measured).
+- `test_scope_resolved` and `test_stage_deferred` are new
+  `LifecycleEventType`s, no longer silently dropped by
+  `lifecycle_event_from_dict`. A lock-deferred attempt writes **no**
+  attribution row and claims no context generation (per #279, taken to avoid
+  #204's `started_at` pinning turning scheduler wait into apparent provider
+  runtime) -- the same `task_id` is simply requeued and retried, so a
+  `test_stage_deferred` event's `task_id` always matches the eventual
+  dispatch's attribution row rather than producing a second, separate task
+  record. `agent_crew_adapter.test_stage_deferrals_for_task(events, task_id)`
+  joins a task's deferral history for reconciliation/audit -- the
+  attribution row's own `lock_wait_seconds`/`lock_defer_count` are already
+  the authoritative summed totals, so re-summing the individual events would
+  double count.
+- `analytics.test_treatment_cohorts(records)` partitions records into
+  `targeted`/`full_suite`/`unknown` (the last covers both `None` and any
+  future scope name this version doesn't recognize -- never silently
+  misclassified as one of the two known treatments).
+  `test_treatment_failure_rates(records)` runs
+  `stratified_failure_rates` separately per cohort so targeted and
+  full_suite are never pooled into one rate; each cohort's own
+  `observed_count` makes an under-sampled side of a comparison visible
+  rather than implied.
+- `analytics.lock_wait_summary(records)` aggregates scheduler-delay
+  telemetry -- `known_count`/`unknown_count`, total/mean
+  `lock_wait_seconds` (excluding unknown rows from the mean rather than
+  treating them as zero), and `max_lock_defer_count`. This is kept strictly
+  separate from `duration_seconds` and every token total: lock wait is
+  dispatcher scheduling delay *before* the provider process starts, and
+  folding it into provider/context economics would relabel scheduler
+  contention as provider or context cost.
+- `tests/fixtures/agent_crew/test_treatment/` is a production-shaped fixture
+  covering a non-test task (all five fields `null`), an uncontended test
+  dispatch (`lock_wait_seconds=0.0`), a deferred-then-dispatched test
+  (`lock_wait_seconds=275.0`, `lock_defer_count=1`, plus the
+  `test_stage_deferred` event that preceded it), and a pre-#279 historical
+  row where the five keys are absent from the JSON entirely (not `null`) --
+  both must parse identically to `None`.
+
 ## Context Pack economics (`context_pack_analytics.py`, quota-core#62)
 
 Consumes Agent Crew #239's real Context Pack producer contract: a
