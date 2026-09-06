@@ -875,16 +875,21 @@ class LateResultReconciliationTests(unittest.TestCase):
         enriched = enrich_with_task_error_reasons(attributions, db_path)
         self.assertEqual(enriched[0].outcome, "failed")
 
-    def test_stale_failed_revised_to_timed_out_becomes_unknown_not_left_as_failed(self):
+    def test_stale_failed_revised_to_timed_out_resets_to_not_yet_terminal(self):
         """codex round-1 review finding: Agent Crew #265's new non-failure
         terminal state for a dispatcher-wall timeout must never be treated
         as evidence of either a success or a failure -- but leaving a stale
         "failed" attribution completely unchanged silently keeps counting an
         unresolved timeout as a failure, which is exactly what issue #66
-        item 4 forbids. A newer status_changed_at revision to timed_out
-        must revise the outcome to "unknown" (Agent Crew's own
-        terminal-but-inconclusive state), clearing the stale failure
-        fields, not leave the old verdict standing."""
+        item 4 forbids.
+
+        claude round-2 review finding: an earlier version of this fix
+        revised to outcome="unknown" instead of None, which does NOT
+        actually exclude the task from failure-rate counting --
+        analytics.py's stratified_failure_rates treats "unknown" exactly
+        like "failed" (only outcome is None or "success" are excluded).
+        Revising to None ("not yet terminal") is what genuinely achieves
+        "not counted as success or failure while unresolved"."""
 
         db_path = _build_tasks_db(
             [("t1", "timed_out", None)],
@@ -898,15 +903,20 @@ class LateResultReconciliationTests(unittest.TestCase):
         ]
         enriched = enrich_with_task_error_reasons(attributions, db_path)
         record = enriched[0]
-        self.assertEqual(record.outcome, "unknown")
+        self.assertIsNone(record.outcome)
         self.assertEqual(record.raw_outcome, "timed_out")
         self.assertIsNone(record.failure_reason)
         self.assertIsNone(record.failure_category)
         self.assertEqual(record.extra.get("previous_outcome"), "failed")
+        # The actual point of the fix: stratified_failure_rates must not
+        # count this task at all while it is genuinely unresolved.
+        rates = stratified_failure_rates(enriched)
+        self.assertEqual(rates["observed_count"], 0)
+        self.assertEqual(rates["raw_failure_count"], 0)
 
-    def test_stale_success_revised_to_timed_out_also_becomes_unknown(self):
+    def test_stale_success_revised_to_timed_out_also_resets_to_not_yet_terminal(self):
         """Symmetric direction, for completeness -- a success verdict later
-        revised to timed_out is equally inconclusive, not still a success."""
+        revised to timed_out is equally unresolved, not still a success."""
 
         db_path = _build_tasks_db(
             [("t1", "timed_out", None)],
@@ -916,7 +926,23 @@ class LateResultReconciliationTests(unittest.TestCase):
             RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="success", raw_outcome="completed", updated_at=1000)
         ]
         enriched = enrich_with_task_error_reasons(attributions, db_path)
-        self.assertEqual(enriched[0].outcome, "unknown")
+        self.assertIsNone(enriched[0].outcome)
+
+    def test_stale_unknown_revised_to_timed_out_also_resets_to_not_yet_terminal(self):
+        """A pre-existing "unknown" outcome (already counted as a raw
+        failure by analytics.py) later confirmed as timed_out must also be
+        excluded, not left double-counted as a failure under a different
+        label."""
+
+        db_path = _build_tasks_db(
+            [("t1", "timed_out", None)],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="unknown", raw_outcome="timed_out:stale", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertIsNone(enriched[0].outcome)
 
     def test_timed_out_without_a_newer_revision_signal_leaves_outcome_unchanged(self):
         """Without a provable newer status_changed_at, a tasks.db status of
@@ -929,6 +955,44 @@ class LateResultReconciliationTests(unittest.TestCase):
         ]
         enriched = enrich_with_task_error_reasons(attributions, db_path)
         self.assertEqual(enriched[0].outcome, "failed")
+
+    def test_stale_unknown_revised_to_completed_is_also_reconciled(self):
+        """claude round-2 review finding: normalize_outcome() maps an
+        attribution-side "timed_out" tag straight to "unknown" (it matches
+        neither the success nor failure prefix sets), so once Agent Crew's
+        own attribution writer starts emitting "timed_out" post-#267, an
+        "unknown"-outcome attribution later durably completed in tasks.db
+        is the exact same stale-verdict shape as the "failed" case --
+        excluding "unknown" here would fix only the historical shape and
+        silently miss the forward-looking one."""
+
+        db_path = _build_tasks_db(
+            [("t1", "completed", None)],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="unknown", raw_outcome="timed_out", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        record = enriched[0]
+        self.assertEqual(record.outcome, "success")
+        self.assertEqual(record.extra.get("previous_outcome"), "unknown")
+
+    def test_stale_unknown_revised_to_failed_is_also_reconciled(self):
+        """Symmetric direction of the case above."""
+
+        db_path = _build_tasks_db(
+            [("t1", "failed", {"reason": "agy_quota_exhausted"})],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="unknown", raw_outcome="timed_out", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        record = enriched[0]
+        self.assertEqual(record.outcome, "failed")
+        self.assertEqual(record.failure_reason, "agy_quota_exhausted")
+        self.assertEqual(record.extra.get("previous_outcome"), "unknown")
 
     def test_falls_back_to_completed_at_when_updated_at_is_absent(self):
         db_path = _build_tasks_db(

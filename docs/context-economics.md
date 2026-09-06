@@ -163,15 +163,21 @@ worker's real result arrives, and Agent Crew durably revises `tasks.db`'s
 outcome kept winning unconditionally, reporting the stale pre-revision
 verdict forever even after Agent Crew itself accepted the correction.
 `enrich_with_task_error_reasons` now reconciles `outcome` to `tasks.db`'s
-current `status` (in either direction -- `failed`->`completed` or
-`completed`->`failed`) ONLY when `tasks.db.status_changed_at` is both
-present (Agent Crew only sets it non-zero when status actually moves) and
-strictly newer than the attribution row's own `updated_at`/`completed_at`
-reference timestamp; absent a provable ordering signal on both sides, the
-older unconditional "`attribution.jsonl` wins" behavior still applies. A
-`tasks.db` status of `timed_out` (Agent Crew #265's non-failure terminal
-state for a dispatcher-wall timeout) never participates in this
-reconciliation -- an unresolved timeout is not a verdict.
+current `status` ONLY when `tasks.db.status_changed_at` is both present
+(Agent Crew only sets it non-zero when status actually moves) and strictly
+newer than the attribution row's own `updated_at`/`completed_at` reference
+timestamp; absent a provable ordering signal on both sides, the older
+unconditional "`attribution.jsonl` wins" behavior still applies. Two
+target states: `tasks.db` status `completed`/`failed` reconciles a stale
+`failed`/`success`/`unknown` attribution outcome to match (`unknown` is
+included because `normalize_outcome()` maps an attribution-side
+`"timed_out"` tag straight to `"unknown"`, so it is the same stale-verdict
+shape once Agent Crew's attribution writer starts emitting that tag);
+`tasks.db` status `timed_out` resets a stale `failed`/`success`/`unknown`
+outcome to `None` ("not yet terminal") rather than either terminal
+verdict, so `stratified_failure_rates` (which excludes `outcome is None`
+from every count/rate) never counts an unresolved timeout as a success or
+a failure.
 
 `read_attribution_jsonl_with_task_errors(attribution_path, tasks_db_path)`
 is the one-call convenience wrapper -- `read_attribution_jsonl`, then

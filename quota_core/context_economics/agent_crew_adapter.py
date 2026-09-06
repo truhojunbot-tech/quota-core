@@ -318,12 +318,14 @@ def enrich_with_task_error_reasons(
     Four distinct real-data gaps this closes:
 
     0. **The late-revision case (quota-core issue #66; Agent Crew #265/PR
-       #267):** a dispatcher wall can mark a task terminal (``failed``) and
-       ``attribution.jsonl`` records that snapshot, but the worker's actual
-       result arrives later and Agent Crew durably revises ``tasks.db``'s
-       ``status`` to ``"completed"`` (or, in principle, the reverse). Before
-       this case existed, an already-terminal ``attribution.jsonl`` outcome
-       always won unconditionally (see the "never overridden" note below),
+       #267):** a dispatcher wall can mark a task terminal (``failed``,
+       ``success``, or the ``unknown`` a ``timed_out``-tagged attribution
+       row normalizes to) and ``attribution.jsonl`` records that snapshot,
+       but the worker's actual result arrives later and Agent Crew durably
+       revises ``tasks.db``'s ``status`` to ``"completed"``/``"failed"``/
+       ``"timed_out"``. Before this case existed, an already-terminal
+       ``attribution.jsonl`` outcome always won unconditionally (see the
+       "never overridden" note below),
        which kept reporting the *stale* pre-revision verdict forever even
        after Agent Crew itself accepted and recorded the correction. This
        reconciles ``outcome`` to match ``tasks.db`` ONLY when
@@ -333,11 +335,15 @@ def enrich_with_task_error_reasons(
        ``updated_at``/``completed_at`` reference timestamp; without a
        provable ordering signal on both sides, the older unconditional
        "attribution.jsonl wins" behavior still applies rather than guessing
-       which side is current. Deliberately status-literal like cases 1-2
-       below: a ``tasks.db`` status of ``"timed_out"`` (Agent Crew #265's
-       new non-failure terminal state for a dispatcher-wall timeout) never
-       matches this reconciliation, so an unresolved timeout is never
-       counted as a success or a failure by this function.
+       which side is current. A ``tasks.db`` status of ``"timed_out"``
+       (Agent Crew #265's new non-failure terminal state for a
+       dispatcher-wall timeout) is its OWN reconciliation target, not a
+       ``"completed"``/``"failed"`` one: a stale ``failed``/``success``/
+       ``unknown`` outcome revised to a newer ``timed_out`` is reset to
+       ``None`` ("not yet terminal") rather than either terminal verdict,
+       so an unresolved timeout is never counted as a success or a failure
+       by :func:`quota_core.context_economics.analytics.stratified_failure_rates`
+       (which excludes ``outcome is None`` from every count/rate).
     1. **The dominant failure case (round-1 review; 78% of every real
        observed ``tasks.db`` ``error_info`` row locally, all
        ``agy_quota_exhausted``):** the task's own ``tasks.db`` row has
@@ -400,11 +406,20 @@ def enrich_with_task_error_reasons(
         reference_ts = a.updated_at if a.updated_at is not None else a.completed_at
         revision_is_newer = changed_at is not None and reference_ts is not None and changed_at > reference_ts
 
-        if a.outcome == "failed" and status == "completed" and revision_is_newer:
-            # Case 0: tasks.db durably revised a stale failed snapshot to a
-            # later valid completion (Agent Crew #265/PR #267's
-            # task_result_late path) -- reconcile forward rather than
-            # keeping the pre-revision verdict forever.
+        if a.outcome in ("failed", "unknown") and status == "completed" and revision_is_newer:
+            # Case 0: tasks.db durably revised a stale failed/unknown
+            # snapshot to a later valid completion (Agent Crew #265/PR
+            # #267's task_result_late path) -- reconcile forward rather
+            # than keeping the pre-revision verdict forever. "unknown" is
+            # included alongside "failed" (claude round-2 review finding):
+            # normalize_outcome() maps an attribution.jsonl outcome of
+            # "timed_out" straight to "unknown" (it matches neither the
+            # success nor failure prefix sets), so once Agent Crew's own
+            # attribution writer starts emitting "timed_out" post-#267,
+            # this is the exact same stale-verdict shape wearing a
+            # different normalized label -- excluding it here would fix
+            # only the historical shape and silently miss the
+            # forward-looking one.
             enriched.append(
                 replace(
                     a,
@@ -416,17 +431,18 @@ def enrich_with_task_error_reasons(
                     extra={
                         **a.extra,
                         "outcome_source": "tasks_db_late_result",
-                        "previous_outcome": "failed",
+                        "previous_outcome": a.outcome,
                         "status_changed_at": changed_at,
                     },
                 )
             )
             continue
 
-        if a.outcome == "success" and status == "failed" and revision_is_newer:
-            # Symmetric counterpart to case 0: a task recorded as
-            # successful was later durably revised to failed (a late
-            # failure discovered after an initially-accepted result).
+        if a.outcome in ("success", "unknown") and status == "failed" and revision_is_newer:
+            # Symmetric counterpart to case 0 (also extended to "unknown"
+            # for the same forward-compatibility reason above): a task
+            # recorded as successful, or left unknown, was later durably
+            # revised to failed.
             reason = entry.reason if entry is not None else None
             raw_tag = f"failed:{reason}" if reason else "failed"
             category = classify_failure_category("failed", raw_tag)
@@ -441,29 +457,43 @@ def enrich_with_task_error_reasons(
                     extra={
                         **a.extra,
                         "outcome_source": "tasks_db_late_result",
-                        "previous_outcome": "success",
+                        "previous_outcome": a.outcome,
                         "status_changed_at": changed_at,
                     },
                 )
             )
             continue
 
-        if a.outcome in ("failed", "success") and status == "timed_out" and revision_is_newer:
+        if a.outcome in ("failed", "success", "unknown") and status == "timed_out" and revision_is_newer:
             # codex round-1 review finding: a stale explicit failed (or
             # success) verdict must not simply be left alone when tasks.db
             # is later durably revised to timed_out -- issue #66 item 4
             # requires an unresolved timeout never be counted as EITHER a
             # success or a failure, and leaving the old "failed" outcome in
             # place does exactly that (silently keeps counting it as a
-            # failure). Revise to "unknown" -- Agent Crew's own terminal-but-
-            # inconclusive state -- rather than either terminal verdict, and
-            # clear any failure-specific fields inherited from the stale
-            # "failed" case so they don't misleadingly survive onto an
-            # outcome that is no longer "failed".
+            # failure).
+            #
+            # claude round-2 review finding: an earlier version of this
+            # branch revised to outcome="unknown" instead, which does NOT
+            # achieve issue #66 item 4's actual goal -- analytics.py's own
+            # `_not_succeeded` (`outcome is not None and outcome != "success"`)
+            # treats "unknown" exactly like "failed" for every failure-rate
+            # computation in this codebase, so relabeling a stale failure as
+            # "unknown" still counts it as a raw failure; it also created a
+            # state (outcome="unknown") that cases 0/1 above cannot
+            # subsequently pick back up if tasks.db later revises AGAIN to a
+            # real completed/failed. Revising to `None` ("not yet terminal")
+            # instead correctly excludes the task from every failure-rate
+            # denominator/numerator (`stratified_failure_rates` filters
+            # `outcome is not None` before counting anything), AND makes the
+            # record naturally re-eligible for the pre-existing case
+            # 1/2 backfills below if a further tasks.db revision lands.
+            # `raw_outcome` still records "timed_out" for provenance even
+            # though `outcome` itself is cleared.
             enriched.append(
                 replace(
                     a,
-                    outcome="unknown",
+                    outcome=None,
                     raw_outcome="timed_out",
                     failure_reason=None,
                     failure_category=None,
