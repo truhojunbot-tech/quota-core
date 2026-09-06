@@ -448,6 +448,36 @@ def enrich_with_task_error_reasons(
             )
             continue
 
+        if a.outcome in ("failed", "success") and status == "timed_out" and revision_is_newer:
+            # codex round-1 review finding: a stale explicit failed (or
+            # success) verdict must not simply be left alone when tasks.db
+            # is later durably revised to timed_out -- issue #66 item 4
+            # requires an unresolved timeout never be counted as EITHER a
+            # success or a failure, and leaving the old "failed" outcome in
+            # place does exactly that (silently keeps counting it as a
+            # failure). Revise to "unknown" -- Agent Crew's own terminal-but-
+            # inconclusive state -- rather than either terminal verdict, and
+            # clear any failure-specific fields inherited from the stale
+            # "failed" case so they don't misleadingly survive onto an
+            # outcome that is no longer "failed".
+            enriched.append(
+                replace(
+                    a,
+                    outcome="unknown",
+                    raw_outcome="timed_out",
+                    failure_reason=None,
+                    failure_category=None,
+                    retryable=None,
+                    extra={
+                        **a.extra,
+                        "outcome_source": "tasks_db_late_result",
+                        "previous_outcome": a.outcome,
+                        "status_changed_at": changed_at,
+                    },
+                )
+            )
+            continue
+
         if a.outcome == "failed":
             if entry is None:
                 enriched.append(a)

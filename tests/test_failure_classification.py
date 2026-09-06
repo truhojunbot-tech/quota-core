@@ -875,16 +875,55 @@ class LateResultReconciliationTests(unittest.TestCase):
         enriched = enrich_with_task_error_reasons(attributions, db_path)
         self.assertEqual(enriched[0].outcome, "failed")
 
-    def test_timed_out_status_is_never_reconciled_as_success_or_failure(self):
-        """Agent Crew #265's new non-failure terminal state for a
-        dispatcher-wall timeout must never be treated as evidence of either
-        outcome by this reconciliation, even with a fresh status_changed_at
-        -- an unresolved timeout is not a verdict."""
+    def test_stale_failed_revised_to_timed_out_becomes_unknown_not_left_as_failed(self):
+        """codex round-1 review finding: Agent Crew #265's new non-failure
+        terminal state for a dispatcher-wall timeout must never be treated
+        as evidence of either a success or a failure -- but leaving a stale
+        "failed" attribution completely unchanged silently keeps counting an
+        unresolved timeout as a failure, which is exactly what issue #66
+        item 4 forbids. A newer status_changed_at revision to timed_out
+        must revise the outcome to "unknown" (Agent Crew's own
+        terminal-but-inconclusive state), clearing the stale failure
+        fields, not leave the old verdict standing."""
 
         db_path = _build_tasks_db(
             [("t1", "timed_out", None)],
             status_changed_at={"t1": 2000.0},
         )
+        attributions = [
+            RuntimeAttribution(
+                runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1",
+                failure_reason="exit_1", failure_category="unknown", updated_at=1000,
+            )
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        record = enriched[0]
+        self.assertEqual(record.outcome, "unknown")
+        self.assertEqual(record.raw_outcome, "timed_out")
+        self.assertIsNone(record.failure_reason)
+        self.assertIsNone(record.failure_category)
+        self.assertEqual(record.extra.get("previous_outcome"), "failed")
+
+    def test_stale_success_revised_to_timed_out_also_becomes_unknown(self):
+        """Symmetric direction, for completeness -- a success verdict later
+        revised to timed_out is equally inconclusive, not still a success."""
+
+        db_path = _build_tasks_db(
+            [("t1", "timed_out", None)],
+            status_changed_at={"t1": 2000.0},
+        )
+        attributions = [
+            RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="success", raw_outcome="completed", updated_at=1000)
+        ]
+        enriched = enrich_with_task_error_reasons(attributions, db_path)
+        self.assertEqual(enriched[0].outcome, "unknown")
+
+    def test_timed_out_without_a_newer_revision_signal_leaves_outcome_unchanged(self):
+        """Without a provable newer status_changed_at, a tasks.db status of
+        timed_out must not retroactively change anything -- same
+        conservative "no signal, no guess" rule as the other directions."""
+
+        db_path = _build_tasks_db([("t1", "timed_out", None)])  # no status_changed_at kwarg
         attributions = [
             RuntimeAttribution(runtime="agent_crew", task_id="t1", outcome="failed", raw_outcome="failed:exit_1", updated_at=1000)
         ]
