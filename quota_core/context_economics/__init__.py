@@ -21,7 +21,10 @@ from .analytics import (
     context_age_vs_token_usage,
     failed_retry_token_waste,
     fresh_input_per_successful_task,
+    lock_wait_summary,
     stratified_failure_rates,
+    test_treatment_cohorts,
+    test_treatment_failure_rates,
     tokens_per_outcome,
     tokens_per_successful_task,
     unknown_cause_warning,
@@ -36,6 +39,7 @@ from .correlate import ProviderUsageRecord, correlate_task_economics
 from .agent_crew_adapter import (
     context_pack_attributions_from_events,
     reconcile_attribution_by_task,
+    test_stage_deferrals_for_task,
 )
 from .schema import (
     SCHEMA_VERSION,
@@ -84,6 +88,7 @@ __all__ = [
     "infer_retryable",
     "parse_flexible_timestamp",
     "reconcile_attribution_by_task",
+    "test_stage_deferrals_for_task",
     "TokenComponents",
     "RuntimeAttribution",
     "ContextLifecycleEvent",
@@ -125,4 +130,7 @@ __all__ = [
     "PARTIAL_UNKNOWN_FAILURE_CAUSE_WARNING",
     "PARTIAL_UNKNOWN_FAILURE_CAUSE_RATE_THRESHOLD",
     "before_after_compact",
+    "test_treatment_cohorts",
+    "test_treatment_failure_rates",
+    "lock_wait_summary",
 ]

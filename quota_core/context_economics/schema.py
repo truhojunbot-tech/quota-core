@@ -31,6 +31,8 @@ LifecycleEventType = Literal[
     "task_completed",
     "task_failed",
     "context_pack_built",
+    "test_scope_resolved",
+    "test_stage_deferred",
 ]
 
 _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
@@ -44,6 +46,8 @@ _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
     "task_completed",
     "task_failed",
     "context_pack_built",
+    "test_scope_resolved",
+    "test_stage_deferred",
 )
 
 _CONTEXT_POLICIES: tuple[str, ...] = ("resume", "compact", "fresh", "unknown")
@@ -453,6 +457,18 @@ class RuntimeAttribution:
     failure_category: FailureCategory | None = None
     retryable: bool | None = None
     terminal_source: str | None = None
+    # Agent Crew #278/#279 tester-treatment/lock-wait contract (quota-core
+    # #68): NULL in the producer's `task_attribution` table means "no scope
+    # was ever resolved for this row" (not a test task, or a pre-#279
+    # historical row) -- kept as `None` here, never defaulted to a fake
+    # "targeted"/"unknown" string or a zero wait. `lock_wait_seconds=0.0` is
+    # a real measured value (dispatched with no contention) and must stay
+    # distinguishable from `None` (never measured).
+    effective_test_scope: str | None = None
+    test_scope_source: str | None = None
+    test_scope_hash: str | None = None
+    lock_wait_seconds: float | None = None
+    lock_defer_count: int | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -605,6 +621,13 @@ class TaskEconomicsRecord:
     failure_category: FailureCategory | None = None
     retryable: bool | None = None
     terminal_source: str | None = None
+    # Agent Crew #278/#279 (quota-core #68) -- see RuntimeAttribution for the
+    # None-means-unknown / 0.0-is-measured semantics this carries forward.
+    effective_test_scope: str | None = None
+    test_scope_source: str | None = None
+    test_scope_hash: str | None = None
+    lock_wait_seconds: float | None = None
+    lock_defer_count: int | None = None
     attribution_confidence: AttributionConfidence = "low"
     attribution_notes: tuple[str, ...] = ()
 
@@ -681,6 +704,11 @@ def attribution_to_dict(attribution: RuntimeAttribution) -> dict[str, Any]:
         "failure_category": attribution.failure_category,
         "retryable": attribution.retryable,
         "terminal_source": attribution.terminal_source,
+        "effective_test_scope": attribution.effective_test_scope,
+        "test_scope_source": attribution.test_scope_source,
+        "test_scope_hash": attribution.test_scope_hash,
+        "lock_wait_seconds": attribution.lock_wait_seconds,
+        "lock_defer_count": attribution.lock_defer_count,
         "extra": dict(attribution.extra),
     }
 
@@ -731,7 +759,9 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         "provider", "model", "context_id", "provider_session_id", "context_policy",
         "context_generation", "session_task_index", "previous_task_id", "retry_of",
         "fallback_of", "started_at", "completed_at", "updated_at", "outcome", "raw_outcome",
-        "failure_reason", "failure_category", "retryable", "terminal_source", "extra",
+        "failure_reason", "failure_category", "retryable", "terminal_source",
+        "effective_test_scope", "test_scope_source", "test_scope_hash",
+        "lock_wait_seconds", "lock_defer_count", "extra",
     }
     extra = dict(data.get("extra") or {}) if isinstance(data.get("extra"), dict) else {}
     for key, value in data.items():
@@ -756,6 +786,15 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         if value is None or value == "":
             return None
         return str(value)
+
+    def _opt_float(key: str) -> float | None:
+        value = data.get(key)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     agent = _opt_str("agent")
     provider = _opt_str("provider")
@@ -862,6 +901,11 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         failure_category=failure_category,  # type: ignore[arg-type]
         retryable=retryable,
         terminal_source=_opt_str("terminal_source"),
+        effective_test_scope=_opt_str("effective_test_scope"),
+        test_scope_source=_opt_str("test_scope_source"),
+        test_scope_hash=_opt_str("test_scope_hash"),
+        lock_wait_seconds=_opt_float("lock_wait_seconds"),
+        lock_defer_count=_opt_int("lock_defer_count"),
         extra=extra,
     )
 
@@ -955,6 +999,11 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "failure_category": record.failure_category,
         "retryable": record.retryable,
         "terminal_source": record.terminal_source,
+        "effective_test_scope": record.effective_test_scope,
+        "test_scope_source": record.test_scope_source,
+        "test_scope_hash": record.test_scope_hash,
+        "lock_wait_seconds": record.lock_wait_seconds,
+        "lock_defer_count": record.lock_defer_count,
         "attribution_confidence": record.attribution_confidence,
         "attribution_notes": list(record.attribution_notes),
     }
@@ -988,6 +1037,15 @@ def validate_attribution_dict(data: dict[str, Any]) -> tuple[str, ...]:
         value = data.get(key)
         if value is not None and parse_flexible_timestamp(value) is None:
             errors.append(f"{key} must be a unix epoch number, an ISO-8601 string, or null")
+    # Agent Crew #278/#279 (quota-core #68): lock_wait_seconds=0.0 is a real
+    # measured value and must remain a valid, non-error input -- only a
+    # non-numeric/non-null value is flagged.
+    lock_wait = data.get("lock_wait_seconds")
+    if lock_wait is not None and not isinstance(lock_wait, (int, float)):
+        errors.append("lock_wait_seconds must be a number or null")
+    lock_defers = data.get("lock_defer_count")
+    if lock_defers is not None and not isinstance(lock_defers, int):
+        errors.append("lock_defer_count must be an integer or null")
     return tuple(errors)
 
 

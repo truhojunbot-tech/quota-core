@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.18 - 2026-09-06
+
+Consumes Agent Crew #278/#279's tester-treatment and scheduler-lock-wait
+telemetry contract (issue #68), so task-level economics no longer mixes
+targeted and full-suite test runs as one treatment, or folds a per-worktree
+test-stage lock's scheduling delay into provider execution time.
+
+- `RuntimeAttribution`/`TaskEconomicsRecord` gain `effective_test_scope`,
+  `test_scope_source`, `test_scope_hash`, `lock_wait_seconds`, and
+  `lock_defer_count`. Missing/historical values stay `None`
+  ("never resolved"), never defaulted to `"targeted"` or a zero wait;
+  `lock_wait_seconds=0.0` (measured, no contention) stays distinguishable
+  from `None` (never measured).
+- `test_scope_resolved`/`test_stage_deferred` are new `LifecycleEventType`s
+  and are no longer dropped by `lifecycle_event_from_dict`. New
+  `agent_crew_adapter.test_stage_deferrals_for_task()` joins a task's
+  deferral history by `task_id` for reconciliation across a dispatcher
+  restart.
+- New `analytics.test_treatment_cohorts()`/`test_treatment_failure_rates()`
+  partition and compute `stratified_failure_rates` separately for
+  `targeted`/`full_suite`/`unknown` so the two treatments are never pooled
+  into one rate.
+- New `analytics.lock_wait_summary()` aggregates scheduler-delay telemetry,
+  kept strictly separate from `duration_seconds` and every token total.
+- Production-shaped fixture `tests/fixtures/agent_crew/test_treatment/`
+  covers a non-test task, an uncontended dispatch, a deferred-then-dispatched
+  dispatch, and a pre-#279 historical row missing the new keys entirely.
+- Backward compatible: existing `RuntimeAttribution`/`TaskEconomicsRecord`
+  consumers are unaffected; the five new fields default to `None`.
+- Full suite: 228/228 passing.
+
 ## 0.1.17 - 2026-09-06
 
 Fixes `enrich_with_task_error_reasons()` letting a stale `attribution.jsonl`
