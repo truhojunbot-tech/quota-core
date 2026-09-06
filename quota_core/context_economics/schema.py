@@ -774,7 +774,12 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
 
     def _opt_int(key: str) -> int | None:
         value = data.get(key)
-        if value is None:
+        # bool is a subclass of int in Python -- excluded explicitly so a
+        # stray `true`/`false` (never sent by the real producer, which
+        # always writes int()/float()-cast values) doesn't silently
+        # fabricate a measurement like `lock_defer_count=1`, matching the
+        # sibling parser in context_pack_attribution_from_event.
+        if value is None or isinstance(value, bool):
             return None
         try:
             return int(value)
@@ -789,7 +794,7 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
 
     def _opt_float(key: str) -> float | None:
         value = data.get(key)
-        if value is None:
+        if value is None or isinstance(value, bool):
             return None
         try:
             return float(value)
@@ -1041,10 +1046,10 @@ def validate_attribution_dict(data: dict[str, Any]) -> tuple[str, ...]:
     # measured value and must remain a valid, non-error input -- only a
     # non-numeric/non-null value is flagged.
     lock_wait = data.get("lock_wait_seconds")
-    if lock_wait is not None and not isinstance(lock_wait, (int, float)):
+    if lock_wait is not None and (isinstance(lock_wait, bool) or not isinstance(lock_wait, (int, float))):
         errors.append("lock_wait_seconds must be a number or null")
     lock_defers = data.get("lock_defer_count")
-    if lock_defers is not None and not isinstance(lock_defers, int):
+    if lock_defers is not None and (isinstance(lock_defers, bool) or not isinstance(lock_defers, int)):
         errors.append("lock_defer_count must be an integer or null")
     return tuple(errors)
 

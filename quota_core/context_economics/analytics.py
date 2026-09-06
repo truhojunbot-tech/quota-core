@@ -397,22 +397,33 @@ def lock_wait_summary(records: Iterable[TaskEconomicsRecord]) -> dict[str, float
     `known_count` excludes records where `lock_wait_seconds is None` (not a
     test task, or a pre-#279 historical row) from every average -- a `None`
     is "never measured", not zero contention, and must not pull the mean
-    toward zero.
+    toward zero. `total_row_count` (unlike `stratified_failure_rates`'s
+    `observed_count`, which only counts outcome-bearing rows) is every row
+    passed in, since a row with no outcome yet can still carry a known
+    lock-wait measurement -- the two functions' denominators are not the
+    same population and are named differently on purpose so they are never
+    confused when read side by side.
     """
 
     rows = list(records)
     known = [r for r in rows if r.lock_wait_seconds is not None]
     waits = [r.lock_wait_seconds for r in known if r.lock_wait_seconds is not None]
-    defer_counts = [r.lock_defer_count or 0 for r in known]
+    # A record with a known lock_wait_seconds always has a known
+    # lock_defer_count too on real producer data (both columns are written
+    # together in one UPDATE) -- but `or 0` would silently treat a
+    # hypothetical missing defer_count as "measured, zero defers" rather
+    # than "not measured", the exact confusion this module exists to avoid
+    # elsewhere. Filtered explicitly instead.
+    known_defer_counts = [r.lock_defer_count for r in known if r.lock_defer_count is not None]
     deferred = [r for r in known if (r.lock_defer_count or 0) > 0]
     return {
-        "observed_count": len(rows),
+        "total_row_count": len(rows),
         "known_count": len(known),
         "unknown_count": len(rows) - len(known),
         "deferred_count": len(deferred),
         "total_lock_wait_seconds": sum(waits) if known else None,
         "mean_lock_wait_seconds": _mean(waits) if known else None,
-        "max_lock_defer_count": max(defer_counts) if defer_counts else None,
+        "max_lock_defer_count": max(known_defer_counts) if known_defer_counts else None,
     }
 
 

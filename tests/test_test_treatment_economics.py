@@ -108,6 +108,18 @@ class RuntimeAttributionFieldsTests(unittest.TestCase):
         a = attribution_from_dict(row)
         self.assertIsNone(a.lock_wait_seconds)
 
+    def test_a_stray_bool_never_fabricates_a_measurement(self):
+        # bool is a subclass of int in Python -- int(True) == 1 and
+        # float(True) == 1.0 would otherwise silently turn a stray `true`
+        # into a fake lock_defer_count=1 / lock_wait_seconds=1.0. The real
+        # producer never sends a bool here (it always writes int()/float()
+        # casts), but the parser must not fabricate a measurement if one
+        # somehow arrived.
+        row = {"task_id": "t1", "outcome": "completed", "lock_wait_seconds": True, "lock_defer_count": False}
+        a = attribution_from_dict(row)
+        self.assertIsNone(a.lock_wait_seconds)
+        self.assertIsNone(a.lock_defer_count)
+
 
 class LifecycleEventTypesTests(unittest.TestCase):
     def test_test_scope_resolved_is_no_longer_dropped(self):
@@ -255,7 +267,7 @@ class LockWaitSummaryTests(unittest.TestCase):
             _record(task_id="c", lock_wait_seconds=100.0, lock_defer_count=1),
         ]
         summary = lock_wait_summary(records)
-        self.assertEqual(summary["observed_count"], 3)
+        self.assertEqual(summary["total_row_count"], 3)
         self.assertEqual(summary["known_count"], 2)
         self.assertEqual(summary["unknown_count"], 1)
         # Mean over the two KNOWN rows only: (0.0 + 100.0) / 2 = 50.0, not /3.
@@ -285,9 +297,20 @@ class LockWaitSummaryTests(unittest.TestCase):
 
     def test_empty_input(self):
         summary = lock_wait_summary([])
-        self.assertEqual(summary["observed_count"], 0)
+        self.assertEqual(summary["total_row_count"], 0)
         self.assertEqual(summary["known_count"], 0)
         self.assertIsNone(summary["mean_lock_wait_seconds"])
+        self.assertIsNone(summary["max_lock_defer_count"])
+
+    def test_a_known_wait_with_no_known_defer_count_does_not_fake_a_zero(self):
+        # Real producer data always writes lock_wait_seconds and
+        # lock_defer_count together, so this combination shouldn't occur in
+        # practice -- but max_lock_defer_count must not silently coerce a
+        # missing defer count to 0 (that would be "measured, zero defers",
+        # not "not measured") if it ever does.
+        records = [_record(task_id="a", lock_wait_seconds=5.0, lock_defer_count=None)]
+        summary = lock_wait_summary(records)
+        self.assertEqual(summary["known_count"], 1)
         self.assertIsNone(summary["max_lock_defer_count"])
 
 
