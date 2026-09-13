@@ -576,5 +576,5 @@ def provider_context_by_policy(
     """
     buckets: dict[str, list[TaskEconomicsRecord]] = {}
     for record in records:
-        buckets.setdefault(record.context_policy or "unknown", []).append(record)
+        buckets.setdefault(context_policy_cohort(record) or "unknown", []).append(record)
     return {policy: _window_summary(rows) for policy, rows in buckets.items()}

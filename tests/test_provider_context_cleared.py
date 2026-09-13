@@ -44,6 +44,7 @@ from quota_core.context_economics.correlate import attach_provider_context_clear
 from quota_core.context_economics.analytics import (
     compare_context_policies,
     context_policy_cohort,
+    provider_context_by_policy,
 )
 
 
@@ -253,6 +254,30 @@ def test_every_record_lands_in_exactly_one_cohort():
     ]
     comparison = compare_context_policies(records)
     assert sum(int(e["count"]) for e in comparison.values()) == len(records)
+
+
+def test_the_window_summary_keeps_the_same_cohort_split():
+    """★★provider_context_by_policy (quota-core#70) is a SIBLING stratification
+    to compare_context_policies, over the same records but reporting window
+    size instead of failure/success. It has its own bucketing loop, so fixing
+    one does not fix the other -- this is exactly the gap #72 was filed about:
+    the Finding names this function, and #71 already stratified
+    compare_context_policies correctly while this one still bucketed on raw
+    context_policy, pooling an unconfirmed clear straight into pure fresh.
+    """
+    records = [
+        _record(task_id="t1", policy="fresh", context_tokens=100_000),
+        _record(task_id="t2", policy="fresh", context_clear_status="attempted",
+                 context_tokens=180_000),
+        _record(task_id="t3", policy="resume", context_tokens=50_000),
+    ]
+    by_policy = provider_context_by_policy(records)
+    assert by_policy["fresh"]["total_row_count"] == 1, \
+        "an unconfirmed auto-clear's window size was pooled into pure fresh"
+    assert by_policy["fresh"]["max_context_tokens"] == 100_000
+    contaminated = [k for k in by_policy if k not in ("fresh", "resume")]
+    assert len(contaminated) == 1, by_policy
+    assert by_policy[contaminated[0]]["max_context_tokens"] == 180_000
 
 
 # ── 4. persistence — the #70-review bug, not repeated ─────────────────
