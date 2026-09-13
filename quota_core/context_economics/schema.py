@@ -12,7 +12,7 @@ as "parse tolerantly, do not assume new semantics".
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -33,6 +33,8 @@ LifecycleEventType = Literal[
     "context_pack_built",
     "test_scope_resolved",
     "test_stage_deferred",
+    "provider_context_observed",
+    "provider_context_capped",
 ]
 
 _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
@@ -48,6 +50,8 @@ _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
     "context_pack_built",
     "test_scope_resolved",
     "test_stage_deferred",
+    "provider_context_observed",
+    "provider_context_capped",
 )
 
 _CONTEXT_POLICIES: tuple[str, ...] = ("resume", "compact", "fresh", "unknown")
@@ -528,6 +532,174 @@ class ContextPackAttribution:
     timestamp: int | None = None
 
 
+@dataclass(frozen=True)
+class ProviderContextObservation:
+    """One dispatch's provider context-window measurement (quota-core#70).
+
+    Consumer-side mirror of the producer's ``provider_context_observed`` /
+    ``provider_context_capped`` lifecycle rows (Agent Crew #288). As everywhere
+    else in this module, quota-core does not import the producer -- this depends
+    only on the JSONL wire shape, and anything the installed version does not
+    recognise is left unextracted rather than guessed.
+
+    ⛔``context_tokens=None`` means UNKNOWN: no store, unreadable, or a provider
+      for which the window is not measured at all. ``0`` means a measured empty
+      window. Collapsing either into the other would make every cohort built on
+      this field wrong in a way no consumer could detect afterwards, which is
+      the single invariant this type exists to carry.
+
+    ⛔``capped`` distinguishes the two producer events rather than hiding them
+      behind one name. A capped dispatch had a fresh context FORCED; an observed
+      one did not. They are the two arms of one branch in the producer, so a
+      caller that sums them as two samples double-counts a single dispatch --
+      see ``provider_context_observations_from_events``, which collapses a
+      contaminated pair before any caller can.
+
+    The provider's context WINDOW is not the Context Pack's token budget. They
+    are different quantities measured at different layers and stay in separate
+    fields (``ContextPackAttribution`` carries the latter).
+    """
+
+    task_id: str | None = None
+    project: str | None = None
+    context_id: str | None = None
+    context_generation: int | None = None
+    provider: str | None = None
+    provider_session_id: str | None = None
+    agent: str | None = None
+    role: str | None = None
+    task_type: str | None = None
+    context_tokens: int | None = None
+    context_bytes: int | None = None
+    cap_mb: float | None = None
+    cap_tokens: int | None = None
+    capped: bool = False
+    tripped_by: str | None = None
+    timestamp: int | None = None
+    #: Every event type seen for this dispatch when more than one arrived.
+    #: Empty on clean data; populated only by the duplicate defence below, so a
+    #: caller can tell a collapsed pair from a single clean row.
+    duplicate_event_types: tuple[str, ...] = ()
+
+
+_PROVIDER_CONTEXT_EVENT_TYPES = ("provider_context_observed", "provider_context_capped")
+
+
+def provider_context_observation_from_event(
+    event: ContextLifecycleEvent,
+) -> ProviderContextObservation | None:
+    """Extract a ``ProviderContextObservation`` from one lifecycle event.
+
+    Returns ``None`` for any other event type, so a caller filtering a mixed
+    stream can apply it unconditionally -- the same pattern as
+    ``context_pack_attribution_from_event``.
+
+    The two producer events spell two fields differently: the capped row names
+    the session ``conversation_id`` and the store ``bytes``; the observed row
+    names them ``provider_session_id`` and ``context_bytes``. Both spellings are
+    read; neither value is invented when absent.
+    """
+
+    if event.event_type not in _PROVIDER_CONTEXT_EVENT_TYPES:
+        return None
+    extra = event.extra or {}
+
+    def _opt_int(*keys: str) -> int | None:
+        for key in keys:
+            value = extra.get(key)
+            # ⛔ before : in Python  is 1, and a boolean in a
+            #   token field is malformed producer data, not a one-token window.
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            return int(value)
+        return None
+
+    def _opt_float(key: str) -> float | None:
+        value = extra.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    def _opt_str(*keys: str) -> str | None:
+        for key in keys:
+            value = extra.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    return ProviderContextObservation(
+        task_id=event.task_id,
+        project=event.project,
+        context_id=event.context_id,
+        context_generation=_opt_int("context_generation"),
+        provider=event.provider or _opt_str("provider", "agent"),
+        provider_session_id=(event.provider_session_id
+                             or _opt_str("provider_session_id", "conversation_id")),
+        agent=_opt_str("agent"),
+        role=_opt_str("role"),
+        task_type=_opt_str("task_type"),
+        context_tokens=_opt_int("context_tokens"),
+        context_bytes=_opt_int("context_bytes", "bytes"),
+        cap_mb=_opt_float("cap_mb"),
+        cap_tokens=_opt_int("cap_tokens"),
+        capped=event.event_type == "provider_context_capped",
+        tripped_by=_opt_str("tripped_by"),
+        timestamp=event.timestamp,
+    )
+
+
+def provider_context_observations_from_events(
+    events: Iterable[ContextLifecycleEvent],
+) -> list[ProviderContextObservation]:
+    """Every provider-context observation in ``events``, **one per dispatch**.
+
+    ⛔The duplicate defence (quota-core#70 requirement 6). The producer emits
+      ``observed`` and ``capped`` as the two arms of one branch, so a dispatch
+      carrying both is contaminated or pre-contract data -- never two
+      independent samples. Summing them would double-count one dispatch's
+      window in every average built on this list.
+
+      The capped row wins, because it is the authoritative record of what
+      happened to that dispatch: a fresh context was forced. Keeping the
+      observation instead would describe a reset dispatch as ordinary. The
+      collision is reported in ``duplicate_event_types`` rather than silently
+      resolved -- a consumer that sees contaminated data should be able to say
+      so, and a silent merge is indistinguishable from clean input.
+
+    Rows with no ``task_id`` cannot be attributed to a dispatch at all and are
+    therefore never collapsed against each other; each is returned as-is.
+    """
+
+    observations = [
+        obs for obs in (provider_context_observation_from_event(e) for e in events)
+        if obs is not None
+    ]
+    by_task: dict[str, list[ProviderContextObservation]] = {}
+    unattributable: list[ProviderContextObservation] = []
+    order: list[str] = []
+    for obs in observations:
+        if not obs.task_id:
+            unattributable.append(obs)
+            continue
+        if obs.task_id not in by_task:
+            by_task[obs.task_id] = []
+            order.append(obs.task_id)
+        by_task[obs.task_id].append(obs)
+
+    collapsed: list[ProviderContextObservation] = []
+    for task_id in order:
+        group = by_task[task_id]
+        if len(group) == 1:
+            collapsed.append(group[0])
+            continue
+        seen = tuple(dict.fromkeys(
+            "provider_context_capped" if o.capped else "provider_context_observed"
+            for o in group))
+        winner = next((o for o in group if o.capped), group[-1])
+        collapsed.append(replace(winner, duplicate_event_types=seen))
+    return collapsed + unattributable
+
+
 def context_pack_attribution_from_event(event: ContextLifecycleEvent) -> ContextPackAttribution | None:
     """Extract a :class:`ContextPackAttribution` from one lifecycle event.
 
@@ -628,6 +800,15 @@ class TaskEconomicsRecord:
     test_scope_hash: str | None = None
     lock_wait_seconds: float | None = None
     lock_defer_count: int | None = None
+    # quota-core#70 -- the PROVIDER's context window for this dispatch, joined
+    # from its lifecycle observation. Distinct from `tokens`, which is what the
+    # dispatch itself billed, and from the Context Pack budget, which is what
+    # was assembled for it. `None` is unknown; `0` is a measured empty window.
+    # `context_window_capped=None` means no observation was joined at all --
+    # `False` means one was, and it was not capped.
+    context_tokens: int | None = None
+    context_bytes: int | None = None
+    context_window_capped: bool | None = None
     attribution_confidence: AttributionConfidence = "low"
     attribution_notes: tuple[str, ...] = ()
 
@@ -1009,6 +1190,17 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "test_scope_hash": record.test_scope_hash,
         "lock_wait_seconds": record.lock_wait_seconds,
         "lock_defer_count": record.lock_defer_count,
+        # quota-core#70. Written WITHOUT coercion, and always present even when
+        # null: `0` is a measured empty window, `null` is unknown, and
+        # `context_window_capped=False` ("an observation was joined and it was
+        # not capped") is a different fact from `None` ("none was joined").
+        # Omitting a null key would leave a reader unable to tell "measured
+        # nothing" from "this producer version did not report it" -- and
+        # omitting the keys entirely, as the first version of this function did,
+        # dropped every joined observation at the persistence boundary.
+        "context_tokens": record.context_tokens,
+        "context_bytes": record.context_bytes,
+        "context_window_capped": record.context_window_capped,
         "attribution_confidence": record.attribution_confidence,
         "attribution_notes": list(record.attribution_notes),
     }

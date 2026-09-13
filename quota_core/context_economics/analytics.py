@@ -465,3 +465,71 @@ __all__ = [
     "test_treatment_failure_rates",
     "lock_wait_summary",
 ]
+
+
+def _window_summary(rows: list) -> dict[str, float | int | None]:
+    """Shared body for the window aggregates below."""
+    known = [r for r in rows if r.context_tokens is not None]
+    values = [float(r.context_tokens) for r in known if r.context_tokens is not None]
+    # `context_window_capped is None` means no observation was joined at all,
+    # which is a different fact from a joined observation that was not capped.
+    capped_known = [r for r in rows if r.context_window_capped is not None]
+    return {
+        "total_row_count": len(rows),
+        "known_count": len(known),
+        "unknown_count": len(rows) - len(known),
+        "mean_context_tokens": _mean(values),
+        "max_context_tokens": max(values) if values else None,
+        "capped_known_count": len(capped_known),
+        "capped_count": len([r for r in capped_known if r.context_window_capped]),
+    }
+
+
+def provider_context_window_summary(
+    records: Iterable[TaskEconomicsRecord],
+) -> dict[str, float | int | None]:
+    """Provider context-window size across dispatches (quota-core#70).
+
+    ⛔`known_count` is the explicit denominator for every average here, and it
+      excludes rows whose `context_tokens is None` -- unknown means the window
+      was never measured (no store, unreadable, or a provider for which it is
+      not measured at all), NOT a small one. Averaging unknowns as zero would
+      drag every mean toward zero in exact proportion to how much of the fleet
+      cannot be measured, which is the opposite of what a cohort needs.
+
+      A measured `0` IS counted: it is a real observation of an empty window
+      and belongs in both the numerator and the denominator.
+
+    ⛔`capped_known_count` is a second, separate denominator. A row with
+      `context_window_capped is None` had no observation joined at all, so it
+      is neither "capped" nor "known not capped"; without its own denominator,
+      `known_count - capped_count` would silently count it on the not-capped
+      side. Same reasoning as the defer denominator in `lock_wait_summary`.
+
+    The provider context window is not the Context Pack token budget and is not
+    the tokens the dispatch billed. Three different quantities, three fields.
+    """
+    return _window_summary(list(records))
+
+
+def provider_context_by_policy(
+    records: Iterable[TaskEconomicsRecord],
+) -> dict[str, dict[str, float | int | None]]:
+    """Window size stratified by the joined context policy (quota-core#70).
+
+    ⛔The policy comes from the dispatch's own attribution -- resume / fresh /
+      compact / unknown as the runtime recorded it. It is never inferred from
+      timing, a session's age, or a working directory: the whole point of a
+      resume-vs-fresh comparison is that the treatment assignment is observed
+      rather than guessed, and a guessed one would make the comparison
+      circular.
+
+    `unknown` is its own bucket. Folding it into `fresh` would assert a
+    treatment for dispatches whose treatment was never recorded, and each
+    bucket carries its own `known_count` / `unknown_count` so a thinly measured
+    policy cannot masquerade as a well measured one.
+    """
+    buckets: dict[str, list[TaskEconomicsRecord]] = {}
+    for record in records:
+        buckets.setdefault(record.context_policy or "unknown", []).append(record)
+    return {policy: _window_summary(rows) for policy, rows in buckets.items()}

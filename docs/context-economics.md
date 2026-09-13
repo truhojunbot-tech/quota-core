@@ -334,6 +334,87 @@ only appearing as prose in the tester's own summary:
   row where the five keys are absent from the JSON entirely (not `null`) --
   both must parse identically to `None`.
 
+## Provider context window (issue #70)
+
+> ⛔ **fixture-validated / production-sample pending.** Everything below is
+> exercised against fixtures shaped from the producer's emitter as merged, not
+> against a captured deployment. No end-to-end context-economics claim may rest
+> on this path until a real organic sample exists — see the follow-up at the end
+> of this section.
+
+The producer emits one lifecycle row per dispatch describing the provider
+context window it measured:
+
+| event | meaning |
+|---|---|
+| `provider_context_observed` | an ordinary dispatch; here is the window |
+| `provider_context_capped` | the window (or store) crossed its cap and a fresh context was **forced** |
+
+Fields: `task_id`, `context_id`, `context_generation`, `provider`,
+`provider_session_id`, `context_tokens`, `context_bytes`, `cap_mb`,
+`cap_tokens`. The capped row spells two of them differently — the session is
+`conversation_id`, the store is `bytes` — and `provider_context_observation_from_event`
+normalises both without inventing either.
+
+### The nullable contract
+
+⛔`context_tokens: null` is **unknown**: no store, unreadable, or a provider for
+which the window is not measured at all. `0` is a **measured empty window**.
+Collapsing either into the other makes every cohort built on the field wrong in
+a way no consumer can detect afterwards, so nothing in this path defaults, and
+`known_count` is exposed as an explicit denominator everywhere an average is
+computed. A measured `0` counts as known and legitimately pulls a mean down; an
+unknown does not appear in the numerator or the denominator.
+
+`capped_known_count` is a second denominator for the same reason
+`defer_known_count` exists for lock waits: a record with
+`context_window_capped is None` had no observation joined at all, so it is
+neither capped nor known-not-capped, and `known_count - capped_count` would
+silently count it on the not-capped side.
+
+### Duplicate defence
+
+`observed` and `capped` are the two arms of one branch in the producer, so a
+dispatch carrying both is contaminated or pre-contract data — never two
+independent samples. `provider_context_observations_from_events` collapses such
+a pair to one row, keeps the **capped** one (it is the authoritative record of
+what happened to that dispatch), and reports the collision in
+`duplicate_event_types` rather than resolving it silently.
+
+### Joining, and what stays separate
+
+`attach_provider_context_observations` matches on `task_id` **and** context
+identity (`context_id`, `context_generation`, `provider`,
+`provider_session_id`). Two different *known* values for the same dispatch are a
+contradiction and the join is refused with a note; a field unknown on one side
+is merely incomplete and does not block it. Nothing is matched on timing or a
+working directory: a resume/fresh comparison whose treatment assignment was
+guessed from the same data it is measuring would be circular.
+
+Three token quantities stay in three fields and are never added together:
+
+| field | what it measures |
+|---|---|
+| `tokens` (`TokenComponents`) | what the dispatch billed |
+| Context Pack `total_tokens` | what was assembled *for* the dispatch |
+| `context_tokens` | the provider window the dispatch re-reads each turn |
+
+`provider_context_by_policy` stratifies by the recorded `context_policy`, with
+`unknown` kept as its own bucket rather than folded into `fresh` — folding it
+would assert a treatment for dispatches whose treatment was never recorded.
+
+### Follow-up — do not close #70 on this
+
+The producer ships its token cap disabled by default, so the observation path
+only starts writing rows once a runtime carrying it is deployed and dispatches.
+Until then this consumer is validated against fixtures only. Outstanding:
+
+1. capture at least one organic post-deployment sample and confirm the row shape
+   matches these fixtures;
+2. re-check the duplicate defence against real data — the contaminated pair is
+   hypothesised from the producer's branch structure, not yet observed;
+3. only then publish any resume/fresh/reset window comparison from this path.
+
 ## Context Pack economics (`context_pack_analytics.py`, quota-core#62)
 
 Consumes Agent Crew #239's real Context Pack producer contract: a
