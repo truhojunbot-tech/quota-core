@@ -13,6 +13,7 @@ from dataclasses import dataclass, field, replace
 from typing import Iterable
 
 from .schema import (
+    ProviderContextClearing,
     ProviderContextObservation,
     RuntimeAttribution,
     TaskEconomicsRecord,
@@ -289,3 +290,62 @@ def attach_provider_context_observations(
             context_window_capped=obs.capped,
         ))
     return out
+
+
+def attach_provider_context_clearings(
+    records: Iterable[TaskEconomicsRecord],
+    clearings: Iterable[ProviderContextClearing],
+) -> list[TaskEconomicsRecord]:
+    """Join context-clearing interventions onto task economics (quota-core#72).
+
+    Matched on ``task_id`` **and** context identity, exactly like
+    :func:`attach_provider_context_observations`, and for the same reason: the
+    producer already knows which dispatch it cleared and says so in the row, so
+    any timing or proximity heuristic here would invent a treatment assignment
+    the data already carries.
+
+    ⛔This never touches ``context_policy``. The producer decides policy; this
+      join only records what intervention was observed alongside it. In
+      particular a ``send_failed`` clearing must not make anything look fresh —
+      the keystrokes never landed, so the intervention explains nothing.
+
+    Records with no matching clearing keep ``context_clear_status=None``:
+    unknown, not a fabricated "no intervention happened".
+    """
+
+    by_task: dict[str, ProviderContextClearing] = {}
+    for clearing in clearings:
+        if clearing.task_id:
+            by_task.setdefault(clearing.task_id, clearing)
+
+    out: list[TaskEconomicsRecord] = []
+    for record in records:
+        clearing = by_task.get(record.task_id)
+        if clearing is None:
+            out.append(record)
+            continue
+        conflicts = [
+            name for name, left, right in (
+                ("context_id", record.context_id, clearing.context_id),
+                ("context_generation", record.context_generation, clearing.context_generation),
+                ("provider", record.provider, clearing.provider),
+                ("provider_session_id", record.provider_session_id, clearing.provider_session_id),
+            )
+            if left is not None and right is not None and left != right
+        ]
+        if conflicts:
+            out.append(replace(
+                record,
+                attribution_notes=record.attribution_notes + (
+                    "provider context clearing refused: context identity "
+                    "disagrees on " + ", ".join(conflicts),
+                ),
+            ))
+            continue
+        out.append(replace(
+            record,
+            context_clear_status=clearing.status,
+            context_clear_outcome=clearing.raw_outcome,
+        ))
+    return out
+
