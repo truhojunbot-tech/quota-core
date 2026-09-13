@@ -1190,6 +1190,17 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "test_scope_hash": record.test_scope_hash,
         "lock_wait_seconds": record.lock_wait_seconds,
         "lock_defer_count": record.lock_defer_count,
+        # quota-core#70. Written WITHOUT coercion, and always present even when
+        # null: `0` is a measured empty window, `null` is unknown, and
+        # `context_window_capped=False` ("an observation was joined and it was
+        # not capped") is a different fact from `None` ("none was joined").
+        # Omitting a null key would leave a reader unable to tell "measured
+        # nothing" from "this producer version did not report it" -- and
+        # omitting the keys entirely, as the first version of this function did,
+        # dropped every joined observation at the persistence boundary.
+        "context_tokens": record.context_tokens,
+        "context_bytes": record.context_bytes,
+        "context_window_capped": record.context_window_capped,
         "attribution_confidence": record.attribution_confidence,
         "attribution_notes": list(record.attribution_notes),
     }

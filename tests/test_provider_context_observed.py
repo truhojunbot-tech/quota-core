@@ -25,6 +25,7 @@ from pathlib import Path
 from quota_core.context_economics import (
     TaskEconomicsRecord,
     lifecycle_event_from_dict,
+    task_economics_to_dict,
 )
 from quota_core.context_economics.agent_crew_adapter import read_lifecycle_events_jsonl
 from quota_core.context_economics.analytics import (
@@ -325,6 +326,96 @@ class PolicyStratificationTests(unittest.TestCase):
             [_record(task_id="a", context_policy="unknown", context_tokens=7)])
         self.assertIn("unknown", buckets)
         self.assertNotIn("fresh", buckets)
+
+
+class SerializationTests(unittest.TestCase):
+    """A joined record that cannot be written out has not really been joined.
+
+    Review of PR #71, P2: `task_economics_to_dict` carried the #68 treatment
+    fields but not these three, so every observation was dropped at the
+    persistence boundary — the join worked in memory and vanished on the way to
+    a report.
+    """
+
+    def test_the_observation_fields_are_serialized(self):
+        payload = task_economics_to_dict(_record(
+            task_id="t1", context_tokens=412345, context_bytes=9781828,
+            context_window_capped=False))
+        self.assertEqual(payload["context_tokens"], 412345)
+        self.assertEqual(payload["context_bytes"], 9781828)
+        self.assertIs(payload["context_window_capped"], False)
+
+    def test_a_measured_zero_survives_serialization(self):
+        """⛔The whole contract, at the boundary where it is easiest to lose:
+        `0` must not become `null`, and `null` must not become `0`."""
+        payload = task_economics_to_dict(_record(task_id="t1", context_tokens=0))
+        self.assertIn("context_tokens", payload)
+        self.assertEqual(payload["context_tokens"], 0)
+        self.assertIsNotNone(payload["context_tokens"])
+
+    def test_unknown_serializes_as_null_and_is_still_present(self):
+        """⛔Present-and-null, not absent. A reader that sees no key cannot tell
+        "measured nothing" from "this producer version did not report it"."""
+        payload = task_economics_to_dict(_record(task_id="t1"))
+        for key in ("context_tokens", "context_bytes", "context_window_capped"):
+            self.assertIn(key, payload)
+            self.assertIsNone(payload[key], key)
+
+    def test_capped_false_and_capped_none_stay_distinct(self):
+        """`False` means an observation was joined and it was not capped;
+        `None` means none was joined at all. Two different facts."""
+        joined = task_economics_to_dict(
+            _record(task_id="t1", context_window_capped=False))
+        absent = task_economics_to_dict(_record(task_id="t2"))
+        self.assertIs(joined["context_window_capped"], False)
+        self.assertIsNone(absent["context_window_capped"])
+        self.assertNotEqual(joined["context_window_capped"],
+                            absent["context_window_capped"])
+
+    def test_the_payload_survives_a_json_round_trip(self):
+        """The persistence boundary is JSON, so `False` and `0` have to still be
+        `False` and `0` on the other side rather than falsy lookalikes."""
+        import json
+
+        payload = json.loads(json.dumps(task_economics_to_dict(_record(
+            task_id="t1", context_tokens=0, context_bytes=1024,
+            context_window_capped=False))))
+        self.assertEqual(payload["context_tokens"], 0)
+        self.assertEqual(payload["context_bytes"], 1024)
+        self.assertIs(payload["context_window_capped"], False)
+
+    def test_the_earlier_treatment_fields_are_still_there(self):
+        """⛔Regression guard for the neighbours. This function is a hand-written
+        field list, which is exactly why a field was missed — adding mine must
+        not drop #68's."""
+        payload = task_economics_to_dict(_record(
+            task_id="t1", effective_test_scope="targeted", lock_wait_seconds=0.0))
+        self.assertEqual(payload["effective_test_scope"], "targeted")
+        self.assertEqual(payload["lock_wait_seconds"], 0.0)
+
+    def test_every_public_record_field_reaches_the_dict(self):
+        """⛔The general form of this bug. A hand-maintained field list silently
+        drops whatever the next person adds; this fails the moment it happens
+        again, instead of after the data is already missing from reports."""
+        from dataclasses import fields
+
+        payload = task_economics_to_dict(_record(task_id="t1"))
+        missing = [f.name for f in fields(TaskEconomicsRecord)
+                   if f.name not in payload]
+        self.assertEqual(missing, [], f"fields dropped by the serializer: {missing}")
+
+    def test_a_joined_record_serializes_its_observation(self):
+        """End to end: parse → join → serialize, the path a report actually
+        takes."""
+        joined = attach_provider_context_observations(
+            [_record(task_id="t1", context_id="ctx-1", provider="claude",
+                     provider_session_id="sess-1", context_generation=1)],
+            [provider_context_observation_from_event(_event())],
+        )[0]
+        payload = task_economics_to_dict(joined)
+        self.assertEqual(payload["context_tokens"], 1234)
+        self.assertEqual(payload["context_bytes"], 5678)
+        self.assertIs(payload["context_window_capped"], False)
 
 
 if __name__ == "__main__":
