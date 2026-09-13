@@ -284,6 +284,48 @@ def context_age_vs_failure_rate(records: Iterable[TaskEconomicsRecord]) -> list[
     return rows
 
 
+#: Cohort suffix for a dispatch whose context policy may be the work of an
+#: intervention nobody could confirm. Deliberately not spelled "fresh".
+UNCONFIRMED_CLEAR_COHORT_SUFFIX = "+auto_clear_unconfirmed"
+
+
+def context_policy_cohort(record: TaskEconomicsRecord) -> str:
+    """The treatment cohort a record belongs to (quota-core#72).
+
+    Usually just ``context_policy``. The exception is the one this function
+    exists for: a dispatch attributed ``fresh`` — or any policy — whose
+    freshness may be the result of a context-clearing intervention that was
+    only ever *attempted*.
+
+    ⛔The producer sends clear keystrokes and records ``outcome="attempted"``
+      when the send succeeded, which is evidence the keys were delivered and
+      not evidence the provider acted on them. The same send sets the reset
+      flag, so the next dispatch is attributed ``fresh`` either way. Counting it
+      with contexts that genuinely started empty makes a resume-vs-fresh
+      comparison an average over an unknown mixture, with nothing left in the
+      data to reveal it — which is the contamination quota-core#72 reports.
+
+    The other states stay where they belong:
+
+    - ``None`` (no clearing row joined) — classified on its own policy. Unknown
+      is not evidence of an intervention.
+    - ``"confirmed"`` — a provider-native signal said the clear landed, so the
+      context really did start empty and the row is genuinely ``fresh``. No such
+      signal exists yet; the state is carried so that adding one later does not
+      reclassify rows already written.
+    - ``"failed"`` — the keystrokes never landed, so the intervention cannot be
+      why this dispatch looks like anything. Classified on its own policy.
+
+    PRODUCTION SAMPLE PENDING: see ``docs/provider_context_cleared.md``. No
+    organic clearing data has been captured yet, so a cohort split produced here
+    must not be presented as measured auto-clear economics.
+    """
+
+    if record.context_clear_status == "attempted":
+        return f"{record.context_policy}{UNCONFIRMED_CLEAR_COHORT_SUFFIX}"
+    return record.context_policy
+
+
 def compare_context_policies(records: Iterable[TaskEconomicsRecord]) -> dict[str, dict[str, float | int | None | str]]:
     """Compare resume vs compact vs fresh contexts by average tokens and success rate.
 
@@ -299,9 +341,12 @@ def compare_context_policies(records: Iterable[TaskEconomicsRecord]) -> dict[str
     or entirely missing.
     """
 
+    # quota-core#72: grouped by COHORT, not by raw policy, so a dispatch whose
+    # freshness may be an unconfirmed auto-clear cannot inflate the pure `fresh`
+    # sample. Records carrying no clearing signal group exactly as before.
     by_policy: dict[str, list[TaskEconomicsRecord]] = defaultdict(list)
     for r in records:
-        by_policy[r.context_policy].append(r)
+        by_policy[context_policy_cohort(r)].append(r)
 
     result: dict[str, dict[str, float | int | None | str]] = {}
     for policy, rows in by_policy.items():
@@ -531,5 +576,5 @@ def provider_context_by_policy(
     """
     buckets: dict[str, list[TaskEconomicsRecord]] = {}
     for record in records:
-        buckets.setdefault(record.context_policy or "unknown", []).append(record)
+        buckets.setdefault(context_policy_cohort(record) or "unknown", []).append(record)
     return {policy: _window_summary(rows) for policy, rows in buckets.items()}

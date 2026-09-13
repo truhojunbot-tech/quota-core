@@ -12,6 +12,7 @@ as "parse tolerantly, do not assume new semantics".
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -35,6 +36,7 @@ LifecycleEventType = Literal[
     "test_stage_deferred",
     "provider_context_observed",
     "provider_context_capped",
+    "provider_context_cleared",
 ]
 
 _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
@@ -52,6 +54,7 @@ _LIFECYCLE_EVENT_TYPES: tuple[str, ...] = (
     "test_stage_deferred",
     "provider_context_observed",
     "provider_context_capped",
+    "provider_context_cleared",
 )
 
 _CONTEXT_POLICIES: tuple[str, ...] = ("resume", "compact", "fresh", "unknown")
@@ -582,6 +585,159 @@ class ProviderContextObservation:
     duplicate_event_types: tuple[str, ...] = ()
 
 
+#: The producer's honest outcomes for a context-clearing intervention, mapped
+#: to the three states this module keeps apart. `send_failed` is a fourth: the
+#: keystrokes never landed, so the intervention cannot explain anything.
+#:
+#: ⛔Anything not listed maps to `None` — unknown, never folded into
+#:   `attempted`. A future producer value guessed at here would be indis-
+#:   tinguishable from a measured one in every cohort downstream.
+_CLEARING_STATUS_BY_OUTCOME: dict[str, str] = {
+    "attempted": "attempted",
+    "send_failed": "failed",
+    "confirmed": "confirmed",
+}
+
+ContextClearStatus = Literal["attempted", "failed", "confirmed"]
+
+
+@dataclass(frozen=True)
+class ProviderContextClearing:
+    """One dispatch's context-clearing intervention (quota-core#72).
+
+    Consumer-side mirror of the producer's ``provider_context_cleared`` row.
+    As everywhere else in this module, quota-core does not import the producer:
+    this depends only on the JSONL wire shape.
+
+    ⛔``status="attempted"`` means the producer sent the clear keystrokes and
+      the send returned success. That is evidence the keys were DELIVERED, not
+      evidence the provider acted on them. The producer is careful to say so,
+      and the distinction must survive the whole way here — because the same
+      attempted send also sets the reset flag, so the next dispatch is
+      attributed ``context_policy="fresh"`` whether or not anything was
+      actually cleared.
+
+      Counting such a dispatch as a plain fresh context makes a resume-vs-fresh
+      comparison an average over an unknown mixture, with nothing in the data
+      to reveal it. See :func:`~quota_core.context_economics.analytics.
+      context_policy_cohort`.
+
+    ⛔``status=None`` is unknown — no row, or an outcome this version does not
+      recognise. ``raw_outcome`` keeps whatever the producer actually wrote so
+      a later reader can classify it without a reparse.
+
+    PRODUCTION SAMPLE PENDING: no organic post-deployment clearing data has been
+    captured yet, so nothing built on this type may be presented as measured
+    auto-clear economics. See ``docs/provider_context_cleared.md``.
+    """
+
+    task_id: str | None = None
+    project: str | None = None
+    context_id: str | None = None
+    context_generation: int | None = None
+    provider: str | None = None
+    provider_session_id: str | None = None
+    agent: str | None = None
+    role: str | None = None
+    pane_id: str | None = None
+    #: The window measurement that tripped the threshold, when the producer
+    #: had one. `None` is unknown; `0` would be a measured empty window.
+    context_tokens: int | None = None
+    token_source: str | None = None
+    cap_tokens: int | None = None
+    reason: str | None = None
+    status: ContextClearStatus | None = None
+    raw_outcome: str | None = None
+    timestamp: int | None = None
+    #: Populated only when more than one row arrived for one dispatch, so a
+    #: caller can tell a collapsed pair from a single clean row.
+    duplicate_event_types: tuple[str, ...] = ()
+
+
+def provider_context_clearing_from_event(
+    event: ContextLifecycleEvent,
+) -> ProviderContextClearing | None:
+    """Extract a :class:`ProviderContextClearing` from one lifecycle event.
+
+    Returns ``None`` for any other event type, so a caller filtering a mixed
+    stream can apply it unconditionally — the same pattern as
+    :func:`provider_context_observation_from_event`.
+    """
+
+    if event.event_type != "provider_context_cleared":
+        return None
+    extra = event.extra or {}
+
+    def _opt_int(*keys: str) -> int | None:
+        for key in keys:
+            value = extra.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            return int(value)
+        return None
+
+    def _opt_str(*keys: str) -> str | None:
+        for key in keys:
+            value = extra.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return None
+
+    raw_outcome = _opt_str("outcome")
+    return ProviderContextClearing(
+        task_id=event.task_id,
+        project=event.project,
+        context_id=event.context_id,
+        context_generation=_opt_int("context_generation"),
+        provider=event.provider or _opt_str("provider", "agent"),
+        provider_session_id=(event.provider_session_id
+                             or _opt_str("provider_session_id", "conversation_id")),
+        agent=_opt_str("agent"),
+        role=_opt_str("role"),
+        pane_id=_opt_str("pane_id"),
+        context_tokens=_opt_int("context_tokens"),
+        token_source=_opt_str("token_source"),
+        cap_tokens=_opt_int("cap_tokens"),
+        reason=_opt_str("reason"),
+        status=_CLEARING_STATUS_BY_OUTCOME.get(raw_outcome or ""),  # type: ignore[arg-type]
+        raw_outcome=raw_outcome,
+        timestamp=event.timestamp,
+    )
+
+
+def provider_context_clearings_from_events(
+    events: Iterable[ContextLifecycleEvent],
+) -> list[ProviderContextClearing]:
+    """Parse a mixed event stream into one clearing per dispatch.
+
+    ⛔Two rows for one ``task_id`` are one intervention reported twice, not two
+      interventions — the same duplicate defence the observation stream needed.
+      The first is kept and the collision is recorded in
+      ``duplicate_event_types`` rather than silently discarded, so a caller can
+      see that the producer contradicted itself.
+    """
+
+    by_task: dict[str, ProviderContextClearing] = {}
+    seen: dict[str, list[str]] = {}
+    loose: list[ProviderContextClearing] = []
+    for clearing in (provider_context_clearing_from_event(e) for e in events):
+        if clearing is None:
+            continue
+        if not clearing.task_id:
+            loose.append(clearing)
+            continue
+        if clearing.task_id in by_task:
+            seen.setdefault(clearing.task_id, [by_task[clearing.task_id].raw_outcome or "?"])
+            seen[clearing.task_id].append(clearing.raw_outcome or "?")
+            continue
+        by_task[clearing.task_id] = clearing
+    return [
+        replace(c, duplicate_event_types=tuple(seen[task_id]))
+        if task_id in seen else c
+        for task_id, c in by_task.items()
+    ] + loose
+
+
 _PROVIDER_CONTEXT_EVENT_TYPES = ("provider_context_observed", "provider_context_capped")
 
 
@@ -809,6 +965,16 @@ class TaskEconomicsRecord:
     context_tokens: int | None = None
     context_bytes: int | None = None
     context_window_capped: bool | None = None
+    # quota-core#72 -- whether a context-clearing intervention was observed for
+    # this dispatch, and what the producer could honestly say about it.
+    # `None` means no clearing row was joined: unknown, NOT "no intervention
+    # happened". `"attempted"` means the clear was sent and the provider's
+    # completion is unconfirmed, which is why such a dispatch must not be
+    # counted as a plain fresh context -- see `context_policy_cohort`.
+    # `raw` keeps the producer's own string for a value this version does not
+    # recognise.
+    context_clear_status: ContextClearStatus | None = None
+    context_clear_outcome: str | None = None
     attribution_confidence: AttributionConfidence = "low"
     attribution_notes: tuple[str, ...] = ()
 
@@ -1201,6 +1367,13 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "context_tokens": record.context_tokens,
         "context_bytes": record.context_bytes,
         "context_window_capped": record.context_window_capped,
+        # quota-core#72: carried across the persistence boundary deliberately.
+        # PR #71 joined the observation fields in memory and dropped them here,
+        # so in-process tests passed and only the written artifact was wrong
+        # (#70 review). A reader working from the artifact alone has to be able
+        # to rebuild the same cohort this process did.
+        "context_clear_status": record.context_clear_status,
+        "context_clear_outcome": record.context_clear_outcome,
         "attribution_confidence": record.attribution_confidence,
         "attribution_notes": list(record.attribution_notes),
     }
