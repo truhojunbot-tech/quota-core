@@ -9,10 +9,15 @@ heuristics. Confidence is always reported explicitly so downstream analytics
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Iterable
 
-from .schema import RuntimeAttribution, TaskEconomicsRecord, TokenComponents
+from .schema import (
+    ProviderContextObservation,
+    RuntimeAttribution,
+    TaskEconomicsRecord,
+    TokenComponents,
+)
 from .token_components import merge_token_components
 
 # Timestamps within this many seconds of a task's [started_at, completed_at]
@@ -221,3 +226,66 @@ def correlate_task_economics(
 
 
 __all__ = ["ProviderUsageRecord", "correlate_task_economics"]
+
+
+def attach_provider_context_observations(
+    records: Iterable[TaskEconomicsRecord],
+    observations: Iterable[ProviderContextObservation],
+) -> list[TaskEconomicsRecord]:
+    """Join provider context-window observations onto task economics (#70).
+
+    Matched on ``task_id`` **and** context identity -- never on timing, a
+    working directory, or provider-session proximity. The producer already
+    knows which dispatch a measurement belongs to and says so in the row; any
+    heuristic here would be inventing a treatment assignment that the data
+    already carries, which is exactly what stratified resume/fresh comparisons
+    must not be built on.
+
+    ⛔A shared ``task_id`` whose context identity CONTRADICTS the record is
+      refused, not merged. Identity fields unknown on either side are not a
+      contradiction -- a record that never learned its ``context_id`` is
+      incomplete, not inconsistent -- but two different known values for the
+      same dispatch mean one of them is about something else, and attaching it
+      would put one dispatch's window onto another's economics.
+
+    Records with no matching observation keep ``context_tokens=None`` and
+    ``context_window_capped=None``: unknown, never a fabricated zero or
+    ``False``.
+    """
+
+    by_task: dict[str, ProviderContextObservation] = {}
+    for obs in observations:
+        if obs.task_id:
+            by_task.setdefault(obs.task_id, obs)
+
+    out: list[TaskEconomicsRecord] = []
+    for record in records:
+        obs = by_task.get(record.task_id)
+        if obs is None:
+            out.append(record)
+            continue
+        conflicts = [
+            name for name, left, right in (
+                ("context_id", record.context_id, obs.context_id),
+                ("context_generation", record.context_generation, obs.context_generation),
+                ("provider", record.provider, obs.provider),
+                ("provider_session_id", record.provider_session_id, obs.provider_session_id),
+            )
+            if left is not None and right is not None and left != right
+        ]
+        if conflicts:
+            out.append(replace(
+                record,
+                attribution_notes=record.attribution_notes + (
+                    "provider context observation refused: context identity "
+                    "disagrees on " + ", ".join(conflicts),
+                ),
+            ))
+            continue
+        out.append(replace(
+            record,
+            context_tokens=obs.context_tokens,
+            context_bytes=obs.context_bytes,
+            context_window_capped=obs.capped,
+        ))
+    return out

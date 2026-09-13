@@ -22,6 +22,8 @@ from .analytics import (
     failed_retry_token_waste,
     fresh_input_per_successful_task,
     lock_wait_summary,
+    provider_context_by_policy,
+    provider_context_window_summary,
     stratified_failure_rates,
     test_treatment_cohorts,
     test_treatment_failure_rates,
@@ -35,7 +37,11 @@ from .context_pack_analytics import (
     context_pack_efficiency,
     retrieval_mode_comparison,
 )
-from .correlate import ProviderUsageRecord, correlate_task_economics
+from .correlate import (
+    ProviderUsageRecord,
+    attach_provider_context_observations,
+    correlate_task_economics,
+)
 from .agent_crew_adapter import (
     context_pack_attributions_from_events,
     reconcile_attribution_by_task,
@@ -56,6 +62,9 @@ from .schema import (
     attribution_to_dict,
     classify_failure_category,
     context_pack_attribution_from_event,
+    ProviderContextObservation,
+    provider_context_observation_from_event,
+    provider_context_observations_from_events,
     extract_failure_reason,
     infer_retryable,
     lifecycle_event_from_dict,
@@ -94,6 +103,11 @@ __all__ = [
     "ContextLifecycleEvent",
     "ContextPackAttribution",
     "context_pack_attribution_from_event",
+    "ProviderContextObservation",
+    "provider_context_by_policy",
+    "provider_context_observation_from_event",
+    "provider_context_observations_from_events",
+    "provider_context_window_summary",
     "context_pack_attributions_from_events",
     "context_composition",
     "context_pack_efficiency",
@@ -114,6 +128,7 @@ __all__ = [
     "gemini_token_components",
     "token_components_for_provider",
     "merge_token_components",
+    "attach_provider_context_observations",
     "correlate_task_economics",
     "fresh_input_per_successful_task",
     "cache_creation_per_successful_task",
