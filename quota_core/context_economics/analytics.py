@@ -10,9 +10,9 @@ components stay visible.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable
+from typing import Iterable, Literal
 
-from .schema import FailureCategory, TaskEconomicsRecord, token_components_total
+from .schema import TASK_TOKEN_TELEMETRY_FIELDS, FailureCategory, TaskEconomicsRecord, token_components_total
 
 
 def _mean(values: list[float]) -> float | None:
@@ -491,7 +491,141 @@ def lock_wait_summary(records: Iterable[TaskEconomicsRecord]) -> dict[str, float
     }
 
 
+
+# --- quota-core#78: task-level token/cache telemetry -------------------------
+
+#: What a context-window-ish number actually measures. The two the producer
+#: emits are NOT interchangeable, so each is labelled rather than merged.
+ContextWindowKind = Literal["dispatch_window", "task_span_input_total"]
+
+
+def context_window_observations(record: TaskEconomicsRecord) -> dict[str, object]:
+    """Report the two context-size observations for one dispatch, side by side.
+
+    Agent Crew emits two numbers that both look like "context size", and an
+    earlier version of this function treated them as one quantity to reconcile.
+    That was wrong, and it discarded data: for any task that made more than one
+    provider invocation the two legitimately differ, and "reconciling" them
+    returned neither.
+
+    They measure different things at different moments:
+
+    - ``dispatch_window`` (quota-core#70, ``context_tokens``) -- the provider's
+      actual context window, read from the transcript at DISPATCH time, i.e.
+      BEFORE this task ran. It describes the context the task was handed.
+
+    - ``task_span_input_total`` (quota-core#78, ``context_window_tokens``) --
+      the producer sums cache-read + cache-write + uncached-input across EVERY
+      invocation in the completed task span (``telemetry_claude._extract_span``)
+      and stores the result under a window-shaped name. It describes what the
+      task consumed in total, so a ten-invocation task reports roughly ten
+      windows' worth. It is also derived: where the three components are
+      present it equals their sum exactly.
+
+    ⛔Neither is chosen over the other, they are never summed, and a difference
+      between them is NOT a conflict -- for a multi-invocation task it is the
+      expected result. ``comparable`` is always ``False``: it exists so a caller
+      reaching for a comparison finds the answer rather than inventing one.
+
+    ``invocation_amplification`` is offered only when both are known and the
+    dispatch window is non-zero: it is the ratio of consumed input to the window
+    the task started from, which is a rough floor on how many times the context
+    was re-sent. It is a ratio of two measured numbers, not an inference about
+    provider behaviour, and it is ``None`` whenever either side is unknown.
+    """
+
+    dispatch_window = record.context_tokens
+    span_input_total = record.task_telemetry.context_window_tokens
+
+    amplification: float | None = None
+    if dispatch_window not in (None, 0) and span_input_total is not None:
+        amplification = span_input_total / dispatch_window  # type: ignore[operator]
+
+    return {
+        "dispatch_window_tokens": dispatch_window,
+        "task_span_input_total_tokens": span_input_total,
+        "comparable": False,
+        "invocation_amplification": amplification,
+        "known": tuple(
+            name for name, value in (
+                ("dispatch_window", dispatch_window),
+                ("task_span_input_total", span_input_total),
+            )
+            if value is not None
+        ),
+    }
+
+
+def task_token_telemetry_summary(
+    records: Iterable[TaskEconomicsRecord],
+) -> dict[str, dict[str, float | int | None]]:
+    """Per-component aggregates over quota-core#78 task telemetry.
+
+    ⛔One entry per component, each with its OWN denominator. There is no
+      total and no cross-component arithmetic: a provider that reports cache
+      reads but not reasoning tokens would otherwise contribute to a "total"
+      that means something different from another provider's, and
+      ``reasoning_tokens`` is a subset of ``output_tokens`` where both exist,
+      so summing them double-counts.
+
+    ``known_count`` excludes records that never reported the component, so a
+    provider that does not expose one cannot drag its mean toward zero. A
+    measured ``0`` is included, because it is a measurement.
+
+    PRODUCTION SAMPLE PENDING: no organic row with a measured value has been
+    captured yet (see ``docs/task-token-telemetry.md``), so output from this
+    function must not be presented as measured cache-locality economics.
+    """
+
+    rows = list(records)
+    out: dict[str, dict[str, float | int | None]] = {}
+    for name in TASK_TOKEN_TELEMETRY_FIELDS:
+        values = [
+            getattr(r.task_telemetry, name) for r in rows
+            if getattr(r.task_telemetry, name) is not None
+        ]
+        out[name] = {
+            "total_row_count": len(rows),
+            "known_count": len(values),
+            "unknown_count": len(rows) - len(values),
+            "total": sum(values) if values else None,
+            "mean": _mean([float(v) for v in values]) if values else None,
+        }
+    return out
+
+
+def task_telemetry_by_stable_prefix(
+    records: Iterable[TaskEconomicsRecord],
+) -> dict[str, dict[str, float | int | None]]:
+    """Group #78 telemetry by ``stable_prefix_hash`` (an attribution dimension).
+
+    ⛔A hash is an identity, not a claim. Two dispatches sharing a
+      ``stable_prefix_hash`` were assembled from the same stable prefix; that is
+      not by itself evidence the provider cached it, and this function asserts
+      nothing about cache behaviour. It only makes the grouping available so a
+      caller can ask the question against measured cache components.
+
+    Records with no hash group under the literal ``"unknown"`` rather than being
+    dropped or merged into any real prefix.
+    """
+
+    buckets: dict[str, list[TaskEconomicsRecord]] = defaultdict(list)
+    for record in records:
+        buckets[record.stable_prefix_hash or "unknown"].append(record)
+    return {
+        prefix: {"sample_size": len(rows), **{
+            name: task_token_telemetry_summary(rows)[name]["total"]
+            for name in TASK_TOKEN_TELEMETRY_FIELDS
+        }}
+        for prefix, rows in buckets.items()
+    }
+
 __all__ = [
+    "ContextWindowKind",
+    "task_telemetry_by_stable_prefix",
+    "task_token_telemetry_summary",
+    "context_window_observations",
+    "ContextWindowKind",
     "fresh_input_per_successful_task",
     "cache_creation_per_successful_task",
     "cache_read_per_task",

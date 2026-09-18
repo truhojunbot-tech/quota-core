@@ -218,6 +218,13 @@ def correlate_task_economics(
                 test_scope_hash=a.test_scope_hash,
                 lock_wait_seconds=a.lock_wait_seconds,
                 lock_defer_count=a.lock_defer_count,
+                # quota-core#78: carried from the attribution row onto the
+                # record. This is the step PR #71 missed for its own fields --
+                # a join that stops at the dataclass boundary is invisible to
+                # every report built downstream of it.
+                task_telemetry=a.task_telemetry,
+                stable_prefix_hash=a.stable_prefix_hash,
+                context_pack_hash=a.context_pack_hash,
                 attribution_confidence=confidence,  # type: ignore[arg-type]
                 attribution_notes=tuple(notes),
             )

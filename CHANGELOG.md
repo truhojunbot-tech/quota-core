@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.1.19 - 2026-09-18
+
+Consumes Agent Crew #317/#318's task-level token/cache telemetry (issue #78).
+
+- `TaskTokenTelemetry` carries the six nullable token/cache components from
+  `task_attribution` (`uncached_input_tokens`, `cache_write_tokens`,
+  `cache_read_tokens`, `output_tokens`, `reasoning_tokens`,
+  `context_window_tokens`) on `RuntimeAttribution`/`TaskEconomicsRecord`.
+  `None` is unknown, a measured `0` stays a measurement, and `bool` is rejected
+  so a stray `true` cannot fabricate a one-token reading.
+- Deliberately **no universal total**: `reasoning_tokens` is a subset of
+  `output_tokens`, and a provider exposing only some components would produce a
+  total meaning something different from another's. `task_token_telemetry_summary()`
+  reports each component with its own denominator.
+- `stable_prefix_hash`/`context_pack_hash` carried as attribution dimensions.
+  `task_telemetry_by_stable_prefix()` groups by prefix without inferring cache
+  behaviour from a hash.
+- `context_window_observations()` reports the #78 span input total and
+  quota-core#70's dispatch-time window side by side, labelled, without
+  reconciling them. They are different measurements at different moments -- the
+  producer sums cache-read + cache-write + uncached-input across every
+  invocation in the task span, so a multi-invocation task differing from the
+  pre-dispatch window is expected, not a conflict. Never chooses, never sums,
+  never calls a difference a contradiction.
+- `validate_attribution_dict()` now checks all six token components as non-bool
+  integers and both hashes as strings, so the public validator no longer marks
+  malformed producer data valid while the parser silently drops it.
+- Production-shaped fixture `tests/fixtures/agent_crew/task_token_telemetry/`
+  copied from a real post-#317 row shape, plus persistence round-trip and
+  cross-repo integration coverage.
+- **PRODUCTION SAMPLE PENDING**: the wire shape is confirmed against real rows,
+  but no organic row with a measured value exists yet, so no resume/fresh or
+  cache-locality conclusion may be drawn from fixtures. See
+  `docs/task-token-telemetry.md`.
+- No pricing assumptions and no provider-specific policy in the adapter; no
+  `agent_crew` import.
+
 ## 0.1.18 - 2026-09-06
 
 Consumes Agent Crew #278/#279's tester-treatment and scheduler-lock-wait
