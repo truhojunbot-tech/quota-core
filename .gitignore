@@ -14,5 +14,15 @@ dist/
 quota-core-*.html
 quota-core-*.json
 
+# Runtime worker protocol files written into a worktree by an external
+# orchestrator. They are private operational instructions -- internal role
+# names, local endpoints, dispatcher behaviour -- and belong to whoever
+# generated them, not to this public repository (docs/public-private-boundary.md
+# forbids exactly that content here). Ignored so a `git add -A` inside such a
+# worktree cannot sweep one into a commit, which is how one reached PR #79.
+.claude/
+AGENTS.md
+GEMINI.md
+
 # Documented fixture contracts are committed source, not runtime data.
 !tests/fixtures/**/*.jsonl
