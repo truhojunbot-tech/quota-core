@@ -31,7 +31,7 @@ from .analytics import (
     tokens_per_outcome,
     tokens_per_successful_task,
     unknown_cause_warning,
-    reconcile_context_window,
+    context_window_observations,
     task_token_telemetry_summary,
     task_telemetry_by_stable_prefix,
 )
@@ -101,7 +101,7 @@ from .token_components import (
 __all__ = [
     "task_telemetry_by_stable_prefix",
     "task_token_telemetry_summary",
-    "reconcile_context_window",
+    "context_window_observations",
     "task_token_telemetry_to_dict",
     "task_token_telemetry_from_dict",
     "TASK_ATTRIBUTION_HASH_FIELDS",

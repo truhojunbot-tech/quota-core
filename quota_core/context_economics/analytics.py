@@ -494,63 +494,65 @@ def lock_wait_summary(records: Iterable[TaskEconomicsRecord]) -> dict[str, float
 
 # --- quota-core#78: task-level token/cache telemetry -------------------------
 
-#: How a reconciled context-window value was chosen. `lifecycle` and
-#: `task_attribution` name the surviving source; `agree` means both were present
-#: and equal; `conflict` means both were present and disagreed, in which case no
-#: value is chosen at all.
-ContextWindowSource = Literal["lifecycle", "task_attribution", "agree", "conflict", "unknown"]
+#: What a context-window-ish number actually measures. The two the producer
+#: emits are NOT interchangeable, so each is labelled rather than merged.
+ContextWindowKind = Literal["dispatch_window", "task_span_input_total"]
 
 
-def reconcile_context_window(record: TaskEconomicsRecord) -> dict[str, object]:
-    """Reconcile the two context-window measurements for one dispatch (#78).
+def context_window_observations(record: TaskEconomicsRecord) -> dict[str, object]:
+    """Report the two context-size observations for one dispatch, side by side.
 
-    Agent Crew now measures the provider's context window in two places: the
-    quota-core#70 lifecycle observation (``provider_context_observed`` /
-    ``provider_context_capped``, joined onto ``context_tokens``) and the
-    quota-core#78 task-attribution row (``context_window_tokens``, read from
-    the provider's own session transcript at task completion).
+    Agent Crew emits two numbers that both look like "context size", and an
+    earlier version of this function treated them as one quantity to reconcile.
+    That was wrong, and it discarded data: for any task that made more than one
+    provider invocation the two legitimately differ, and "reconciling" them
+    returned neither.
 
-    ⛔They measure the SAME physical quantity, so a caller that adds them
-      double-counts one window. This function chooses between them and reports
-      which it chose; it never sums, averages, or silently prefers whichever is
-      larger.
+    They measure different things at different moments:
 
-    Precedence, when both are present and disagree: NEITHER is chosen. A
-    disagreement means the two observation paths saw different states -- most
-    plausibly because they ran at different moments in the dispatch -- and
-    picking one would assert a resolution the data does not support. The
-    ``conflict`` source and both raw values are returned instead so a caller can
-    decide, or exclude the dispatch, with the disagreement visible.
+    - ``dispatch_window`` (quota-core#70, ``context_tokens``) -- the provider's
+      actual context window, read from the transcript at DISPATCH time, i.e.
+      BEFORE this task ran. It describes the context the task was handed.
 
-    When only one is present it is used, tagged with its origin. When the two
-    agree the value is returned as ``agree``, which is strictly stronger
-    evidence than either alone and worth being able to filter on.
+    - ``task_span_input_total`` (quota-core#78, ``context_window_tokens``) --
+      the producer sums cache-read + cache-write + uncached-input across EVERY
+      invocation in the completed task span (``telemetry_claude._extract_span``)
+      and stores the result under a window-shaped name. It describes what the
+      task consumed in total, so a ten-invocation task reports roughly ten
+      windows' worth. It is also derived: where the three components are
+      present it equals their sum exactly.
 
-    ``0`` participates normally: a measured empty window is a measurement, and
-    only ``None`` means unknown.
+    ⛔Neither is chosen over the other, they are never summed, and a difference
+      between them is NOT a conflict -- for a multi-invocation task it is the
+      expected result. ``comparable`` is always ``False``: it exists so a caller
+      reaching for a comparison finds the answer rather than inventing one.
+
+    ``invocation_amplification`` is offered only when both are known and the
+    dispatch window is non-zero: it is the ratio of consumed input to the window
+    the task started from, which is a rough floor on how many times the context
+    was re-sent. It is a ratio of two measured numbers, not an inference about
+    provider behaviour, and it is ``None`` whenever either side is unknown.
     """
 
-    lifecycle = record.context_tokens
-    attribution = record.task_telemetry.context_window_tokens
+    dispatch_window = record.context_tokens
+    span_input_total = record.task_telemetry.context_window_tokens
 
-    if lifecycle is None and attribution is None:
-        source: str = "unknown"
-        value: int | None = None
-    elif attribution is None:
-        source, value = "lifecycle", lifecycle
-    elif lifecycle is None:
-        source, value = "task_attribution", attribution
-    elif lifecycle == attribution:
-        source, value = "agree", lifecycle
-    else:
-        source, value = "conflict", None
+    amplification: float | None = None
+    if dispatch_window not in (None, 0) and span_input_total is not None:
+        amplification = span_input_total / dispatch_window  # type: ignore[operator]
 
     return {
-        "context_window_tokens": value,
-        "source": source,
-        "lifecycle_context_tokens": lifecycle,
-        "task_attribution_context_window_tokens": attribution,
-        "agrees": None if source in ("unknown", "lifecycle", "task_attribution") else source == "agree",
+        "dispatch_window_tokens": dispatch_window,
+        "task_span_input_total_tokens": span_input_total,
+        "comparable": False,
+        "invocation_amplification": amplification,
+        "known": tuple(
+            name for name, value in (
+                ("dispatch_window", dispatch_window),
+                ("task_span_input_total", span_input_total),
+            )
+            if value is not None
+        ),
     }
 
 
@@ -619,10 +621,11 @@ def task_telemetry_by_stable_prefix(
     }
 
 __all__ = [
-    "ContextWindowSource",
+    "ContextWindowKind",
     "task_telemetry_by_stable_prefix",
     "task_token_telemetry_summary",
-    "reconcile_context_window",
+    "context_window_observations",
+    "ContextWindowKind",
     "fresh_input_per_successful_task",
     "cache_creation_per_successful_task",
     "cache_read_per_task",

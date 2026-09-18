@@ -18,7 +18,8 @@ from quota_core.context_economics import (
     attribution_from_dict,
     attribution_to_dict,
     correlate_task_economics,
-    reconcile_context_window,
+    context_window_observations,
+    validate_attribution_dict,
     task_economics_to_dict,
     task_telemetry_by_stable_prefix,
     task_token_telemetry_from_dict,
@@ -148,56 +149,131 @@ class HashDimensionTests(unittest.TestCase):
         self.assertIsNone(grouped["unknown"]["cache_read_tokens"])
 
 
-class ContextWindowReconciliationTests(unittest.TestCase):
-    """#78's window measurement and #70's lifecycle one measure one quantity."""
+class ContextWindowObservationTests(unittest.TestCase):
+    """The #70 and #78 numbers are DIFFERENT measurements, not one to reconcile.
 
-    def _with_lifecycle(self, record, tokens):
+    Review of the first version of this change (review-impl-issue78-r0, P1)
+    established the producer contract: `provider_context_observed` is emitted at
+    dispatch time from the pre-task transcript window (server.py), while
+    `telemetry_claude._extract_span` sums cache-read + cache-write +
+    uncached-input across EVERY invocation in the completed task span. A
+    multi-invocation task therefore disagrees by construction, and the earlier
+    "conflict -> choose neither" policy discarded both valid observations.
+    """
+
+    def _with_dispatch_window(self, record, tokens):
         import dataclasses
         return dataclasses.replace(record, context_tokens=tokens)
 
-    def test_lifecycle_only(self):
-        r = self._with_lifecycle(_record(), 120000)
-        out = reconcile_context_window(r)
-        self.assertEqual(out["context_window_tokens"], 120000)
-        self.assertEqual(out["source"], "lifecycle")
-
-    def test_task_attribution_only(self):
-        out = reconcile_context_window(_record(context_window_tokens=98000))
-        self.assertEqual(out["context_window_tokens"], 98000)
-        self.assertEqual(out["source"], "task_attribution")
-
-    def test_agreement_is_reported_as_stronger_evidence(self):
-        r = self._with_lifecycle(_record(context_window_tokens=98000), 98000)
-        out = reconcile_context_window(r)
-        self.assertEqual(out["source"], "agree")
-        self.assertEqual(out["context_window_tokens"], 98000)
-        self.assertIs(out["agrees"], True)
-
-    def test_a_disagreement_chooses_neither_and_never_sums(self):
-        r = self._with_lifecycle(_record(context_window_tokens=98000), 120000)
-        out = reconcile_context_window(r)
-        self.assertEqual(out["source"], "conflict")
-        self.assertIsNone(out["context_window_tokens"])
-        self.assertIs(out["agrees"], False)
-        # Both raw values stay visible, and neither 218000 nor 109000 appears.
-        self.assertEqual(out["lifecycle_context_tokens"], 120000)
-        self.assertEqual(out["task_attribution_context_window_tokens"], 98000)
-
-    def test_measured_zero_participates_normally(self):
-        r = self._with_lifecycle(_record(context_window_tokens=0), 0)
-        self.assertEqual(reconcile_context_window(r)["source"], "agree")
-        self.assertEqual(reconcile_context_window(r)["context_window_tokens"], 0)
-
-    def test_both_unknown(self):
-        out = reconcile_context_window(_record())
-        self.assertEqual(out["source"], "unknown")
-        self.assertIsNone(out["context_window_tokens"])
-        self.assertIsNone(out["agrees"])
+    def test_a_multi_invocation_task_keeps_both_observations(self):
+        """★The regression this class exists for. Producer-shaped: a task
+        handed a 42k window that then made four invocations, so the span input
+        total is ~4 windows' worth. Neither number is wrong and neither is
+        dropped."""
+        r = self._with_dispatch_window(_record(context_window_tokens=168000), 42000)
+        out = context_window_observations(r)
+        self.assertEqual(out["dispatch_window_tokens"], 42000)
+        self.assertEqual(out["task_span_input_total_tokens"], 168000)
+        self.assertEqual(out["known"], ("dispatch_window", "task_span_input_total"))
+        self.assertIs(out["comparable"], False)
+        self.assertAlmostEqual(out["invocation_amplification"], 4.0)
 
     def test_the_two_fields_are_never_merged_on_the_record(self):
-        r = self._with_lifecycle(_record(context_window_tokens=98000), 120000)
-        self.assertEqual(r.context_tokens, 120000)
-        self.assertEqual(r.task_telemetry.context_window_tokens, 98000)
+        r = self._with_dispatch_window(_record(context_window_tokens=168000), 42000)
+        self.assertEqual(r.context_tokens, 42000)
+        self.assertEqual(r.task_telemetry.context_window_tokens, 168000)
+
+    def test_a_difference_is_never_reported_as_a_conflict(self):
+        out = context_window_observations(
+            self._with_dispatch_window(_record(context_window_tokens=168000), 42000))
+        self.assertNotIn("conflict", str(out.values()))
+        # And nothing sums them: neither 210000 nor an average appears.
+        self.assertNotIn(210000, out.values())
+        self.assertNotIn(105000, out.values())
+
+    def test_single_invocation_task_reports_amplification_near_one(self):
+        out = context_window_observations(
+            self._with_dispatch_window(_record(context_window_tokens=43000), 42000))
+        self.assertLess(out["invocation_amplification"], 1.1)
+        self.assertIs(out["comparable"], False)
+
+    def test_each_side_alone(self):
+        only_dispatch = context_window_observations(
+            self._with_dispatch_window(_record(), 42000))
+        self.assertEqual(only_dispatch["known"], ("dispatch_window",))
+        self.assertIsNone(only_dispatch["invocation_amplification"])
+        only_span = context_window_observations(_record(context_window_tokens=168000))
+        self.assertEqual(only_span["known"], ("task_span_input_total",))
+        self.assertIsNone(only_span["invocation_amplification"])
+
+    def test_neither_known(self):
+        out = context_window_observations(_record())
+        self.assertEqual(out["known"], ())
+        self.assertIsNone(out["dispatch_window_tokens"])
+        self.assertIsNone(out["task_span_input_total_tokens"])
+        self.assertIsNone(out["invocation_amplification"])
+
+    def test_a_zero_dispatch_window_does_not_divide(self):
+        out = context_window_observations(
+            self._with_dispatch_window(_record(context_window_tokens=168000), 0))
+        self.assertEqual(out["dispatch_window_tokens"], 0)
+        self.assertIsNone(out["invocation_amplification"])
+
+    def test_span_total_equals_its_components_where_all_are_present(self):
+        """The producer derives it as exactly that sum, which is why it carries
+        no information the three components do not already carry."""
+        r = _record(uncached_input_tokens=1840, cache_write_tokens=0,
+                    cache_read_tokens=118450, context_window_tokens=1840 + 0 + 118450)
+        t = r.task_telemetry
+        self.assertEqual(
+            t.context_window_tokens,
+            t.uncached_input_tokens + t.cache_write_tokens + t.cache_read_tokens)
+
+
+class ValidatorTests(unittest.TestCase):
+    """review-impl-issue78-r0 P2: the validator called malformed data valid."""
+
+    def test_a_bool_is_rejected_for_every_token_field(self):
+        for name in TASK_TOKEN_TELEMETRY_FIELDS:
+            for value in (True, False):
+                errors = validate_attribution_dict(
+                    {"runtime": "agent_crew", "task_id": "t", name: value})
+                self.assertTrue(any(name in e for e in errors), f"{name}={value}")
+
+    def test_a_non_integer_is_rejected(self):
+        errors = validate_attribution_dict(
+            {"runtime": "agent_crew", "task_id": "t", "output_tokens": "lots"})
+        self.assertTrue(any("output_tokens" in e for e in errors))
+
+    def test_the_validator_agrees_with_the_parser(self):
+        """⛔The actual defect: a validator that passes what its own parser
+        drops is worse than none, because a caller trusts it."""
+        for name in TASK_TOKEN_TELEMETRY_FIELDS:
+            row = {"runtime": "agent_crew", "task_id": "t", name: True}
+            self.assertIsNone(getattr(attribution_from_dict(row).task_telemetry, name))
+            self.assertTrue(validate_attribution_dict(row))
+
+    def test_measured_values_including_zero_stay_valid(self):
+        row = {"runtime": "agent_crew", "task_id": "t"}
+        row.update({name: 0 for name in TASK_TOKEN_TELEMETRY_FIELDS})
+        self.assertEqual(validate_attribution_dict(row), ())
+        row.update({name: 1234 for name in TASK_TOKEN_TELEMETRY_FIELDS})
+        self.assertEqual(validate_attribution_dict(row), ())
+
+    def test_null_and_absent_stay_valid(self):
+        self.assertEqual(
+            validate_attribution_dict({"runtime": "agent_crew", "task_id": "t"}), ())
+        self.assertEqual(validate_attribution_dict(
+            {"runtime": "agent_crew", "task_id": "t",
+             **{n: None for n in TASK_TOKEN_TELEMETRY_FIELDS}}), ())
+
+    def test_hash_fields_must_be_strings(self):
+        for name in TASK_ATTRIBUTION_HASH_FIELDS:
+            errors = validate_attribution_dict(
+                {"runtime": "agent_crew", "task_id": "t", name: 12345})
+            self.assertTrue(any(name in e for e in errors), name)
+            self.assertEqual(validate_attribution_dict(
+                {"runtime": "agent_crew", "task_id": "t", name: "sha256:ok"}), ())
 
 
 class PersistenceTests(unittest.TestCase):

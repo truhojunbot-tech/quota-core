@@ -54,31 +54,41 @@ Compose whatever total a specific pricing model needs at the point of use,
 where the provider is known. The adapter contains no pricing assumption and no
 provider-specific policy.
 
-## Reconciling with the #70 window observation
+## Two different context-size numbers — not one to reconcile
 
-The provider's context window is now measured in **two** places:
+Agent Crew emits two numbers that both look like "context size". They are
+**different measurements of different things at different moments**, and an
+earlier version of this change wrongly treated them as one quantity to
+reconcile — which discarded both whenever they differed.
 
-- quota-core#70 — the `provider_context_observed` / `provider_context_capped`
-  lifecycle event, joined onto `TaskEconomicsRecord.context_tokens`;
-- quota-core#78 — `context_window_tokens` on the task-attribution row.
+| number | what it is | when |
+|---|---|---|
+| `context_tokens` (quota-core#70) | the provider's real context window, read from the transcript | at **dispatch**, before this task ran |
+| `task_telemetry.context_window_tokens` (#78) | cache-read + cache-write + uncached-input, each already summed across **every invocation** in the task span | at task **completion** |
 
-They measure the same physical quantity, so summing them double-counts one
-window. The two are kept in **separate fields** and reconciled explicitly by
-`reconcile_context_window(record)`:
+The producer builds the second in `telemetry_claude._extract_span`. For a task
+that made one invocation it happens to resemble a window; for a task that made
+ten it is roughly ten windows' worth, because each invocation's cache read is
+counted again. **A multi-invocation task disagreeing is the normal case, not a
+contradiction.**
 
-| both | result |
-|---|---|
-| only lifecycle | that value, `source="lifecycle"` |
-| only task attribution | that value, `source="task_attribution"` |
-| both, equal | that value, `source="agree"` — stronger evidence than either alone |
-| both, different | **no value chosen**, `source="conflict"`, both raw values returned |
-| neither | `None`, `source="unknown"` |
+It is also *derived*: where all three components are present it equals their sum
+exactly, so it carries no information they do not already carry. It is kept
+because a provider may report it when a component is missing.
 
-A disagreement means the two observation paths saw different states, most
-plausibly at different moments in the dispatch. Choosing one would assert a
-resolution the data does not support, so the function chooses neither and makes
-the disagreement visible instead. It never sums, averages, or prefers the
-larger.
+`context_window_observations(record)` therefore reports both side by side,
+labelled, and:
+
+- never chooses between them,
+- never sums or averages them,
+- never calls a difference a conflict,
+- always reports `comparable: False`, so a caller reaching for a comparison
+  finds the answer rather than inventing one.
+
+It offers `invocation_amplification` (span input total ÷ dispatch window) only
+when both are known and the window is non-zero. That is a ratio of two measured
+numbers — a rough floor on how many times the context was re-sent — not an
+inference about provider behaviour.
 
 ## Hashes are dimensions, not truth
 

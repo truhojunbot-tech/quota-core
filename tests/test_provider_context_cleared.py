@@ -30,7 +30,6 @@ intervention did NOT land and therefore cannot be why anything looks fresh.
 
 from __future__ import annotations
 
-import pytest
 
 from quota_core.context_economics.schema import (
     ContextLifecycleEvent,
@@ -119,15 +118,22 @@ def test_another_event_type_is_not_one_of_these():
     assert provider_context_clearing_from_event(other) is None
 
 
-@pytest.mark.parametrize("outcome,status", [
-    ("attempted", "attempted"),
-    ("send_failed", "failed"),
-    ("confirmed", "confirmed"),
-])
-def test_each_producer_outcome_maps_to_its_own_state(outcome, status):
+def test_each_producer_outcome_maps_to_its_own_state():
     """★★(b) and (c) must never collapse into each other, and `send_failed`
-    must not read as either."""
-    assert provider_context_clearing_from_event(_cleared_event(outcome)).status == status
+    must not read as either.
+
+    Written as an explicit loop rather than `pytest.mark.parametrize` so this
+    module imports under `python -m unittest discover`, which is what this
+    repo's CI actually runs and which installs only the package itself. A
+    module-scope `import pytest` made discovery fail on the import, turning the
+    whole suite red in CI while passing locally where pytest happens to exist.
+    """
+    for outcome, status in (
+        ("attempted", "attempted"),
+        ("send_failed", "failed"),
+        ("confirmed", "confirmed"),
+    ):
+        assert provider_context_clearing_from_event(_cleared_event(outcome)).status == status, outcome
 
 
 def test_an_outcome_this_version_does_not_know_is_unknown_not_guessed():

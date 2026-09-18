@@ -448,11 +448,29 @@ class TaskTokenTelemetry:
       adding them would double-count. Compose whatever total a specific
       pricing model needs at the point of use, where the provider is known.
 
-    ⛔``context_window_tokens`` is a window MEASUREMENT, not a billing
-      component, and it measures the same physical quantity as quota-core#70's
-      lifecycle ``context_tokens`` observation. The two are kept in separate
-      fields and reconciled explicitly rather than merged -- see
-      :func:`~quota_core.context_economics.analytics.reconcile_context_window`.
+    ⛔``context_window_tokens`` is NOT a point-in-time context window, despite
+      its producer-side name, and it is NOT the same quantity as quota-core#70's
+      lifecycle ``context_tokens``. The producer derives it in
+      ``telemetry_claude._extract_span`` by summing ``cache_read`` +
+      ``cache_write`` + ``uncached_input`` AFTER each of those has already been
+      summed across every provider invocation in the completed task span. For a
+      task that made one invocation it happens to resemble a window; for a task
+      that made ten it is roughly ten windows' worth, because each invocation's
+      cache read is counted again.
+
+      quota-core#70's ``context_tokens`` is the genuine point-in-time window,
+      read from the transcript at DISPATCH time -- before this task ran at all.
+
+      So the two are different measurements of different things taken at
+      different moments, and a multi-invocation task disagreeing on them is the
+      normal case, not a contradiction. Treating them as one quantity to be
+      reconciled -- as the first version of this change did -- discards two
+      valid observations on nearly every real task. See
+      :func:`~quota_core.context_economics.analytics.context_window_observations`.
+
+      Note it is also DERIVED: where all three components are present it equals
+      their sum exactly, so it carries no information they do not already carry.
+      It is kept because a provider may report it when a component is missing.
 
     PRODUCTION SAMPLE PENDING: the wire shape is confirmed against real
     post-deploy attribution rows, but no row with a MEASURED value has been
@@ -468,8 +486,8 @@ class TaskTokenTelemetry:
     #: The reasoning subset of ``output_tokens`` where a provider separates it.
     #: Never added to ``output_tokens`` -- see the class note above.
     reasoning_tokens: int | None = None
-    #: The provider's context window at task completion. Reconciled against the
-    #: quota-core#70 lifecycle observation, never summed with it.
+    #: Span-wide input-side total, NOT a point-in-time window -- see the class
+    #: note. Never compared as an equal to quota-core#70's `context_tokens`.
     context_window_tokens: int | None = None
 
     @property
@@ -1584,6 +1602,22 @@ def validate_attribution_dict(data: dict[str, Any]) -> tuple[str, ...]:
     lock_wait = data.get("lock_wait_seconds")
     if lock_wait is not None and (isinstance(lock_wait, bool) or not isinstance(lock_wait, (int, float))):
         errors.append("lock_wait_seconds must be a number or null")
+    # quota-core#78: the six token components. Without these the public
+    # validator called malformed producer data valid while the parser silently
+    # dropped it to None -- a validator that contradicts its own parser is worse
+    # than no validator, because a caller trusts it. bool is checked first
+    # because it is an int subclass and would otherwise pass the int check.
+    for _token_field in TASK_TOKEN_TELEMETRY_FIELDS:
+        _token_value = data.get(_token_field)
+        if _token_value is not None and (
+            isinstance(_token_value, bool) or not isinstance(_token_value, int)
+        ):
+            errors.append(f"{_token_field} must be an integer or null")
+    for _hash_field in TASK_ATTRIBUTION_HASH_FIELDS:
+        _hash_value = data.get(_hash_field)
+        if _hash_value is not None and not isinstance(_hash_value, str):
+            errors.append(f"{_hash_field} must be a string or null")
+
     lock_defers = data.get("lock_defer_count")
     if lock_defers is not None and (isinstance(lock_defers, bool) or not isinstance(lock_defers, int)):
         errors.append("lock_defer_count must be an integer or null")

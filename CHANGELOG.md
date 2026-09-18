@@ -17,9 +17,16 @@ Consumes Agent Crew #317/#318's task-level token/cache telemetry (issue #78).
 - `stable_prefix_hash`/`context_pack_hash` carried as attribution dimensions.
   `task_telemetry_by_stable_prefix()` groups by prefix without inferring cache
   behaviour from a hash.
-- `reconcile_context_window()` resolves the #78 window measurement against
-  quota-core#70's lifecycle observation rather than double-counting: agreement
-  is reported as such, a disagreement chooses neither and surfaces both values.
+- `context_window_observations()` reports the #78 span input total and
+  quota-core#70's dispatch-time window side by side, labelled, without
+  reconciling them. They are different measurements at different moments -- the
+  producer sums cache-read + cache-write + uncached-input across every
+  invocation in the task span, so a multi-invocation task differing from the
+  pre-dispatch window is expected, not a conflict. Never chooses, never sums,
+  never calls a difference a contradiction.
+- `validate_attribution_dict()` now checks all six token components as non-bool
+  integers and both hashes as strings, so the public validator no longer marks
+  malformed producer data valid while the parser silently drops it.
 - Production-shaped fixture `tests/fixtures/agent_crew/task_token_telemetry/`
   copied from a real post-#317 row shape, plus persistence round-trip and
   cross-repo integration coverage.
