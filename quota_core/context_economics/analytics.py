@@ -10,9 +10,9 @@ components stay visible.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable
+from typing import Iterable, Literal
 
-from .schema import FailureCategory, TaskEconomicsRecord, token_components_total
+from .schema import TASK_TOKEN_TELEMETRY_FIELDS, FailureCategory, TaskEconomicsRecord, token_components_total
 
 
 def _mean(values: list[float]) -> float | None:
@@ -491,7 +491,138 @@ def lock_wait_summary(records: Iterable[TaskEconomicsRecord]) -> dict[str, float
     }
 
 
+
+# --- quota-core#78: task-level token/cache telemetry -------------------------
+
+#: How a reconciled context-window value was chosen. `lifecycle` and
+#: `task_attribution` name the surviving source; `agree` means both were present
+#: and equal; `conflict` means both were present and disagreed, in which case no
+#: value is chosen at all.
+ContextWindowSource = Literal["lifecycle", "task_attribution", "agree", "conflict", "unknown"]
+
+
+def reconcile_context_window(record: TaskEconomicsRecord) -> dict[str, object]:
+    """Reconcile the two context-window measurements for one dispatch (#78).
+
+    Agent Crew now measures the provider's context window in two places: the
+    quota-core#70 lifecycle observation (``provider_context_observed`` /
+    ``provider_context_capped``, joined onto ``context_tokens``) and the
+    quota-core#78 task-attribution row (``context_window_tokens``, read from
+    the provider's own session transcript at task completion).
+
+    ⛔They measure the SAME physical quantity, so a caller that adds them
+      double-counts one window. This function chooses between them and reports
+      which it chose; it never sums, averages, or silently prefers whichever is
+      larger.
+
+    Precedence, when both are present and disagree: NEITHER is chosen. A
+    disagreement means the two observation paths saw different states -- most
+    plausibly because they ran at different moments in the dispatch -- and
+    picking one would assert a resolution the data does not support. The
+    ``conflict`` source and both raw values are returned instead so a caller can
+    decide, or exclude the dispatch, with the disagreement visible.
+
+    When only one is present it is used, tagged with its origin. When the two
+    agree the value is returned as ``agree``, which is strictly stronger
+    evidence than either alone and worth being able to filter on.
+
+    ``0`` participates normally: a measured empty window is a measurement, and
+    only ``None`` means unknown.
+    """
+
+    lifecycle = record.context_tokens
+    attribution = record.task_telemetry.context_window_tokens
+
+    if lifecycle is None and attribution is None:
+        source: str = "unknown"
+        value: int | None = None
+    elif attribution is None:
+        source, value = "lifecycle", lifecycle
+    elif lifecycle is None:
+        source, value = "task_attribution", attribution
+    elif lifecycle == attribution:
+        source, value = "agree", lifecycle
+    else:
+        source, value = "conflict", None
+
+    return {
+        "context_window_tokens": value,
+        "source": source,
+        "lifecycle_context_tokens": lifecycle,
+        "task_attribution_context_window_tokens": attribution,
+        "agrees": None if source in ("unknown", "lifecycle", "task_attribution") else source == "agree",
+    }
+
+
+def task_token_telemetry_summary(
+    records: Iterable[TaskEconomicsRecord],
+) -> dict[str, dict[str, float | int | None]]:
+    """Per-component aggregates over quota-core#78 task telemetry.
+
+    ⛔One entry per component, each with its OWN denominator. There is no
+      total and no cross-component arithmetic: a provider that reports cache
+      reads but not reasoning tokens would otherwise contribute to a "total"
+      that means something different from another provider's, and
+      ``reasoning_tokens`` is a subset of ``output_tokens`` where both exist,
+      so summing them double-counts.
+
+    ``known_count`` excludes records that never reported the component, so a
+    provider that does not expose one cannot drag its mean toward zero. A
+    measured ``0`` is included, because it is a measurement.
+
+    PRODUCTION SAMPLE PENDING: no organic row with a measured value has been
+    captured yet (see ``docs/task-token-telemetry.md``), so output from this
+    function must not be presented as measured cache-locality economics.
+    """
+
+    rows = list(records)
+    out: dict[str, dict[str, float | int | None]] = {}
+    for name in TASK_TOKEN_TELEMETRY_FIELDS:
+        values = [
+            getattr(r.task_telemetry, name) for r in rows
+            if getattr(r.task_telemetry, name) is not None
+        ]
+        out[name] = {
+            "total_row_count": len(rows),
+            "known_count": len(values),
+            "unknown_count": len(rows) - len(values),
+            "total": sum(values) if values else None,
+            "mean": _mean([float(v) for v in values]) if values else None,
+        }
+    return out
+
+
+def task_telemetry_by_stable_prefix(
+    records: Iterable[TaskEconomicsRecord],
+) -> dict[str, dict[str, float | int | None]]:
+    """Group #78 telemetry by ``stable_prefix_hash`` (an attribution dimension).
+
+    ⛔A hash is an identity, not a claim. Two dispatches sharing a
+      ``stable_prefix_hash`` were assembled from the same stable prefix; that is
+      not by itself evidence the provider cached it, and this function asserts
+      nothing about cache behaviour. It only makes the grouping available so a
+      caller can ask the question against measured cache components.
+
+    Records with no hash group under the literal ``"unknown"`` rather than being
+    dropped or merged into any real prefix.
+    """
+
+    buckets: dict[str, list[TaskEconomicsRecord]] = defaultdict(list)
+    for record in records:
+        buckets[record.stable_prefix_hash or "unknown"].append(record)
+    return {
+        prefix: {"sample_size": len(rows), **{
+            name: task_token_telemetry_summary(rows)[name]["total"]
+            for name in TASK_TOKEN_TELEMETRY_FIELDS
+        }}
+        for prefix, rows in buckets.items()
+    }
+
 __all__ = [
+    "ContextWindowSource",
+    "task_telemetry_by_stable_prefix",
+    "task_token_telemetry_summary",
+    "reconcile_context_window",
     "fresh_input_per_successful_task",
     "cache_creation_per_successful_task",
     "cache_read_per_task",

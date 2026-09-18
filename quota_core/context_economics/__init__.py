@@ -31,6 +31,9 @@ from .analytics import (
     tokens_per_outcome,
     tokens_per_successful_task,
     unknown_cause_warning,
+    reconcile_context_window,
+    task_token_telemetry_summary,
+    task_telemetry_by_stable_prefix,
 )
 from .compact_analysis import before_after_compact
 from .context_pack_analytics import (
@@ -81,6 +84,11 @@ from .schema import (
     token_components_to_dict,
     token_components_total,
     validate_attribution_dict,
+    TaskTokenTelemetry,
+    TASK_TOKEN_TELEMETRY_FIELDS,
+    TASK_ATTRIBUTION_HASH_FIELDS,
+    task_token_telemetry_from_dict,
+    task_token_telemetry_to_dict,
 )
 from .token_components import (
     claude_token_components,
@@ -91,6 +99,14 @@ from .token_components import (
 )
 
 __all__ = [
+    "task_telemetry_by_stable_prefix",
+    "task_token_telemetry_summary",
+    "reconcile_context_window",
+    "task_token_telemetry_to_dict",
+    "task_token_telemetry_from_dict",
+    "TASK_ATTRIBUTION_HASH_FIELDS",
+    "TASK_TOKEN_TELEMETRY_FIELDS",
+    "TaskTokenTelemetry",
     "SCHEMA_VERSION",
     "ContextPolicy",
     "LifecycleEventType",

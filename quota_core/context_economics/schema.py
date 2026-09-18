@@ -420,6 +420,133 @@ def token_components_total(components: TokenComponents) -> int | None:
 
 
 @dataclass(frozen=True)
+class TaskTokenTelemetry:
+    """One task's directly-observed token/cache components (quota-core#78).
+
+    Consumer-side mirror of Agent Crew #317/#318's ``task_attribution`` token
+    columns, which the producer fills on real task completion by reading the
+    provider's own session transcript. As everywhere else in this module,
+    quota-core does not import the producer: this depends only on the wire
+    shape of the attribution row.
+
+    ⛔Every field is ``None`` when the producer did not observe it, and the
+      producer is explicit about this: its own contract says "``None`` means
+      the provider did not supply the fact; callers must never derive or
+      estimate it", and its writer updates only the columns it actually
+      measured rather than overwriting the rest with nulls. A measured ``0``
+      (a task that genuinely read nothing from cache) must therefore stay
+      distinguishable from ``None`` (a provider that does not report the
+      component at all, or a row written before #317 shipped).
+
+    ⛔There is deliberately NO total. These are five different economic
+      quantities -- input the provider had to process fresh, input it wrote
+      into cache, input it read back from cache, output it produced, and the
+      reasoning subset of that output -- and a provider that exposes only some
+      of them would otherwise get a "total" that silently means something
+      different from another provider's. ``reasoning_tokens`` in particular is
+      a SUBSET of ``output_tokens`` on the providers that report both, so
+      adding them would double-count. Compose whatever total a specific
+      pricing model needs at the point of use, where the provider is known.
+
+    ⛔``context_window_tokens`` is a window MEASUREMENT, not a billing
+      component, and it measures the same physical quantity as quota-core#70's
+      lifecycle ``context_tokens`` observation. The two are kept in separate
+      fields and reconciled explicitly rather than merged -- see
+      :func:`~quota_core.context_economics.analytics.reconcile_context_window`.
+
+    PRODUCTION SAMPLE PENDING: the wire shape is confirmed against real
+    post-deploy attribution rows, but no row with a MEASURED value has been
+    captured yet, so nothing built on this type may be presented as measured
+    cache-locality or resume-vs-fresh economics. See
+    ``docs/task-token-telemetry.md``.
+    """
+
+    uncached_input_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    output_tokens: int | None = None
+    #: The reasoning subset of ``output_tokens`` where a provider separates it.
+    #: Never added to ``output_tokens`` -- see the class note above.
+    reasoning_tokens: int | None = None
+    #: The provider's context window at task completion. Reconciled against the
+    #: quota-core#70 lifecycle observation, never summed with it.
+    context_window_tokens: int | None = None
+
+    @property
+    def observed_components(self) -> tuple[str, ...]:
+        """Names of the components this task actually reported.
+
+        An empty tuple means the row carried no measurement at all, which is a
+        different fact from a row that measured zeroes.
+        """
+
+        return tuple(
+            name for name in (
+                "uncached_input_tokens", "cache_write_tokens", "cache_read_tokens",
+                "output_tokens", "reasoning_tokens", "context_window_tokens",
+            )
+            if getattr(self, name) is not None
+        )
+
+    @property
+    def has_any_observation(self) -> bool:
+        return bool(self.observed_components)
+
+
+#: The exact ``task_attribution`` column names Agent Crew #317/#318 writes.
+#: Kept as one tuple so the parser, the serializer and the known-key set of
+#: :func:`attribution_from_dict` cannot drift apart from each other.
+TASK_TOKEN_TELEMETRY_FIELDS: tuple[str, ...] = (
+    "uncached_input_tokens",
+    "cache_write_tokens",
+    "cache_read_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "context_window_tokens",
+)
+
+#: Attribution DIMENSIONS from the same contract. Carried so a caller can group
+#: or compare by them; never interpreted here. A hash is an identity, not a
+#: claim about what it identifies -- two rows sharing a `stable_prefix_hash`
+#: were assembled from the same stable prefix, which is not by itself evidence
+#: that the provider cached it.
+TASK_ATTRIBUTION_HASH_FIELDS: tuple[str, ...] = (
+    "stable_prefix_hash",
+    "context_pack_hash",
+)
+
+
+def task_token_telemetry_from_dict(data: dict[str, Any]) -> TaskTokenTelemetry:
+    """Parse the quota-core#78 token components out of one attribution row.
+
+    Tolerant in the same way as every other parser here: an absent key and an
+    explicit ``null`` both mean unknown, a non-numeric value is left unknown
+    rather than coerced, and ``bool`` is rejected outright because it is an
+    ``int`` subclass in Python -- a stray ``true`` would otherwise fabricate a
+    one-token measurement.
+    """
+
+    def _opt_int(key: str) -> int | None:
+        value = data.get(key)
+        if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return int(value)
+
+    return TaskTokenTelemetry(**{name: _opt_int(name) for name in TASK_TOKEN_TELEMETRY_FIELDS})
+
+
+def task_token_telemetry_to_dict(telemetry: TaskTokenTelemetry) -> dict[str, Any]:
+    """Flatten back to the producer's own column names.
+
+    Every key is always present, including when its value is ``None``: omitting
+    a null would leave a reader unable to tell "this producer measured nothing"
+    from "this consumer version does not know the field".
+    """
+
+    return {name: getattr(telemetry, name) for name in TASK_TOKEN_TELEMETRY_FIELDS}
+
+
+@dataclass(frozen=True)
 class RuntimeAttribution:
     """Provider-neutral runtime/context attribution for one task execution.
 
@@ -476,6 +603,16 @@ class RuntimeAttribution:
     test_scope_hash: str | None = None
     lock_wait_seconds: float | None = None
     lock_defer_count: int | None = None
+    # Agent Crew #317/#318 (quota-core#78) -- the task's own observed token and
+    # cache components, and the two hashes that identify what was assembled for
+    # it. Nested rather than flattened so the "these are never summed" boundary
+    # is visible in the type: see `TaskTokenTelemetry`.
+    task_telemetry: TaskTokenTelemetry = field(default_factory=TaskTokenTelemetry)
+    #: Identity of the stable prompt prefix the dispatch was built on, and of
+    #: the Context Pack assembled for it. Dimensions only -- see
+    #: `TASK_ATTRIBUTION_HASH_FIELDS`.
+    stable_prefix_hash: str | None = None
+    context_pack_hash: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -956,6 +1093,15 @@ class TaskEconomicsRecord:
     test_scope_hash: str | None = None
     lock_wait_seconds: float | None = None
     lock_defer_count: int | None = None
+    # quota-core#78 -- carried straight through from the attribution row. Kept
+    # SEPARATE from `tokens`: that field is what provider usage telemetry says
+    # the dispatch billed across its API calls, this one is what the provider's
+    # own session transcript says the task observed. They are two measurements
+    # of overlapping-but-not-identical things, so merging them would double
+    # count; a caller comparing them is doing reconciliation, not addition.
+    task_telemetry: TaskTokenTelemetry = field(default_factory=TaskTokenTelemetry)
+    stable_prefix_hash: str | None = None
+    context_pack_hash: str | None = None
     # quota-core#70 -- the PROVIDER's context window for this dispatch, joined
     # from its lifecycle observation. Distinct from `tokens`, which is what the
     # dispatch itself billed, and from the Context Pack budget, which is what
@@ -1056,6 +1202,13 @@ def attribution_to_dict(attribution: RuntimeAttribution) -> dict[str, Any]:
         "test_scope_hash": attribution.test_scope_hash,
         "lock_wait_seconds": attribution.lock_wait_seconds,
         "lock_defer_count": attribution.lock_defer_count,
+        # quota-core#78: written FLAT, under the producer's own column names,
+        # so a round trip through this function reproduces a row the producer
+        # itself could have written -- and so a null stays visible rather than
+        # vanishing into an absent key.
+        **task_token_telemetry_to_dict(attribution.task_telemetry),
+        "stable_prefix_hash": attribution.stable_prefix_hash,
+        "context_pack_hash": attribution.context_pack_hash,
         "extra": dict(attribution.extra),
     }
 
@@ -1108,6 +1261,7 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         "fallback_of", "started_at", "completed_at", "updated_at", "outcome", "raw_outcome",
         "failure_reason", "failure_category", "retryable", "terminal_source",
         "effective_test_scope", "test_scope_source", "test_scope_hash",
+        *TASK_TOKEN_TELEMETRY_FIELDS, *TASK_ATTRIBUTION_HASH_FIELDS,
         "lock_wait_seconds", "lock_defer_count", "extra",
     }
     extra = dict(data.get("extra") or {}) if isinstance(data.get("extra"), dict) else {}
@@ -1258,6 +1412,9 @@ def attribution_from_dict(data: dict[str, Any]) -> RuntimeAttribution:
         test_scope_hash=_opt_str("test_scope_hash"),
         lock_wait_seconds=_opt_float("lock_wait_seconds"),
         lock_defer_count=_opt_int("lock_defer_count"),
+        task_telemetry=task_token_telemetry_from_dict(data),
+        stable_prefix_hash=_opt_str("stable_prefix_hash"),
+        context_pack_hash=_opt_str("context_pack_hash"),
         extra=extra,
     )
 
@@ -1356,6 +1513,20 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "test_scope_hash": record.test_scope_hash,
         "lock_wait_seconds": record.lock_wait_seconds,
         "lock_defer_count": record.lock_defer_count,
+        # quota-core#78. NESTED under its own key, exactly like `tokens` above:
+        # this dict is quota-core's own record schema, not a mirror of the
+        # producer's row, and keeping the components grouped is what stops a
+        # reader treating them as interchangeable with `tokens` (what the
+        # dispatch billed) or with `context_tokens` (#70's window observation).
+        # `attribution_to_dict` flattens the same fields instead, because that
+        # one IS a producer-row mirror and must round-trip as such.
+        #
+        # Every component key is present even when null, for the same reason as
+        # the #70 block below: PR #71 joined fields in memory and dropped them
+        # here, so in-process tests passed while the written artifact was wrong.
+        "task_telemetry": task_token_telemetry_to_dict(record.task_telemetry),
+        "stable_prefix_hash": record.stable_prefix_hash,
+        "context_pack_hash": record.context_pack_hash,
         # quota-core#70. Written WITHOUT coercion, and always present even when
         # null: `0` is a measured empty window, `null` is unknown, and
         # `context_window_capped=False` ("an observation was joined and it was
@@ -1420,6 +1591,11 @@ def validate_attribution_dict(data: dict[str, Any]) -> tuple[str, ...]:
 
 
 __all__ = [
+    "TaskTokenTelemetry",
+    "TASK_TOKEN_TELEMETRY_FIELDS",
+    "TASK_ATTRIBUTION_HASH_FIELDS",
+    "task_token_telemetry_from_dict",
+    "task_token_telemetry_to_dict",
     "SCHEMA_VERSION",
     "ContextPolicy",
     "LifecycleEventType",
