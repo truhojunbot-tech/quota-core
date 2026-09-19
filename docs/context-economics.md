@@ -25,12 +25,17 @@ provider. `recommend_task_policy()` produces one artifact from a normalized
 `TaskEconomicsRecord` and explicit `QualityEvidence`; `shadow_policy_report()`
 produces one deterministic artifact per supplied task.
 
-The contract carries separate soft limits for uncached input, cache write,
-cache read, output, and reasoning, never a universal token total. Unknown
-telemetry stays `null`, and optional consumer-supplied `ProviderPricing`
-returns component costs separately. Quality is a veto on savings: absent or
-negative independent-review/correctness/recall evidence preserves treatment;
-reasoning is never reduced for cost. Recommendations include risk tier,
+The contract pins each nested payload: the five separate soft limits for
+uncached input, cache write, cache read, output, and reasoning are required
+when a budget is safe to emit, and no universal token `total` is allowed. A
+failed or unknown outcome emits `recommended_soft_budget: null` rather than
+anchoring downstream policy on truncated telemetry. Unknown telemetry stays
+`null`; optional consumer-supplied `ProviderPricing` returns a component-cost
+breakdown whose `reasoning` component is explicitly non-additive because it
+overlaps output. Quality is a veto on savings: absent or negative
+independent-review/correctness/recall evidence preserves treatment; reasoning
+is never reduced for cost. Risk evidence is tri-state: missing risk assessment
+maps to the highest-scrutiny tier. Recommendations include risk tier,
 review/fix envelope, provider tier, session/cache treatment, provenance,
 confidence, evidence and override reasons.
 

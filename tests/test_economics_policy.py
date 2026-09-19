@@ -41,18 +41,25 @@ class EconomicsPolicyTests(unittest.TestCase):
         self.assertEqual(decision.recommended_max_review_fix_rounds, 4)
         self.assertEqual(decision.recommended_provider_tier, "escalate_allowed")
 
+    def test_unassessed_risk_defaults_to_highest_scrutiny_not_research(self):
+        decision = recommend_task_policy(_record(uncached_input_tokens=1))
+        self.assertEqual(decision.risk_tier, "safety_or_live")
+        self.assertEqual(decision.recommended_max_review_fix_rounds, 3)
+
     def test_costs_are_provider_specific_and_components_are_never_totaled(self):
         pricing = ProviderPricing("provider-a", None, ComponentPrice(uncached_input=.1, cache_read=.01, output=.2, reasoning=.3))
         decision = recommend_task_policy(_record(uncached_input_tokens=10, cache_read_tokens=20, output_tokens=5, reasoning_tokens=2), QualityEvidence(independent_review_correct=True, required_context_recalled=True), pricing)
-        self.assertEqual(decision.component_costs["uncached_input"], 1.0)
-        self.assertEqual(decision.component_costs["cache_read"], .2)
-        self.assertEqual(decision.component_costs["reasoning"], .6)
+        self.assertEqual(decision.component_costs["components"]["uncached_input"], 1.0)
+        self.assertEqual(decision.component_costs["components"]["cache_read"], .2)
+        self.assertEqual(decision.component_costs["components"]["reasoning"], .6)
         self.assertNotIn("total", decision.component_costs)
+        self.assertEqual(decision.component_costs["non_additive_components"], ["reasoning"])
+        self.assertEqual(decision.component_costs["aggregation"], "prohibited_overlapping_components")
         self.assertEqual(decision.recommended_cache_treatment, "preserve")
 
     def test_pricing_for_a_different_model_is_unknown_not_reused(self):
         decision = recommend_task_policy(_record(model="model-b", uncached_input_tokens=10), QualityEvidence(independent_review_correct=True, required_context_recalled=True), ProviderPricing("provider-a", "model-a", ComponentPrice(uncached_input=.1)))
-        self.assertIsNone(decision.component_costs["uncached_input"])
+        self.assertIsNone(decision.component_costs["components"]["uncached_input"])
 
     def test_shadow_report_is_deterministic_and_has_one_artifact_per_task(self):
         first = shadow_policy_report([_record(task_id="a"), _record(task_id="b", task_type="review")])
@@ -67,8 +74,26 @@ class EconomicsPolicyTests(unittest.TestCase):
         schema = policy_contract_schema()
         self.assertEqual(schema["properties"]["contract_version"]["const"], "1.0")
         self.assertIn("current_behavior", schema["required"])
+        budget = schema["properties"]["recommended_soft_budget"]["oneOf"][0]
+        self.assertEqual(set(budget["required"]), {
+            "uncached_input_tokens", "cache_write_tokens", "cache_read_tokens",
+            "output_tokens", "reasoning_tokens",
+        })
+        self.assertFalse(budget["additionalProperties"])
+        self.assertNotIn("total", budget["properties"])
+        costs = schema["properties"]["component_costs"]
+        self.assertFalse(costs["additionalProperties"])
+        self.assertEqual(costs["properties"]["components"]["required"], [
+            "uncached_input", "cache_write", "cache_read", "output", "reasoning",
+        ])
         schema["required"].append("mutated_by_caller")
         self.assertNotIn("mutated_by_caller", policy_contract_schema()["required"])
+
+    def test_failed_or_unknown_outcome_has_no_budget_anchor(self):
+        for outcome in ("failed", "unknown"):
+            decision = recommend_task_policy(_record(outcome=outcome, uncached_input_tokens=100))
+            self.assertIsNone(decision.recommended_soft_budget)
+            self.assertIn("no_budget_anchor_for_non_successful_or_unknown_outcome", decision.override_reasons)
 
     def test_repeated_unchanged_state_does_not_spend_an_extra_round(self):
         decision = recommend_task_policy(_record(), QualityEvidence(
@@ -82,5 +107,5 @@ class EconomicsPolicyTests(unittest.TestCase):
         records = correlate_task_economics(read_attribution_jsonl(FIXTURE), [])
         report = shadow_policy_report(records)
         self.assertEqual(report["decision_count"], 2)
-        self.assertEqual(report["decisions"][0]["recommended_soft_budget"]["cache_read_tokens"], 52874932)
+        self.assertEqual(report["decisions"][0]["recommended_soft_budget"]["cache_read_tokens"], 61009536)
         self.assertIsNone(report["decisions"][1]["recommended_soft_budget"]["reasoning_tokens"])

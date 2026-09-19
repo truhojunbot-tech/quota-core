@@ -36,19 +36,98 @@ POLICY_CONTRACT_SCHEMA: dict[str, object] = {
         "contract_version": {"const": POLICY_CONTRACT_VERSION},
         "mode": {"const": "shadow"},
         "task_id": {"type": "string"},
-        "provenance": {"type": "object"},
-        "current_behavior": {"type": "object"},
+        "provenance": {
+            "type": "object",
+            "required": ["provider", "model", "session", "context_id", "context_generation"],
+            "properties": {
+                "provider": {"type": ["string", "null"]},
+                "model": {"type": ["string", "null"]},
+                "session": {"type": ["string", "null"]},
+                "context_id": {"type": ["string", "null"]},
+                "context_generation": {"type": ["integer", "null"]},
+            },
+            "additionalProperties": False,
+        },
+        "current_behavior": {
+            "type": "object",
+            "required": ["provider", "model", "session", "context_id", "context_generation", "context_policy", "outcome", "retry_of", "fallback_of"],
+            "properties": {
+                "provider": {"type": ["string", "null"]},
+                "model": {"type": ["string", "null"]},
+                "session": {"type": ["string", "null"]},
+                "context_id": {"type": ["string", "null"]},
+                "context_generation": {"type": ["integer", "null"]},
+                "context_policy": {"type": ["string", "null"]},
+                "outcome": {"type": ["string", "null"]},
+                "retry_of": {"type": ["string", "null"]},
+                "fallback_of": {"type": ["string", "null"]},
+            },
+            "additionalProperties": False,
+        },
         "risk_tier": {"enum": ["safety_or_live", "architecture", "routine", "review_or_test", "research"]},
         "quality_preserving": {"type": "boolean"},
         "human_gate_required": {"type": "boolean"},
-        "recommended_soft_budget": {"type": "object"},
+        "recommended_soft_budget": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "required": ["uncached_input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens", "reasoning_tokens"],
+                    "properties": {
+                        "uncached_input_tokens": {"type": ["integer", "null"], "minimum": 0},
+                        "cache_write_tokens": {"type": ["integer", "null"], "minimum": 0},
+                        "cache_read_tokens": {"type": ["integer", "null"], "minimum": 0},
+                        "output_tokens": {"type": ["integer", "null"], "minimum": 0},
+                        "reasoning_tokens": {"type": ["integer", "null"], "minimum": 0},
+                    },
+                    "additionalProperties": False,
+                },
+                {"type": "null"},
+            ],
+        },
         "recommended_max_review_fix_rounds": {"type": "integer", "minimum": 1},
         "recommended_provider_tier": {"enum": ["preserve_current", "escalate_allowed"]},
         "recommended_session_treatment": {"enum": ["preserve", "renew", "insufficient_evidence"]},
         "recommended_cache_treatment": {"enum": ["preserve", "no_cache_signal", "insufficient_evidence"]},
-        "component_costs": {"type": "object"},
-        "orchestration_waste": {"type": "object"},
-        "evidence": {"type": "object"},
+        "component_costs": {
+            "type": "object",
+            "required": ["components", "non_additive_components", "aggregation"],
+            "properties": {
+                "components": {
+                    "type": "object",
+                    "required": ["uncached_input", "cache_write", "cache_read", "output", "reasoning"],
+                    "properties": {name: {"type": ["number", "null"], "minimum": 0} for name in ("uncached_input", "cache_write", "cache_read", "output", "reasoning")},
+                    "additionalProperties": False,
+                },
+                "non_additive_components": {"const": ["reasoning"]},
+                "aggregation": {"const": "prohibited_overlapping_components"},
+            },
+            "additionalProperties": False,
+        },
+        "orchestration_waste": {
+            "type": "object",
+            "required": ["stale_tokens", "misrouted_tokens", "duplicate_tokens"],
+            "properties": {name: {"type": ["integer", "null"], "minimum": 0} for name in ("stale_tokens", "misrouted_tokens", "duplicate_tokens")},
+            "additionalProperties": False,
+        },
+        "evidence": {
+            "type": "object",
+            "required": ["outcome", "independent_review_correct", "required_context_recalled", "context_growth_tokens", "retry_of", "fallback_of", "token_observations"],
+            "properties": {
+                "outcome": {"type": ["string", "null"]},
+                "independent_review_correct": {"type": ["boolean", "null"]},
+                "required_context_recalled": {"type": ["boolean", "null"]},
+                "context_growth_tokens": {"type": ["integer", "null"], "minimum": 0},
+                "retry_of": {"type": ["string", "null"]},
+                "fallback_of": {"type": ["string", "null"]},
+                "token_observations": {
+                    "type": "object",
+                    "required": ["uncached_input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens", "reasoning_tokens"],
+                    "properties": {name: {"type": ["integer", "null"], "minimum": 0} for name in ("uncached_input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens", "reasoning_tokens")},
+                    "additionalProperties": False,
+                },
+            },
+            "additionalProperties": False,
+        },
         "rationale": {"type": "array", "items": {"type": "string"}},
         "override_reasons": {"type": "array", "items": {"type": "string"}},
         "confidence": {"enum": ["high", "medium", "low"]},
@@ -65,14 +144,14 @@ def policy_contract_schema() -> dict[str, object]:
 @dataclass(frozen=True)
 class QualityEvidence:
     """Explicit public quality/risk facts; ``None`` means unknown, not false."""
-    safety_or_live_change: bool = False
-    broad_architecture_change: bool = False
-    bounded_routine_fix: bool = False
+    safety_or_live_change: bool | None = None
+    broad_architecture_change: bool | None = None
+    bounded_routine_fix: bool | None = None
     independent_review_correct: bool | None = None
     required_context_recalled: bool | None = None
     new_evidence_or_progress: bool | None = None
     repeated_unchanged_state: bool | None = None
-    human_gate_required: bool = False
+    human_gate_required: bool | None = None
     context_growth_tokens: int | None = None
     stale_waste_tokens: int | None = None
     misrouted_waste_tokens: int | None = None
@@ -127,12 +206,12 @@ class PolicyDecision:
     risk_tier: RiskTier
     quality_preserving: bool
     human_gate_required: bool
-    recommended_soft_budget: SoftBudgetEnvelope
+    recommended_soft_budget: SoftBudgetEnvelope | None
     recommended_max_review_fix_rounds: int
     recommended_provider_tier: ProviderTier
     recommended_session_treatment: SessionTreatment
     recommended_cache_treatment: CacheTreatment
-    component_costs: dict[str, float | None]
+    component_costs: dict[str, object]
     orchestration_waste: dict[str, int | None]
     evidence: dict[str, object]
     rationale: tuple[str, ...]
@@ -145,7 +224,7 @@ class PolicyDecision:
             "provenance": dict(self.provenance), "risk_tier": self.risk_tier,
             "current_behavior": dict(self.current_behavior),
             "quality_preserving": self.quality_preserving, "human_gate_required": self.human_gate_required,
-            "recommended_soft_budget": self.recommended_soft_budget.to_dict(),
+            "recommended_soft_budget": None if self.recommended_soft_budget is None else self.recommended_soft_budget.to_dict(),
             "recommended_max_review_fix_rounds": self.recommended_max_review_fix_rounds,
             "recommended_provider_tier": self.recommended_provider_tier,
             "recommended_session_treatment": self.recommended_session_treatment,
@@ -157,13 +236,23 @@ class PolicyDecision:
 
 
 def _risk(record: TaskEconomicsRecord, evidence: QualityEvidence) -> RiskTier:
-    if evidence.safety_or_live_change or evidence.human_gate_required:
+    # Risk facts are tri-state. An unassessed task must not inherit the
+    # low-scrutiny path merely because no caller supplied an assessment.
+    risk_facts = (
+        evidence.safety_or_live_change,
+        evidence.broad_architecture_change,
+        evidence.bounded_routine_fix,
+        evidence.human_gate_required,
+    )
+    if any(fact is None for fact in risk_facts):
         return "safety_or_live"
-    if evidence.broad_architecture_change:
+    if evidence.safety_or_live_change is True or evidence.human_gate_required is True:
+        return "safety_or_live"
+    if evidence.broad_architecture_change is True:
         return "architecture"
     if record.task_type in {"review", "reviewer", "test", "tester"}:
         return "review_or_test"
-    return "routine" if evidence.bounded_routine_fix else "research"
+    return "routine" if evidence.bounded_routine_fix is True else "research"
 
 
 def _envelope(record: TaskEconomicsRecord, multiplier: float) -> SoftBudgetEnvelope:
@@ -173,13 +262,20 @@ def _envelope(record: TaskEconomicsRecord, multiplier: float) -> SoftBudgetEnvel
     return SoftBudgetEnvelope(limit(t.uncached_input_tokens), limit(t.cache_write_tokens), limit(t.cache_read_tokens), limit(t.output_tokens), limit(t.reasoning_tokens))
 
 
-def _costs(record: TaskEconomicsRecord, pricing: ProviderPricing | None) -> dict[str, float | None]:
+def _costs(record: TaskEconomicsRecord, pricing: ProviderPricing | None) -> dict[str, object]:
+    """Return non-additive component costs; reasoning overlaps output."""
     names = ("uncached_input", "cache_write", "cache_read", "output", "reasoning")
     if pricing is None or pricing.provider != (record.provider or record.agent) or (pricing.model is not None and pricing.model != record.model):
-        return {name: None for name in names}
-    t, p = record.task_telemetry, pricing.price
-    values = {"uncached_input": t.uncached_input_tokens, "cache_write": t.cache_write_tokens, "cache_read": t.cache_read_tokens, "output": t.output_tokens, "reasoning": t.reasoning_tokens}
-    return {name: None if values[name] is None or getattr(p, name) is None else values[name] * getattr(p, name) for name in names}
+        components = {name: None for name in names}
+    else:
+        t, p = record.task_telemetry, pricing.price
+        values = {"uncached_input": t.uncached_input_tokens, "cache_write": t.cache_write_tokens, "cache_read": t.cache_read_tokens, "output": t.output_tokens, "reasoning": t.reasoning_tokens}
+        components = {name: None if values[name] is None or getattr(p, name) is None else values[name] * getattr(p, name) for name in names}
+    return {
+        "components": components,
+        "non_additive_components": ["reasoning"],
+        "aggregation": "prohibited_overlapping_components",
+    }
 
 
 def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence = QualityEvidence(), pricing: ProviderPricing | None = None) -> PolicyDecision:
@@ -194,7 +290,7 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     if record.outcome != "success": overrides.append("task_outcome_not_success")
     if evidence.independent_review_correct is not True: overrides.append("independent_review_correctness_unknown_or_negative")
     if evidence.required_context_recalled is not True: overrides.append("required_context_recall_unknown_or_negative")
-    if evidence.human_gate_required: overrides.append("human_gate_required")
+    if evidence.human_gate_required is True: overrides.append("human_gate_required")
     multiplier = {"safety_or_live": 1.5, "architecture": 1.4, "routine": 1.2, "review_or_test": 1.25, "research": 1.3}[tier]
     rounds = {"safety_or_live": 3, "architecture": 2, "routine": 1, "review_or_test": 1, "research": 1}[tier] + (1 if evidence.new_evidence_or_progress is True else 0)
     if evidence.repeated_unchanged_state is True:
@@ -207,6 +303,9 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     if cache_seen: rationale.append("cache_read_is_productive_measurement_not_waste")
     if evidence.new_evidence_or_progress is True: rationale.append("new_evidence_extends_review_fix_envelope")
     if evidence.repeated_unchanged_state is True: rationale.append("unchanged_state_does_not_extend_review_fix_envelope")
+    budget = _envelope(record, multiplier) if record.outcome == "success" else None
+    if budget is None:
+        overrides.append("no_budget_anchor_for_non_successful_or_unknown_outcome")
     return PolicyDecision(
         POLICY_CONTRACT_VERSION, "shadow", record.task_id,
         {"provider": record.provider or record.agent, "model": record.model, "session": record.provider_session_id, "context_id": record.context_id, "context_generation": record.context_generation},
@@ -214,15 +313,18 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
          "session": record.provider_session_id, "context_id": record.context_id,
          "context_generation": record.context_generation, "context_policy": record.context_policy,
          "outcome": record.outcome, "retry_of": record.retry_of, "fallback_of": record.fallback_of},
-        tier, quality, evidence.human_gate_required, _envelope(record, multiplier), rounds,
-        "escalate_allowed" if tier in {"safety_or_live", "architecture"} else "preserve_current",
+        tier, quality, evidence.human_gate_required is True, budget, rounds,
+        "escalate_allowed" if quality and tier in {"safety_or_live", "architecture"} else "preserve_current",
         "renew" if quality and renewable else "preserve" if quality else "insufficient_evidence",
         "preserve" if quality and cache_seen else "no_cache_signal" if quality else "insufficient_evidence",
         _costs(record, pricing), waste,
         {"outcome": record.outcome, "independent_review_correct": evidence.independent_review_correct,
          "required_context_recalled": evidence.required_context_recalled, "context_growth_tokens": evidence.context_growth_tokens,
          "retry_of": record.retry_of, "fallback_of": record.fallback_of,
-         "token_observations": {name: getattr(record.task_telemetry, name) for name in record.task_telemetry.observed_components}},
+         "token_observations": {
+             name: getattr(record.task_telemetry, name)
+             for name in ("uncached_input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens", "reasoning_tokens")
+         }},
         tuple(rationale), tuple(overrides), confidence,
     )
 

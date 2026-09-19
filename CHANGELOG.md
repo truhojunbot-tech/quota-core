@@ -23,6 +23,12 @@ Adds quota-core#80's portable, recommendation-only economics policy contract.
 - Production-derived, redacted telemetry fixture covers the organic post-#334
   input shape; no private paths, identifiers, or provider-specific runtime
   dependency are committed.
+- Follow-up safety hardening: risk evidence is tri-state, and an unassessed
+  task receives the highest-scrutiny tier rather than the research path. The
+  schema now pins nested component payloads and rejects added `total` fields;
+  failed or unknown outcomes emit no budget anchor. Component costs explicitly
+  mark reasoning as non-additive with output, so the contract does not imply a
+  meaningful total cost.
 
 ## 0.1.19 - 2026-09-18
 
