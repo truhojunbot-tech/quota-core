@@ -29,6 +29,11 @@ Adds quota-core#80's portable, recommendation-only economics policy contract.
   failed or unknown outcomes emit no budget anchor. Component costs explicitly
   mark reasoning as non-additive with output, so the contract does not imply a
   meaningful total cost.
+- Final safety hardening: an unassessed risk record now explicitly requires a
+  human gate, while a high-risk task remains eligible for escalation even on a
+  failed review (escalation adds scrutiny). Negative numeric evidence is
+  normalized to unknown before serialization so emitted decisions conform to
+  their own schema.
 
 ## 0.1.19 - 2026-09-18
 

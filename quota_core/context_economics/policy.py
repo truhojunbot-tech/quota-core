@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, isfinite
 from typing import Literal
 
 from .schema import TaskEconomicsRecord
@@ -255,9 +255,32 @@ def _risk(record: TaskEconomicsRecord, evidence: QualityEvidence) -> RiskTier:
     return "routine" if evidence.bounded_routine_fix is True else "research"
 
 
+def _risk_is_unassessed(evidence: QualityEvidence) -> bool:
+    return any(fact is None for fact in (
+        evidence.safety_or_live_change,
+        evidence.broad_architecture_change,
+        evidence.bounded_routine_fix,
+        evidence.human_gate_required,
+    ))
+
+
+def _nonnegative_int_or_none(value: object) -> int | None:
+    """Normalize malformed numeric evidence to unknown for schema safety."""
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def _nonnegative_number_or_none(value: object) -> float | int | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 and isfinite(value):
+        return value
+    return None
+
+
 def _envelope(record: TaskEconomicsRecord, multiplier: float) -> SoftBudgetEnvelope:
     def limit(value: int | None) -> int | None:
-        return ceil(value * multiplier) if value is not None else None
+        normalized = _nonnegative_int_or_none(value)
+        return ceil(normalized * multiplier) if normalized is not None else None
     t = record.task_telemetry
     return SoftBudgetEnvelope(limit(t.uncached_input_tokens), limit(t.cache_write_tokens), limit(t.cache_read_tokens), limit(t.output_tokens), limit(t.reasoning_tokens))
 
@@ -270,7 +293,17 @@ def _costs(record: TaskEconomicsRecord, pricing: ProviderPricing | None) -> dict
     else:
         t, p = record.task_telemetry, pricing.price
         values = {"uncached_input": t.uncached_input_tokens, "cache_write": t.cache_write_tokens, "cache_read": t.cache_read_tokens, "output": t.output_tokens, "reasoning": t.reasoning_tokens}
-        components = {name: None if values[name] is None or getattr(p, name) is None else values[name] * getattr(p, name) for name in names}
+        components = {}
+        for name in names:
+            usage = _nonnegative_int_or_none(values[name])
+            price = _nonnegative_number_or_none(getattr(p, name))
+            if usage is None or price is None:
+                components[name] = None
+                continue
+            try:
+                components[name] = _nonnegative_number_or_none(usage * price)
+            except OverflowError:
+                components[name] = None
     return {
         "components": components,
         "non_additive_components": ["reasoning"],
@@ -285,17 +318,24 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     current treatment. Cost never reduces reasoning or forces a lower tier.
     """
     tier = _risk(record, evidence)
+    risk_unassessed = _risk_is_unassessed(evidence)
+    human_gate = evidence.human_gate_required is True or risk_unassessed
     quality = record.outcome == "success" and evidence.independent_review_correct is True and evidence.required_context_recalled is True
     overrides = []
     if record.outcome != "success": overrides.append("task_outcome_not_success")
     if evidence.independent_review_correct is not True: overrides.append("independent_review_correctness_unknown_or_negative")
     if evidence.required_context_recalled is not True: overrides.append("required_context_recall_unknown_or_negative")
     if evidence.human_gate_required is True: overrides.append("human_gate_required")
+    if risk_unassessed: overrides.append("risk_assessment_unknown_requires_human_gate")
     multiplier = {"safety_or_live": 1.5, "architecture": 1.4, "routine": 1.2, "review_or_test": 1.25, "research": 1.3}[tier]
     rounds = {"safety_or_live": 3, "architecture": 2, "routine": 1, "review_or_test": 1, "research": 1}[tier] + (1 if evidence.new_evidence_or_progress is True else 0)
     if evidence.repeated_unchanged_state is True:
         rounds = max(1, rounds - 1)
-    waste = {"stale_tokens": evidence.stale_waste_tokens, "misrouted_tokens": evidence.misrouted_waste_tokens, "duplicate_tokens": evidence.duplicate_waste_tokens}
+    waste = {
+        "stale_tokens": _nonnegative_int_or_none(evidence.stale_waste_tokens),
+        "misrouted_tokens": _nonnegative_int_or_none(evidence.misrouted_waste_tokens),
+        "duplicate_tokens": _nonnegative_int_or_none(evidence.duplicate_waste_tokens),
+    }
     renewable = any(value is not None and value > 0 for value in waste.values())
     cache_seen = record.task_telemetry.cache_read_tokens is not None
     confidence: Literal["high", "medium", "low"] = "high" if quality and len(record.task_telemetry.observed_components) >= 3 else "medium" if record.task_telemetry.observed_components else "low"
@@ -313,16 +353,16 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
          "session": record.provider_session_id, "context_id": record.context_id,
          "context_generation": record.context_generation, "context_policy": record.context_policy,
          "outcome": record.outcome, "retry_of": record.retry_of, "fallback_of": record.fallback_of},
-        tier, quality, evidence.human_gate_required is True, budget, rounds,
-        "escalate_allowed" if quality and tier in {"safety_or_live", "architecture"} else "preserve_current",
+        tier, quality, human_gate, budget, rounds,
+        "escalate_allowed" if tier in {"safety_or_live", "architecture"} else "preserve_current",
         "renew" if quality and renewable else "preserve" if quality else "insufficient_evidence",
         "preserve" if quality and cache_seen else "no_cache_signal" if quality else "insufficient_evidence",
         _costs(record, pricing), waste,
         {"outcome": record.outcome, "independent_review_correct": evidence.independent_review_correct,
-         "required_context_recalled": evidence.required_context_recalled, "context_growth_tokens": evidence.context_growth_tokens,
+         "required_context_recalled": evidence.required_context_recalled, "context_growth_tokens": _nonnegative_int_or_none(evidence.context_growth_tokens),
          "retry_of": record.retry_of, "fallback_of": record.fallback_of,
          "token_observations": {
-             name: getattr(record.task_telemetry, name)
+             name: _nonnegative_int_or_none(getattr(record.task_telemetry, name))
              for name in ("uncached_input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens", "reasoning_tokens")
          }},
         tuple(rationale), tuple(overrides), confidence,

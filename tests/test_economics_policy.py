@@ -26,7 +26,8 @@ class EconomicsPolicyTests(unittest.TestCase):
     def test_quality_veto_blocks_cost_cutting_and_keeps_unknowns_unknown(self):
         decision = recommend_task_policy(_record(uncached_input_tokens=0, cache_read_tokens=None))
         self.assertFalse(decision.quality_preserving)
-        self.assertEqual(decision.recommended_provider_tier, "preserve_current")
+        self.assertEqual(decision.recommended_provider_tier, "escalate_allowed")
+        self.assertTrue(decision.human_gate_required)
         self.assertEqual(decision.recommended_cache_treatment, "insufficient_evidence")
         self.assertEqual(decision.recommended_soft_budget.uncached_input_tokens, 0)
         self.assertIsNone(decision.recommended_soft_budget.cache_read_tokens)
@@ -45,6 +46,16 @@ class EconomicsPolicyTests(unittest.TestCase):
         decision = recommend_task_policy(_record(uncached_input_tokens=1))
         self.assertEqual(decision.risk_tier, "safety_or_live")
         self.assertEqual(decision.recommended_max_review_fix_rounds, 3)
+        self.assertTrue(decision.human_gate_required)
+
+    def test_high_risk_failed_review_still_escalates_for_more_scrutiny(self):
+        decision = recommend_task_policy(_record(), QualityEvidence(
+            safety_or_live_change=True, broad_architecture_change=False,
+            bounded_routine_fix=False, human_gate_required=False,
+            independent_review_correct=False, required_context_recalled=True,
+        ))
+        self.assertFalse(decision.quality_preserving)
+        self.assertEqual(decision.recommended_provider_tier, "escalate_allowed")
 
     def test_costs_are_provider_specific_and_components_are_never_totaled(self):
         pricing = ProviderPricing("provider-a", None, ComponentPrice(uncached_input=.1, cache_read=.01, output=.2, reasoning=.3))
@@ -94,6 +105,17 @@ class EconomicsPolicyTests(unittest.TestCase):
             decision = recommend_task_policy(_record(outcome=outcome, uncached_input_tokens=100))
             self.assertIsNone(decision.recommended_soft_budget)
             self.assertIn("no_budget_anchor_for_non_successful_or_unknown_outcome", decision.override_reasons)
+
+    def test_negative_evidence_is_normalized_to_unknown_for_schema_safety(self):
+        decision = recommend_task_policy(_record(uncached_input_tokens=-1), QualityEvidence(
+            safety_or_live_change=False, broad_architecture_change=False,
+            bounded_routine_fix=True, human_gate_required=False,
+            independent_review_correct=True, required_context_recalled=True,
+            context_growth_tokens=-2, stale_waste_tokens=-3,
+        )).to_dict()
+        self.assertIsNone(decision["recommended_soft_budget"]["uncached_input_tokens"])
+        self.assertIsNone(decision["evidence"]["context_growth_tokens"])
+        self.assertIsNone(decision["orchestration_waste"]["stale_tokens"])
 
     def test_repeated_unchanged_state_does_not_spend_an_extra_round(self):
         decision = recommend_task_policy(_record(), QualityEvidence(

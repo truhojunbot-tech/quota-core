@@ -35,7 +35,9 @@ breakdown whose `reasoning` component is explicitly non-additive because it
 overlaps output. Quality is a veto on savings: absent or negative
 independent-review/correctness/recall evidence preserves treatment; reasoning
 is never reduced for cost. Risk evidence is tri-state: missing risk assessment
-maps to the highest-scrutiny tier. Recommendations include risk tier,
+maps to the highest-scrutiny tier and requires a human gate; high-risk tiers
+remain eligible for escalation even when review evidence is failing, because
+escalation is more scrutiny rather than a cost-saving action. Recommendations include risk tier,
 review/fix envelope, provider tier, session/cache treatment, provenance,
 confidence, evidence and override reasons.
 
