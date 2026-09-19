@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.20 - 2026-09-19
+
+Adds quota-core#80's portable, recommendation-only economics policy contract.
+
+- `context_economics.policy` publishes the explicitly-versioned `1.0` shadow
+  contract. `recommend_task_policy()` emits one deterministic, machine-readable
+  policy decision per normalized task; `shadow_policy_report()` preserves the
+  current observed behavior next to its recommendation without dispatching,
+  enforcing, or mutating anything.
+- Soft budgets keep uncached input, cache write, cache read, output, and
+  reasoning separate. Missing observations stay `None`; measured zero stays
+  zero; the contract deliberately does not manufacture a universal total.
+- Recommendations are gated by explicit quality/reliability evidence. Unknown
+  or negative independent-review/correctness/context-recall evidence preserves
+  current treatment, and policy never lowers reasoning effort merely to save
+  cost. Risk characteristics, not token volume, set the tier and review/fix
+  round envelope.
+- Optional consumer-supplied provider/model component pricing is kept outside
+  quota-core and applied only on an exact provider/model match. No pricing
+  table, private fleet state, or runtime import is embedded in the library.
+- Production-derived, redacted telemetry fixture covers the organic post-#334
+  input shape; no private paths, identifiers, or provider-specific runtime
+  dependency are committed.
+- Follow-up safety hardening: risk evidence is tri-state, and an unassessed
+  task receives the highest-scrutiny tier rather than the research path. The
+  schema now pins nested component payloads and rejects added `total` fields;
+  failed or unknown outcomes emit no budget anchor. Component costs explicitly
+  mark reasoning as non-additive with output, so the contract does not imply a
+  meaningful total cost.
+- Final safety hardening: an unassessed risk record now explicitly requires a
+  human gate, while a high-risk task remains eligible for escalation even on a
+  failed review (escalation adds scrutiny). Negative numeric evidence is
+  normalized to unknown before serialization so emitted decisions conform to
+  their own schema.
+
 ## 0.1.19 - 2026-09-18
 
 Consumes Agent Crew #317/#318's task-level token/cache telemetry (issue #78).
