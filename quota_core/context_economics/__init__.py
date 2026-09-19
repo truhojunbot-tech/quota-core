@@ -35,6 +35,18 @@ from .analytics import (
     task_token_telemetry_summary,
     task_telemetry_by_stable_prefix,
 )
+from .policy import (
+    POLICY_CONTRACT_VERSION,
+    POLICY_CONTRACT_SCHEMA,
+    ComponentPrice,
+    PolicyDecision,
+    ProviderPricing,
+    QualityEvidence,
+    SoftBudgetEnvelope,
+    recommend_task_policy,
+    policy_contract_schema,
+    shadow_policy_report,
+)
 from .compact_analysis import before_after_compact
 from .context_pack_analytics import (
     context_composition,
@@ -99,6 +111,16 @@ from .token_components import (
 )
 
 __all__ = [
+    "POLICY_CONTRACT_VERSION",
+    "POLICY_CONTRACT_SCHEMA",
+    "ComponentPrice",
+    "ProviderPricing",
+    "QualityEvidence",
+    "SoftBudgetEnvelope",
+    "PolicyDecision",
+    "recommend_task_policy",
+    "policy_contract_schema",
+    "shadow_policy_report",
     "task_telemetry_by_stable_prefix",
     "task_token_telemetry_summary",
     "context_window_observations",

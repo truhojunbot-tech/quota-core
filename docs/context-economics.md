@@ -14,6 +14,26 @@ from raw provider telemetry alone, and gets richer when an orchestrator
 (such as Agent Crew) also exposes task/context attribution. It never imports
 an orchestrator's code.
 
+## Shadow economics policy contract (#80)
+
+`quota_core.context_economics.policy` supplies a portable version `1.0`
+machine-readable recommendation contract for downstream runtimes.
+`policy_contract_schema()` returns the language-neutral JSON Schema descriptor
+for that serialized decision. It is always
+`mode: "shadow"`: quota-core never enforces a budget, stops a task, or changes a
+provider. `recommend_task_policy()` produces one artifact from a normalized
+`TaskEconomicsRecord` and explicit `QualityEvidence`; `shadow_policy_report()`
+produces one deterministic artifact per supplied task.
+
+The contract carries separate soft limits for uncached input, cache write,
+cache read, output, and reasoning, never a universal token total. Unknown
+telemetry stays `null`, and optional consumer-supplied `ProviderPricing`
+returns component costs separately. Quality is a veto on savings: absent or
+negative independent-review/correctness/recall evidence preserves treatment;
+reasoning is never reduced for cost. Recommendations include risk tier,
+review/fix envelope, provider tier, session/cache treatment, provenance,
+confidence, evidence and override reasons.
+
 ## Schema (`quota_core/context_economics/schema.py`)
 
 `SCHEMA_VERSION` starts at `1`. Bump it only when a field is removed or its
