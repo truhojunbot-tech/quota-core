@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import sqlite3
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from quota_core.adapters.claude import normalize_claude_quota
 from quota_core.adapters.codex import normalize_codex_quota
@@ -74,7 +76,8 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             child = Path(temp_dir) / "child"
             child.mkdir()
-            env = runtime_env(str(child), {"demo-bot": (temp_dir,)}, base_env={})
+            with patch.dict(os.environ, {}, clear=True):
+                env = runtime_env(str(child), {"demo-bot": (temp_dir,)}, base_env={})
             self.assertEqual(env.get("LLM_USAGE_CLASS"), "runtime")
             self.assertEqual(env.get("BOT_NAME"), "demo-bot")
 

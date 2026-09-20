@@ -21,6 +21,7 @@ from quota_core.context_economics import (
     PRICED_COMPONENTS,
     PricingBook,
     QualityEvidence,
+    TaskEvidence,
     TaskTypeRiskDeclaration,
     apply_risk_declaration,
     attribution_from_dict,
@@ -99,6 +100,12 @@ class ReviewVerdictDerivationTests(unittest.TestCase):
         db = _results_db([_review("r1", "impl-a", "teleported", 1.0)])
         derived = derive_quality_evidence(db, ["impl-a"])
         self.assertIsNone(derived["impl-a"].evidence.independent_review_correct)
+
+    def test_a_self_linked_review_cannot_supply_its_own_quality_evidence(self):
+        db = _results_db([_review("review-a", "review-a", "approve", 1.0)])
+        self.assertEqual(read_review_verdicts(db), {})
+        derived = derive_quality_evidence(db, ["review-a"])
+        self.assertIsNone(derived["review-a"].evidence.independent_review_correct)
 
     def test_a_verdict_on_a_non_review_row_is_ignored(self):
         """⛔Review of PR #84, P1: carrying a verdict and a linked task does not
@@ -205,6 +212,61 @@ class RiskDeclarationTests(unittest.TestCase):
         self.assertIs(updated["rev-a"].evidence.independent_review_correct, False)
         self.assertIn("request_changes",
                       updated["rev-a"].provenance["independent_review_correct"])
+
+    def test_safety_declaration_has_precedence_over_overlapping_categories(self):
+        declaration = TaskTypeRiskDeclaration(
+            safety_or_live_types=frozenset({"deploy"}),
+            architecture_types=frozenset({"deploy"}),
+            routine_types=frozenset({"deploy"}),
+            non_production_types=frozenset({"deploy"}),
+        )
+        evidence = declaration.declare("deploy")
+        self.assertTrue(evidence.safety_or_live_change)
+        self.assertFalse(evidence.broad_architecture_change)
+        self.assertFalse(evidence.bounded_routine_fix)
+        self.assertEqual(
+            recommend_task_policy(_record(task_type="deploy"), evidence).risk_tier,
+            "safety_or_live",
+        )
+
+    def test_single_architecture_declaration_does_not_fall_back_to_unknown_risk(self):
+        evidence = TaskTypeRiskDeclaration(
+            architecture_types=frozenset({"architecture"}),
+        ).declare("architecture")
+        self.assertEqual(
+            recommend_task_policy(_record(task_type="architecture"), evidence).risk_tier,
+            "architecture",
+        )
+
+    def test_risk_declaration_preserves_all_non_risk_policy_evidence(self):
+        original = QualityEvidence(
+            independent_review_correct=True,
+            required_context_recalled=True,
+            new_evidence_or_progress=True,
+            repeated_unchanged_state=False,
+            context_growth_tokens=7,
+            stale_waste_tokens=11,
+            misrouted_waste_tokens=13,
+            duplicate_waste_tokens=17,
+        )
+        derived = {"review-a": TaskEvidence("review-a", original, {})}
+        updated = apply_risk_declaration(
+            derived, {"review-a": "review"},
+            TaskTypeRiskDeclaration(non_production_types=frozenset({"review"})),
+        )
+        evidence = updated["review-a"].evidence
+        self.assertTrue(evidence.independent_review_correct)
+        self.assertTrue(evidence.required_context_recalled)
+        self.assertTrue(evidence.new_evidence_or_progress)
+        self.assertFalse(evidence.repeated_unchanged_state)
+        self.assertEqual(evidence.context_growth_tokens, 7)
+        self.assertEqual(evidence.stale_waste_tokens, 11)
+        self.assertEqual(evidence.misrouted_waste_tokens, 13)
+        self.assertEqual(evidence.duplicate_waste_tokens, 17)
+        decision = recommend_task_policy(
+            _record(task_id="review-a", task_type="review"), evidence)
+        self.assertEqual(decision.recommended_max_review_fix_rounds, 2)
+        self.assertEqual(decision.recommended_session_treatment, "renew")
 
 
 class PricingTests(unittest.TestCase):

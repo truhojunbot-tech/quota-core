@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .policy import QualityEvidence
@@ -153,7 +153,10 @@ def read_review_verdicts(
             continue
         target = _linked_target(row["context"])
         verdict = row["verdict"]
-        if not target or not isinstance(verdict, str) or not verdict.strip():
+        # A task cannot independently review itself. Treat a self-link as no
+        # evidence instead of allowing a task's own verdict to pass its gate.
+        if (not target or target == row["task_id"]
+                or not isinstance(verdict, str) or not verdict.strip()):
             continue
         # Ascending order means a later row legitimately replaces an earlier
         # one: the last verdict on a fix loop is the standing one.
@@ -250,7 +253,10 @@ class TaskTypeRiskDeclaration:
       downstream reader can mistake one for the other.
 
     ⛔Only ever declare a task type DOWN to lower scrutiny when the operator
-      is sure. An unlisted type stays unknown and keeps the fail-safe.
+      is sure. An unlisted type stays unknown and keeps the fail-safe. If a
+      type appears in more than one category, safety_or_live takes precedence,
+      then architecture, routine, human-gated, and non-production. A broader
+      declaration must never dilute an explicit safety declaration.
     """
 
     safety_or_live_types: frozenset[str] = frozenset()
@@ -272,11 +278,39 @@ class TaskTypeRiskDeclaration:
         )
         if kind not in known:
             return None
+        if kind in self.safety_or_live_types:
+            return QualityEvidence(
+                safety_or_live_change=True,
+                broad_architecture_change=False,
+                bounded_routine_fix=False,
+                human_gate_required=False,
+            )
+        if kind in self.architecture_types:
+            return QualityEvidence(
+                safety_or_live_change=False,
+                broad_architecture_change=True,
+                bounded_routine_fix=False,
+                human_gate_required=False,
+            )
+        if kind in self.routine_types:
+            return QualityEvidence(
+                safety_or_live_change=False,
+                broad_architecture_change=False,
+                bounded_routine_fix=True,
+                human_gate_required=False,
+            )
+        if kind in self.human_gate_types:
+            return QualityEvidence(
+                safety_or_live_change=False,
+                broad_architecture_change=False,
+                bounded_routine_fix=False,
+                human_gate_required=True,
+            )
         return QualityEvidence(
-            safety_or_live_change=kind in self.safety_or_live_types,
-            broad_architecture_change=kind in self.architecture_types,
-            bounded_routine_fix=kind in self.routine_types,
-            human_gate_required=kind in self.human_gate_types,
+            safety_or_live_change=False,
+            broad_architecture_change=False,
+            bounded_routine_fix=False,
+            human_gate_required=False,
         )
 
 
@@ -305,14 +339,12 @@ def apply_risk_declaration(
             provenance[name] = f"{OPERATOR_DECLARED}:{task_types.get(task_id)}"
         updated[task_id] = TaskEvidence(
             task_id=task_id,
-            evidence=QualityEvidence(
+            evidence=replace(
+                item.evidence,
                 safety_or_live_change=declared.safety_or_live_change,
                 broad_architecture_change=declared.broad_architecture_change,
                 bounded_routine_fix=declared.bounded_routine_fix,
                 human_gate_required=declared.human_gate_required,
-                # Measured evidence is never overwritten by a declaration.
-                independent_review_correct=item.evidence.independent_review_correct,
-                required_context_recalled=item.evidence.required_context_recalled,
             ),
             provenance=provenance,
         )
