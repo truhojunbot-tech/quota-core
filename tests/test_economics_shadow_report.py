@@ -15,6 +15,7 @@ from quota_core.cli import main
 from quota_core.context_economics import (
     read_task_attribution_sqlite,
     shadow_comparison_report,
+    stratified_failure_rates,
 )
 
 
@@ -46,6 +47,12 @@ def _make_database(path: Path) -> None:
         )
 
 
+def _make_status_database(path: Path, statuses: list[tuple[str, str]]) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE task_attribution (task_id TEXT, status TEXT)")
+        conn.executemany("INSERT INTO task_attribution VALUES (?, ?)", statuses)
+
+
 class EconomicsShadowReportTests(unittest.TestCase):
     def test_readonly_loader_preserves_nulls_zeroes_and_corrected_fields(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -69,6 +76,32 @@ class EconomicsShadowReportTests(unittest.TestCase):
             _make_database(db_path)
             self.assertEqual(read_task_attribution_sqlite(db_path, "missing_table"), [])
             self.assertEqual(read_task_attribution_sqlite(db_path, 'task_attribution"; DROP TABLE task_attribution; --'), [])
+
+    def test_null_outcome_falls_back_to_a_terminal_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "synthetic.sqlite"
+            with sqlite3.connect(db_path) as conn:
+                conn.execute("CREATE TABLE task_attribution (task_id TEXT, outcome TEXT, status TEXT)")
+                conn.execute("INSERT INTO task_attribution VALUES (?, ?, ?)", ("terminal", None, "completed"))
+            records = read_task_attribution_sqlite(db_path)
+        self.assertEqual(records[0].outcome, "success")
+
+    def test_status_only_nonterminal_rows_are_not_failure_observations(self):
+        unfinished = ["in_progress", "pending", "blocked", "needs_human", "timed_out"]
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "synthetic.sqlite"
+            _make_status_database(
+                db_path,
+                [(f"unfinished-{index}", status) for index, status in enumerate(unfinished)]
+                + [("failed", "failed"), ("completed", "completed")],
+            )
+            records = read_task_attribution_sqlite(db_path)
+        by_id = {record.task_id: record for record in records}
+        for index in range(len(unfinished)):
+            self.assertIsNone(by_id[f"unfinished-{index}"].outcome)
+        rates = stratified_failure_rates(records)
+        self.assertEqual(rates["observed_count"], 2)
+        self.assertEqual(rates["raw_failure_count"], 1)
 
     def test_report_compares_actual_provenance_without_inventing_rounds_or_totals(self):
         with tempfile.TemporaryDirectory() as directory:
