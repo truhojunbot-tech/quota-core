@@ -7,8 +7,6 @@
   PASS/FAIL/INSUFFICIENT_DATA outcomes and preserves unknown evidence as
   insufficient rather than treating it as zero.
 
-## Unreleased
-
 - Added the read-only, deterministic organic shadow-report producer for #80.
   It emits task-ID-keyed recommendation artifacts with the exact policy schema
   identifier/hash they cite, and safely rechecks tied or NULL creation times
