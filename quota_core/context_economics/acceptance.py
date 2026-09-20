@@ -119,12 +119,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--since", type=int)
     parser.add_argument("--rerun-report", help="same-input rerun report, compared byte-for-byte")
     args = parser.parse_args(argv)
-    try: report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    report_path = Path(args.report)
+    rerun_path = Path(args.rerun_report) if args.rerun_report else None
+    if rerun_path is not None and report_path.resolve() == rerun_path.resolve():
+        parser.error("--rerun-report must be a distinct file from --report")
+    try: report = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error: parser.error(f"could not read report: {error}")
     if not isinstance(report, Mapping): parser.error("report must be a JSON object")
     rerun_equal = None
-    if args.rerun_report:
-        try: rerun_equal = Path(args.report).read_bytes() == Path(args.rerun_report).read_bytes()
+    if rerun_path is not None:
+        try: rerun_equal = report_path.read_bytes() == rerun_path.read_bytes()
         except OSError as error: parser.error(f"could not read rerun report: {error}")
     print(json.dumps(check_acceptance(report, args.since, rerun_equal), indent=2, sort_keys=True))
     return 0

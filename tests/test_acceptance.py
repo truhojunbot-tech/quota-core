@@ -74,11 +74,21 @@ class AcceptanceCheckTests(unittest.TestCase):
     def test_cli_prints_machine_readable_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "report.json"
+            rerun = Path(temp) / "rerun.json"
             path.write_text(json.dumps(_passing_report()), encoding="utf-8")
+            rerun.write_bytes(path.read_bytes())
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                self.assertEqual(main(["--report", str(path), "--rerun-report", str(path), "--since", "1000"]), 0)
+                self.assertEqual(main(["--report", str(path), "--rerun-report", str(rerun), "--since", "1000"]), 0)
         self.assertEqual(json.loads(output.getvalue())["overall_verdict"], "READY_TO_CLOSE")
+
+    def test_cli_rejects_report_as_its_own_rerun(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "report.json"
+            path.write_text(json.dumps(_passing_report()), encoding="utf-8")
+            with self.assertRaises(SystemExit) as error:
+                main(["--report", str(path), "--rerun-report", str(path), "--since", "1000"])
+        self.assertEqual(error.exception.code, 2)
 
     def test_uniform_declarations_are_d1_exception_and_are_reported(self) -> None:
         report = _passing_report()
