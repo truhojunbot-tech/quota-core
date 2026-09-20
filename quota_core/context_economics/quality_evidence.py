@@ -288,7 +288,9 @@ def ingest_attribution_quality_evidence(
         elif isinstance(pack, str) and pack:
             recall_state, na = "applicable_but_missing", None
         else:
-            recall_state, na = "not_applicable_no_retrieval", True
+            # A missing pack hash is not affirmative evidence that retrieval
+            # was unnecessary: legacy producers simply omit this telemetry.
+            recall_state, na = "applicability_unknown", None
         provenance["required_context_recalled"] = recall_state
         provenance["recall_applicability"] = recall_state
         result[task_id] = TaskEvidence(task_id, QualityEvidence(**values, required_context_recalled=recall, recall_not_applicable=na), provenance)

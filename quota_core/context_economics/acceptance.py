@@ -69,8 +69,8 @@ def check_acceptance(
     })
     s1_ok = len(rows) >= MIN_ARTIFACTS and measured >= MIN_MEASURED_TOKEN_ARTIFACTS and len(identities) >= MIN_RUNTIMES
     criteria["S1"] = _result(PASS if s1_ok else INSUFFICIENT_DATA, artifact_count=len(rows), untimestamped_artifact_count=len(untimestamped), measured_token_artifact_count=measured, runtime_count=len(identities), runtimes=identities, runtime_identity_field="policy_decision.provenance.provider", thresholds={"artifacts": MIN_ARTIFACTS, "measured_tokens": MIN_MEASURED_TOKEN_ARTIFACTS, "runtimes": MIN_RUNTIMES})
-    recall_states = {state: sum(_mapping(row.get("evidence_provenance")).get("recall_applicability") == state for row in rows) for state in ("observed_true", "observed_false", "applicable_but_missing", "not_applicable_no_retrieval")}
-    applicable = recall_states["observed_true"] + recall_states["observed_false"] + recall_states["applicable_but_missing"]
+    recall_states = {state: sum(_mapping(row.get("evidence_provenance")).get("recall_applicability") == state for row in rows) for state in ("observed_true", "observed_false", "applicable_but_missing", "not_applicable_no_retrieval", "applicability_unknown")}
+    applicable = len(rows) - recall_states["not_applicable_no_retrieval"]
     recall = recall_states["observed_true"] + recall_states["observed_false"]
     recall_coverage = recall / applicable if applicable else None
     criteria["C1"] = _result(INSUFFICIENT_DATA if not applicable else PASS if recall_coverage >= MIN_COVERAGE else FAIL, recorded_count=recall, total_count=applicable, coverage=recall_coverage, recall_state_counts=recall_states, threshold=MIN_COVERAGE)

@@ -59,7 +59,7 @@ class OrganicReportProducerTests(unittest.TestCase):
         self.assertIsNone(artifact["policy_decision"]["evidence"]["required_context_recalled"])
         self.assertEqual(
             artifact["evidence_provenance"]["required_context_recalled"],
-            "not_applicable_no_retrieval",
+            "applicability_unknown",
         )
         self.assertEqual(
             artifact["policy_decision"]["recommended_session_treatment"],

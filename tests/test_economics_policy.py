@@ -42,6 +42,13 @@ class EconomicsPolicyTests(unittest.TestCase):
         self.assertTrue(decision.quality_preserving)
         self.assertEqual(decision.recommended_session_treatment, "preserve")
 
+    def test_no_retrieval_exemption_cannot_bypass_unknown_risk_fail_safe(self):
+        decision = recommend_task_policy(_record(), QualityEvidence(
+            independent_review_correct=True, recall_not_applicable=True,
+        ))
+        self.assertFalse(decision.quality_preserving)
+        self.assertEqual(decision.recommended_session_treatment, "insufficient_evidence")
+
     def test_risk_is_characteristics_not_token_volume_and_new_evidence_extends_rounds(self):
         decision = recommend_task_policy(_record(uncached_input_tokens=1), QualityEvidence(
             safety_or_live_change=True, independent_review_correct=True,

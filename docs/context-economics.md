@@ -765,6 +765,8 @@ declaration `explicit` with `high` confidence. Those facts carry
 `producer_declared:explicit/high` provenance; heuristic, low-confidence, and
 absent declarations stay unknown and retain the safety-first policy tier.
 Recall provenance distinguishes `observed_true`, `observed_false`,
-`applicable_but_missing`, and `not_applicable_no_retrieval`. No-retrieval work
+`applicable_but_missing`, `not_applicable_no_retrieval`, and
+`applicability_unknown`. A missing context-pack value is unknown rather than
+positive non-applicability evidence. No-retrieval work
 is not counted as recalled or unrecalled; it still requires successful,
 independently reviewed work before the quality gate permits treatments.

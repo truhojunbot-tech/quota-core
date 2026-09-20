@@ -323,7 +323,10 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     risk_unassessed = _risk_is_unassessed(evidence)
     human_gate = evidence.human_gate_required is True or risk_unassessed
     recall_ok = evidence.required_context_recalled is True or evidence.recall_not_applicable is True
-    quality = record.outcome == "success" and evidence.independent_review_correct is True and recall_ok
+    # An observed successful recall keeps the established quality rule. The
+    # narrower no-retrieval exemption may not bypass an unknown-risk fail-safe.
+    recall_exemption_safe = evidence.recall_not_applicable is not True or not risk_unassessed
+    quality = record.outcome == "success" and evidence.independent_review_correct is True and recall_ok and recall_exemption_safe
     overrides = []
     if record.outcome != "success": overrides.append("task_outcome_not_success")
     if evidence.independent_review_correct is not True: overrides.append("independent_review_correctness_unknown_or_negative")

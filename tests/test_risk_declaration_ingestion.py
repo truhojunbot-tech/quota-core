@@ -31,7 +31,8 @@ class RiskDeclarationIngestionTests(unittest.TestCase):
         self.assertEqual(evidence["trusted"].provenance["recall_applicability"], "observed_true")
         self.assertEqual(evidence["heuristic"].provenance["recall_applicability"], "observed_false")
         self.assertEqual(evidence["missing"].provenance["recall_applicability"], "applicable_but_missing")
-        self.assertTrue(evidence["na"].evidence.recall_not_applicable)
+        self.assertIsNone(evidence["na"].evidence.recall_not_applicable)
+        self.assertEqual(evidence["na"].provenance["recall_applicability"], "applicability_unknown")
 
     def test_legacy_schema_is_absent_not_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -40,3 +41,4 @@ class RiskDeclarationIngestionTests(unittest.TestCase):
             evidence = ingest_attribution_quality_evidence(path, ["old"])["old"]
         self.assertIsNone(evidence.evidence.safety_or_live_change)
         self.assertEqual(evidence.provenance["safety_or_live_change"], "not_recorded_by_producer")
+        self.assertEqual(evidence.provenance["recall_applicability"], "applicability_unknown")
