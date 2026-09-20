@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Corrected #80 acceptance-checker cutoff and recall-axis handling: automatic
+  cutoff now requires trusted producer evidence, and insufficient known recall
+  applicability is explicitly deferred rather than treated as coverage failure.
+  C1 now declares its known-applicability denominator and excluded counts under
+  the later #80 checker-criteria amendment.
+
 - Added conservative ingestion of explicit/high risk declarations and recall
   applicability states to organic shadow reporting; legacy attribution schemas
   remain supported as unknown evidence.
