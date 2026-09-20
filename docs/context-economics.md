@@ -41,6 +41,24 @@ escalation is more scrutiny rather than a cost-saving action. Recommendations in
 review/fix envelope, provider tier, session/cache treatment, provenance,
 confidence, evidence and override reasons.
 
+## SQLite shadow report (partial issue #80 slice)
+
+`read_task_attribution_sqlite(path)` is a read-only (`mode=ro`) adapter for a
+generic `task_attribution` SQLite table. It normalizes the corrected nullable
+token/cache fields and stable/context-pack hashes into `TaskEconomicsRecord`;
+SQL `NULL` remains unknown and a measured zero remains zero. The adapter does
+not require a runtime installation, mutate the database, or construct a token
+total.
+
+`quota-core context-economics-shadow-report --database PATH` emits JSON only:
+one v1 policy artifact and an actual-versus-recommended comparison per task.
+The actual side reports known provider/model, retry/fallback provenance, and
+resume/renew treatment. An actual review/fix-round count is `null` until a
+producer records one explicitly; it is never guessed from retries. Cache reads
+are not called waste by default; stale, misrouted, and duplicate waste remains
+in the separate policy evidence fields. This command is a report, not an
+enforcement mechanism.
+
 ## Schema (`quota_core/context_economics/schema.py`)
 
 `SCHEMA_VERSION` starts at `1`. Bump it only when a field is removed or its

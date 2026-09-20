@@ -39,6 +39,13 @@ def build_parser() -> argparse.ArgumentParser:
     parity_parser.add_argument("--max-file-bytes", type=int, default=1_000_000_000_000, help="quota-core max JSONL file size for parity runs")
     parity_parser.add_argument("--tolerance-pct", type=float, default=0.1, help="allowed total-token delta percentage before failing")
     parity_parser.add_argument("--output", help="optional JSON summary output path")
+    shadow_parser = subcommands.add_parser(
+        "context-economics-shadow-report",
+        help="emit read-only actual-versus-recommended context economics JSON",
+    )
+    shadow_parser.add_argument("--database", required=True, help="SQLite task-attribution database path")
+    shadow_parser.add_argument("--table", default="task_attribution", help="task-attribution table name")
+    shadow_parser.add_argument("--output", help="optional JSON output path; stdout is always emitted")
     return parser
 
 
@@ -85,6 +92,22 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: total token delta exceeds tolerance: {summary['total_delta_pct']}% > {args.tolerance_pct}%")
             return 1
         print("Session parity verification passed")
+        return 0
+    if args.command == "context-economics-shadow-report":
+        from .context_economics import (
+            read_task_attribution_sqlite,
+            shadow_comparison_report,
+        )
+
+        report = shadow_comparison_report(
+            read_task_attribution_sqlite(args.database, args.table)
+        )
+        rendered = json.dumps(report, ensure_ascii=False, indent=2)
+        if args.output:
+            target = Path(args.output).expanduser()
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(rendered + "\n")
+        print(rendered)
         return 0
     raise SystemExit(f"quota-core {args.command} is not implemented yet")
 
