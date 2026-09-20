@@ -736,3 +736,14 @@ No unavailable quality fact is synthesized: in particular,
 `not_recorded_by_producer` provenance, so the policy correctly keeps its
 quality gate at `insufficient_evidence`. This remains reporting only: it does
 not select a provider, modify a task, or write back to a runtime database.
+
+### #80 acceptance checker
+
+`python -m quota_core.context_economics.acceptance --report report.json`
+reads an organic shadow report without touching its source databases and
+evaluates the pre-registered #80 S1/C1/C2/D1/D2/D3/V1/V2/V3 criteria. It emits
+machine-readable `PASS`, `FAIL`, or `INSUFFICIENT_DATA` results with counts,
+distributions, cutoff, and cited policy-contract SHA. `--since <created_at>`
+sets an inclusive cutoff; without it the checker uses the first artifact with
+producer-recorded provenance. Missing evidence remains insufficient rather
+than becoming a measured zero or a pass.

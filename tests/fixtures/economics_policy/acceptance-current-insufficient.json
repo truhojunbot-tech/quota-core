@@ -1,0 +1,11 @@
+{
+  "mode": "shadow",
+  "policy_contract": {"id": "example-policy", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "decisions": {
+    "current-unknown": {
+      "task_id": "current-unknown", "created_at": 100, "runtime": "portable",
+      "evidence_provenance": {"required_context_recalled": "not_recorded_by_producer", "safety_or_live_change": "not_recorded_by_producer", "broad_architecture_change": "not_recorded_by_producer", "bounded_routine_fix": "not_recorded_by_producer", "human_gate_required": "not_recorded_by_producer"},
+      "policy_decision": {"risk_tier": "safety_or_live", "quality_preserving": false, "human_gate_required": true, "recommended_session_treatment": "insufficient_evidence", "recommended_cache_treatment": "insufficient_evidence", "evidence": {"required_context_recalled": null, "independent_review_correct": null, "token_observations": {"uncached_input_tokens": null, "cache_write_tokens": null, "cache_read_tokens": null, "output_tokens": null, "reasoning_tokens": null}}, "component_costs": {"components": {}, "non_additive_components": ["reasoning"], "aggregation": "prohibited_overlapping_components"}}
+    }
+  }
+}

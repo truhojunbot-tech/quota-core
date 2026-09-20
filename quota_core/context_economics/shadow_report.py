@@ -106,6 +106,7 @@ def shadow_comparison_report(
         }
         artifacts.append({
             "task_id": record.task_id,
+            "runtime": record.runtime,
             "policy_decision": decision,
             "shadow_comparison": {"actual": actual, "recommended": recommended},
             # quota-core#80: the per-component baseline the recommendation is
