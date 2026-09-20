@@ -34,6 +34,15 @@ Adds quota-core#80's portable, recommendation-only economics policy contract.
   failed review (escalation adds scrutiny). Negative numeric evidence is
   normalized to unknown before serialization so emitted decisions conform to
   their own schema.
+- Partial issue #80 follow-up: a generic read-only SQLite
+  `task_attribution` loader and `context-economics-shadow-report` CLI now emit
+  deterministic actual-versus-recommended JSON artifacts. The report keeps
+  null telemetry unknown, measured zeroes intact, cache reads separate from
+  orchestration waste, and does not mutate the source or enforce a policy.
+- Shadow-loader correction: a null or empty `outcome` now falls back to a
+  table `status` only when that status is an explicit success/failure terminal
+  state. Pending, blocked, human-gated, and timeout-wall statuses stay
+  `None`, so unfinished work cannot inflate failure-rate denominators.
 
 ## 0.1.19 - 2026-09-18
 

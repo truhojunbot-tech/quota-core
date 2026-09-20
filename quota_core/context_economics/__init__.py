@@ -47,6 +47,8 @@ from .policy import (
     policy_contract_schema,
     shadow_policy_report,
 )
+from .shadow_report import shadow_comparison_report
+from .sqlite_attribution import read_task_attribution_sqlite
 from .compact_analysis import before_after_compact
 from .context_pack_analytics import (
     context_composition,
@@ -121,6 +123,8 @@ __all__ = [
     "recommend_task_policy",
     "policy_contract_schema",
     "shadow_policy_report",
+    "shadow_comparison_report",
+    "read_task_attribution_sqlite",
     "task_telemetry_by_stable_prefix",
     "task_token_telemetry_summary",
     "context_window_observations",
