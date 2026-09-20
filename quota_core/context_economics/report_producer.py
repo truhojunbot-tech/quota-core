@@ -11,9 +11,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
@@ -28,6 +29,7 @@ REPORT_CONTRACT_ID = "https://quota-core.dev/contracts/organic-shadow-report/1.0
 NOT_COVERED = "NOT_COVERED"
 COVERED = "COVERED"
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_LOGGER = logging.getLogger(__name__)
 
 # The outer report is intentionally small and stable.  Its policy-decision
 # payload is pinned by the separately versioned policy contract it cites.
@@ -145,7 +147,11 @@ def read_organic_task_records(
     unique_paths = sorted({str(Path(path).expanduser()) for path in db_paths})
     for path in unique_paths:
         created = _readonly_created_at_by_task(path, table)
-        for record in read_task_attribution_sqlite(path, table):
+        source_records = read_task_attribution_sqlite(path, table)
+        _LOGGER.info("read %d attribution record(s) from %s", len(source_records), path)
+        if not source_records:
+            _LOGGER.warning("no readable attribution records from %s", path)
+        for record in source_records:
             candidate = _SourcedRecord(record, created.get(record.task_id), path)
             existing = selected.get(record.task_id)
             candidate_key = (
@@ -174,6 +180,17 @@ def _artifact_evidence(
     )
 
 
+def _evidence_fingerprint(evidence: object, provenance: Mapping[str, str]) -> str:
+    """Fingerprint all derived evidence so later facts refresh old artifacts."""
+    values = asdict(evidence) if hasattr(evidence, "__dataclass_fields__") else {}
+    encoded = json.dumps(
+        {"evidence": values, "provenance": dict(provenance)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _existing_decisions(existing_report: Mapping[str, object] | None) -> dict[str, dict[str, object]]:
     if not isinstance(existing_report, Mapping):
         return {}
@@ -198,10 +215,17 @@ def _prior_watermark(existing_report: Mapping[str, object] | None) -> int | None
 
 
 def _is_new_since_watermark(
-    task_id: str, item: _SourcedRecord, decisions: Mapping[str, object], watermark: int | None
+    task_id: str,
+    item: _SourcedRecord,
+    decisions: Mapping[str, object],
+    watermark: int | None,
+    evidence_fingerprint: str,
 ) -> bool:
-    """Inclusive incremental predicate safe for tied and NULL timestamps."""
+    """Refresh new attribution rows *or* later evidence for an existing task."""
     if task_id not in decisions:
+        return True
+    existing = decisions[task_id]
+    if not isinstance(existing, Mapping) or existing.get("evidence_fingerprint") != evidence_fingerprint:
         return True
     if item.created_at is None or watermark is None:
         return True
@@ -215,34 +239,48 @@ def produce_shadow_report(
 ) -> dict[str, object]:
     """Build an idempotent rolling, recommendation-only report keyed by ID.
 
-    The producer upserts new records and records at the prior watermark or
-    later.  The inclusive comparison makes tied timestamps safe, while rows
-    with an unknown timestamp are re-read on every run.  That deliberately
-    trades a small amount of read-only work for never silently missing an
-    organic task because its producer did not record a creation timestamp.
+    The producer upserts new records, records at the prior watermark or later,
+    and existing records whose derived evidence changed. The inclusive
+    comparison makes tied timestamps safe, while rows with an unknown timestamp
+    are re-read on every run. This deliberately trades a small amount of
+    read-only work for never silently missing an organic task or a later review
+    verdict because its producer did not record a task creation timestamp.
     """
     records = read_organic_task_records(db_paths, table)
     decisions = _existing_decisions(existing_report)
     watermark = _prior_watermark(existing_report)
 
     by_source: dict[str, list[_SourcedRecord]] = {}
-    for item in records.values():
-        if _is_new_since_watermark(item.record.task_id, item, decisions, watermark):
-            by_source.setdefault(item.source_key, []).append(item)
+    evidence_by_source: dict[str, tuple[dict[str, object], dict[str, dict[str, str]]]] = {}
+    for source in sorted({item.source_key for item in records.values()}):
+        source_items = [item for item in records.values() if item.source_key == source]
+        evidence_by_source[source] = _artifact_evidence(
+            source, sorted(item.record.task_id for item in source_items)
+        )
+        evidence, provenance = evidence_by_source[source]
+        for item in source_items:
+            task_id = item.record.task_id
+            fingerprint = _evidence_fingerprint(evidence[task_id], provenance[task_id])
+            if _is_new_since_watermark(task_id, item, decisions, watermark, fingerprint):
+                by_source.setdefault(source, []).append(item)
 
     for source, items in sorted(by_source.items()):
-        task_ids = sorted(item.record.task_id for item in items)
-        evidence, provenance = _artifact_evidence(source, task_ids)
+        evidence, provenance = evidence_by_source[source]
         report = shadow_comparison_report(
             [item.record for item in sorted(items, key=lambda value: value.record.task_id)],
             evidence_by_task=evidence,
             evidence_provenance=provenance,
         )
         for artifact in report["artifacts"]:
-            assert isinstance(artifact, dict)
-            task_id = artifact["task_id"]
-            assert isinstance(task_id, str)
+            if not isinstance(artifact, dict):
+                raise RuntimeError("shadow report emitted a non-object artifact")
+            task_id = artifact.get("task_id")
+            if not isinstance(task_id, str):
+                raise RuntimeError("shadow report emitted an artifact without a task ID")
             artifact["created_at"] = records[task_id].created_at
+            artifact["evidence_fingerprint"] = _evidence_fingerprint(
+                evidence[task_id], provenance[task_id]
+            )
             decisions[task_id] = artifact
 
     known_times = [item.created_at for item in records.values() if item.created_at is not None]
@@ -294,15 +332,19 @@ def _db_paths_from_args(values: Sequence[str], list_path: str | None) -> list[st
     if list_path:
         try:
             configured = json.loads(Path(list_path).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
+            _LOGGER.warning("could not read --db-list %s: %s", list_path, error)
             configured = []
         if isinstance(configured, list):
             paths.extend(item for item in configured if isinstance(item, str))
+        else:
+            _LOGGER.warning("--db-list %s must contain a JSON array of paths", list_path)
     return paths
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the on-demand/rolling producer; ``--out`` is the rolling state."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", action="append", default=[], help="read-only SQLite attribution DB (repeatable)")
     parser.add_argument("--db-list", help="JSON list of SQLite attribution DB paths")

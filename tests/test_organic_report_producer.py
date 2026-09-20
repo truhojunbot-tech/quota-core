@@ -95,6 +95,32 @@ class OrganicReportProducerTests(unittest.TestCase):
             "organic-known-zero", "organic-tied-watermark",
         ])
 
+    def test_late_review_verdict_refreshes_an_old_task_below_task_watermark(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO task_attribution VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (
+            "later-task", 200, "completed", "example-provider", "example-model", 1, 0, 0, 1, 0,
+        ))
+        conn.execute("CREATE TABLE tasks (task_id TEXT, task_type TEXT, context TEXT, verdict TEXT, created_at REAL)")
+        conn.commit()
+        conn.close()
+        first = produce_shadow_report([self.db_path])
+        self.assertIsNone(first["decisions"]["organic-known-zero"]["policy_decision"]["evidence"]["independent_review_correct"])
+
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("INSERT INTO tasks VALUES (?, ?, ?, ?, ?)", (
+            "review-late", "review", '{"prev_task_id":"organic-known-zero"}', "approve", 300,
+        ))
+        conn.commit()
+        conn.close()
+        second = produce_shadow_report([self.db_path], first)
+        artifact = second["decisions"]["organic-known-zero"]
+        self.assertTrue(artifact["policy_decision"]["evidence"]["independent_review_correct"])
+        self.assertEqual(artifact["evidence_provenance"]["independent_review_correct"], "review_verdict:approve:review-late")
+        self.assertNotEqual(
+            first["decisions"]["organic-known-zero"]["evidence_fingerprint"],
+            artifact["evidence_fingerprint"],
+        )
+
     def test_lookup_never_silently_misses(self) -> None:
         report = produce_shadow_report([self.db_path])
         self.assertEqual(decision_for(report, "organic-known-zero")["status"], COVERED)
@@ -108,3 +134,12 @@ class OrganicReportProducerTests(unittest.TestCase):
         self.assertTrue(any("mode=ro" in str(call.args[0]) for call in connect.call_args_list))
         written = json.loads(out.read_text(encoding="utf-8"))
         self.assertEqual(written, produce_shadow_report([self.db_path], written))
+
+    def test_cli_warns_when_db_list_is_unreadable_without_hiding_direct_sources(self) -> None:
+        out = Path(self.temp.name) / "report.json"
+        with self.assertLogs("quota_core.context_economics.report_producer", level="WARNING") as logs:
+            self.assertEqual(main([
+                "--db", str(self.db_path), "--db-list", str(Path(self.temp.name) / "missing.json"), "--out", str(out),
+            ]), 0)
+        self.assertIn("could not read --db-list", "\n".join(logs.output))
+        self.assertIn("organic-known-zero", json.loads(out.read_text(encoding="utf-8"))["decisions"])

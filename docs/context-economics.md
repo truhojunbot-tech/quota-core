@@ -710,7 +710,16 @@ only file it writes. Re-running with the same `--out` is a rolling upsert: the
 `decisions` object is keyed by `task_id`, the `watermark.created_at` boundary
 is inclusive for tied timestamps, and NULL timestamps are deliberately
 rechecked rather than silently skipped. `--db-list paths.json` accepts a JSON
-array of source paths when a path list is managed outside the command line.
+array of source paths when a path list is managed outside the command line; an
+unreadable or malformed list emits a warning, as does a source that produced
+zero readable attribution rows. Existing task IDs are retained as historical
+decisions when a source later rotates away, so `decision_count` means retained
+rolling coverage (not only records present in the current source set).
+
+A task's attribution time is not the only refresh signal: the producer also
+fingerprints structured quality evidence and refreshes an existing artifact
+when a later review verdict changes it. This keeps rolling artifacts honest
+when a review is recorded after the task it evaluates.
 
 The stable outer report schema is
 `https://quota-core.dev/contracts/organic-shadow-report/1.0`, available to
