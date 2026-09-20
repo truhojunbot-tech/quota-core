@@ -38,7 +38,7 @@ def match_runtime_bot(cwd: str, bot_paths: Mapping[str, tuple[str, ...]]) -> Run
 def runtime_env(cwd: str, bot_paths: Mapping[str, tuple[str, ...]], base_env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return an environment with runtime tags applied when configured."""
 
-    env = dict(base_env or os.environ)
+    env = dict(base_env if base_env is not None else os.environ)
     if env.get("LLM_USAGE_CLASS") or env.get("BOT_NAME"):
         return env
 

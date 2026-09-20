@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import sqlite3
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from quota_core.adapters.claude import normalize_claude_quota
 from quota_core.adapters.codex import normalize_codex_quota
@@ -74,7 +76,8 @@ class RuntimeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             child = Path(temp_dir) / "child"
             child.mkdir()
-            env = runtime_env(str(child), {"demo-bot": (temp_dir,)}, base_env={})
+            with patch.dict(os.environ, {}, clear=True):
+                env = runtime_env(str(child), {"demo-bot": (temp_dir,)}, base_env={})
             self.assertEqual(env.get("LLM_USAGE_CLASS"), "runtime")
             self.assertEqual(env.get("BOT_NAME"), "demo-bot")
 
@@ -82,6 +85,12 @@ class RuntimeTests(unittest.TestCase):
         env = runtime_env("/tmp", {"demo-bot": ("/tmp",)}, base_env={"BOT_NAME": "manual"})
         self.assertEqual(env.get("BOT_NAME"), "manual")
         self.assertIsNone(env.get("LLM_USAGE_CLASS"))
+
+    def test_runtime_env_explicit_empty_base_does_not_inherit_ambient_env(self):
+        with patch.dict(os.environ, {"BOT_NAME": "ambient-bot"}, clear=True):
+            env = runtime_env("/tmp", {"demo-bot": ("/tmp",)}, base_env={})
+        self.assertEqual(env.get("BOT_NAME"), "demo-bot")
+        self.assertEqual(env.get("LLM_USAGE_CLASS"), "runtime")
 
 
 class SnapshotTests(unittest.TestCase):
