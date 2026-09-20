@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.22 - 2026-09-20
+
+Review fixes for #80's evidence/pricing slice (PR #84).
+
+- `read_review_verdicts()` now requires a row's recorded `task_type` to be a
+  review type. Carrying a verdict plus a linked task did not make a row a
+  review: on real local data 12 `test` rows carry both, and their verdicts were
+  being read as review correctness for the tasks they pointed at. Widening to
+  other types is possible but must be passed explicitly. A table with no
+  `task_type` column now yields nothing rather than accepting every verdict.
+- `price_task()` splits coverage into `rates_found` (a rate entry matched) and
+  `priced` (at least one component actually costed). Previously `priced` was
+  true whenever rates existed, so a task with no measured tokens advertised
+  itself as priced while every component was null. A measured zero still counts
+  as priced, at `0.0`.
+
 ## 0.1.21 - 2026-09-20
 
 Derived quality evidence and provider/version pricing for the shadow economics

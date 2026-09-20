@@ -17,6 +17,7 @@ from pathlib import Path
 from quota_core.context_economics import (
     NOT_RECORDED,
     OPERATOR_DECLARED,
+    REVIEW_TASK_TYPES,
     PRICED_COMPONENTS,
     PricingBook,
     QualityEvidence,
@@ -98,6 +99,52 @@ class ReviewVerdictDerivationTests(unittest.TestCase):
         db = _results_db([_review("r1", "impl-a", "teleported", 1.0)])
         derived = derive_quality_evidence(db, ["impl-a"])
         self.assertIsNone(derived["impl-a"].evidence.independent_review_correct)
+
+    def test_a_verdict_on_a_non_review_row_is_ignored(self):
+        """⛔Review of PR #84, P1: carrying a verdict and a linked task does not
+        make a row a review. On real local data 12 `test` rows carry both, and
+        their verdicts were being read as review correctness for the tasks they
+        pointed at -- fabricating the one piece of evidence this module derives."""
+        db = _results_db([
+            ("t1", "test", json.dumps({"prev_task_id": "impl-a"}), "approve", 1.0),
+            ("t2", "implement", json.dumps({"prev_task_id": "impl-b"}), "approve", 2.0),
+            ("t3", "discuss", json.dumps({"prev_task_id": "impl-c"}), "request_changes", 3.0),
+        ])
+        self.assertEqual(read_review_verdicts(db), {})
+        derived = derive_quality_evidence(db, ["impl-a", "impl-b", "impl-c"])
+        for task_id in ("impl-a", "impl-b", "impl-c"):
+            self.assertIsNone(
+                derived[task_id].evidence.independent_review_correct, task_id)
+            self.assertEqual(
+                derived[task_id].provenance["independent_review_correct"],
+                "no_linked_review_task", task_id)
+
+    def test_a_review_row_beside_a_non_review_row_still_counts(self):
+        """The restriction must exclude the impostor, not the real reviewer."""
+        db = _results_db([
+            ("t1", "test", json.dumps({"prev_task_id": "impl-a"}), "request_changes", 1.0),
+            ("r1", "review", json.dumps({"prev_task_id": "impl-a"}), "approve", 2.0),
+        ])
+        derived = derive_quality_evidence(db, ["impl-a"])
+        self.assertIs(derived["impl-a"].evidence.independent_review_correct, True)
+        self.assertIn("r1", derived["impl-a"].provenance["independent_review_correct"])
+
+    def test_a_caller_may_widen_the_accepted_review_types_explicitly(self):
+        """Counting a tester's verdict must be a visible decision, not a default."""
+        db = _results_db([
+            ("t1", "test", json.dumps({"prev_task_id": "impl-a"}), "approve", 1.0),
+        ])
+        self.assertEqual(read_review_verdicts(db), {})
+        widened = read_review_verdicts(db, "tasks", frozenset({"review", "test"}))
+        self.assertEqual(widened["impl-a"][0], "approve")
+        self.assertNotIn("test", REVIEW_TASK_TYPES)
+
+    def test_a_table_without_task_type_cannot_confirm_a_review_and_yields_nothing(self):
+        """⛔"cannot confirm" must not become "assume yes" for gating evidence."""
+        db = _results_db(
+            [("r1", json.dumps({"prev_task_id": "impl-a"}), "approve", 1.0)],
+            columns="task_id TEXT, context TEXT, verdict TEXT, created_at REAL")
+        self.assertEqual(read_review_verdicts(db), {})
 
     def test_unreadable_or_incompatible_database_yields_nothing(self):
         self.assertEqual(read_review_verdicts("/nonexistent/x.db"), {})
@@ -183,8 +230,31 @@ class PricingTests(unittest.TestCase):
 
     def test_an_unknown_provider_is_never_costed_at_another_providers_rates(self):
         priced = price_task(_record(agent="provider-z", uncached_input_tokens=100), self.book)
+        self.assertFalse(priced.rates_found)
         self.assertFalse(priced.priced)
         self.assertTrue(all(value is None for value in priced.components.values()))
+
+    def test_rates_without_measurements_are_not_reported_as_priced(self):
+        """⛔Review of PR #84, P1: an all-unknown task advertised priced=True
+        merely because a rate entry existed, so unknown wore the shape of a
+        value. `rates_found` and `priced` are now separate facts."""
+        payload = price_task(_record(), self.book).to_dict()
+        self.assertTrue(payload["rates_found"], "a provider-a entry does exist")
+        self.assertFalse(payload["priced"], "but nothing was actually costed")
+        self.assertTrue(all(v is None for v in payload["productive"].values()))
+
+    def test_a_measured_zero_still_counts_as_priced(self):
+        """0 tokens at a known rate is a real cost of 0.0, not an unknown."""
+        payload = price_task(_record(cache_write_tokens=0), self.book).to_dict()
+        self.assertTrue(payload["priced"])
+        self.assertEqual(payload["productive"]["cache_write"], 0.0)
+
+    def test_no_rate_entry_is_distinguishable_from_no_measurements(self):
+        no_rates = price_task(
+            _record(agent="provider-z", uncached_input_tokens=100), self.book).to_dict()
+        no_tokens = price_task(_record(), self.book).to_dict()
+        self.assertEqual((no_rates["rates_found"], no_rates["priced"]), (False, False))
+        self.assertEqual((no_tokens["rates_found"], no_tokens["priced"]), (True, False))
 
     def test_no_universal_total_anywhere(self):
         payload = price_task(_record(uncached_input_tokens=1, output_tokens=1), self.book).to_dict()
@@ -213,6 +283,7 @@ class PricingTests(unittest.TestCase):
             "bad": "not-a-mapping",
         })
         self.assertEqual(book.entries, ())
+        self.assertFalse(price_task(_record(uncached_input_tokens=10), book).rates_found)
         self.assertFalse(price_task(_record(uncached_input_tokens=10), book).priced)
 
 

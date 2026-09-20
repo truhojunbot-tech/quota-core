@@ -55,6 +55,7 @@ from .pricing import (
 )
 from .quality_evidence import (
     NOT_RECORDED,
+    REVIEW_TASK_TYPES,
     OPERATOR_DECLARED,
     TaskEvidence,
     TaskTypeRiskDeclaration,
@@ -129,6 +130,7 @@ from .token_components import (
 )
 
 __all__ = [
+    "REVIEW_TASK_TYPES",
     "read_review_verdicts",
     "evidence_map",
     "derive_quality_evidence",

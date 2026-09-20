@@ -597,12 +597,21 @@ report with no signal. This slice closes the gap without inventing anything.
 `derive_quality_evidence(db_path, task_ids)` reads a task-results database
 **read-only** (`mode=ro`) and derives one field:
 
-- `independent_review_correct`, from a linked review task's recorded
+- `independent_review_correct`, from a linked **review** task's recorded
   `verdict`. `approve` is `True`; `request_changes`/`reject` is `False`; no
   linked review, or a review with no verdict yet, stays `None`. The link comes
   from the review's own recorded context payload, not from the attribution
   session chain — that chain links a review to the *previous review*, which is
   a different relationship. On a fix loop the latest review wins.
+
+⛔Only rows whose recorded `task_type` is a review type are read. Carrying a
+verdict and a linked task does not make a row a review: on real local data 12
+`test` rows carry both, and an earlier version read their verdicts as review
+correctness for the tasks they pointed at. A tester's verdict is its own kind
+of evidence — a caller that wants it counted passes `review_task_types`
+explicitly, so the substitution is a visible decision. A table with no
+`task_type` column yields nothing at all, because "cannot confirm this is a
+review" must not become "assume it is" for evidence that gates quality.
 
 Everything else is reported as **not recorded**, never guessed:
 
@@ -645,6 +654,14 @@ unknown provider is never costed at another provider's rates.
 ⛔quota-core ships **no** rate table. Rates are commercial policy, differ per
 account and change without notice, so a table baked in here would be stale
 immediately and would silently mis-cost every consumer that trusted it.
+
+`price_task()` reports two separate facts about coverage. `rates_found` means
+a rate entry matched this provider/model; `priced` means at least one component
+was **actually costed**. They are distinct because "no rate book entry" and
+"rates exist but this task measured nothing" are different problems with
+different fixes, and an earlier version collapsed them — so an all-unknown task
+advertised `priced: true` with every component null. A *measured* zero counts as
+priced: zero tokens at a known rate is a real cost of `0.0`.
 
 `price_task()` costs the five components separately and holds three
 invariants: no fabricated universal total (`reasoning` overlaps `output`, so

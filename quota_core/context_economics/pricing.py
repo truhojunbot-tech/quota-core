@@ -131,6 +131,16 @@ class TaskCostBreakdown:
     task_id: str
     provider: str | None
     model: str | None
+    #: A rate entry matched this provider/model. That alone says nothing about
+    #: whether anything was costed -- a task with rates but no measured tokens
+    #: costs nothing knowable.
+    rates_found: bool
+    #: At least one component actually produced a cost. A MEASURED zero counts:
+    #: zero tokens at a known rate is a real cost of 0.0, not an unknown.
+    #: Review of PR #84: an earlier version set this whenever a rate entry
+    #: existed, so an all-unknown task advertised itself as priced while every
+    #: component was null -- exactly the "unknown wearing the shape of a value"
+    #: failure the rest of this package exists to prevent.
     priced: bool
     is_retry_or_failover: bool
     lineage: tuple[str, ...]
@@ -142,6 +152,7 @@ class TaskCostBreakdown:
             "task_id": self.task_id,
             "provider": self.provider,
             "model": self.model,
+            "rates_found": self.rates_found,
             "priced": self.priced,
             "cost_attribution": side,
             "lineage": list(self.lineage),
@@ -162,6 +173,11 @@ def price_task(record: TaskEconomicsRecord, book: PricingBook | None) -> TaskCos
     A record with no matching provider/model entry, or with unknown token
     counts, yields ``None`` components and ``priced=False``. It is never
     silently costed at another provider's rates or at zero.
+
+    ``rates_found`` and ``priced`` are separate facts on purpose: "no rate
+    book entry for this provider" and "rates exist but this task measured
+    nothing" are different problems with different fixes, and collapsing them
+    hides which one a reader is looking at.
     """
     pricing = book.for_record(record) if book is not None else None
     lineage = tuple(
@@ -185,7 +201,9 @@ def price_task(record: TaskEconomicsRecord, book: PricingBook | None) -> TaskCos
         task_id=record.task_id,
         provider=record.provider or record.agent,
         model=record.model,
-        priced=pricing is not None,
+        rates_found=pricing is not None,
+        # A measured zero is a cost, so test for None rather than truthiness.
+        priced=any(value is not None for value in components.values()),
         is_retry_or_failover=bool(lineage),
         lineage=lineage,
         components=components,

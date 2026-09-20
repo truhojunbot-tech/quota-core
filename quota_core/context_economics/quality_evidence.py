@@ -47,6 +47,21 @@ NOT_RECORDED = "not_recorded_by_producer"
 NO_LINKED_REVIEW = "no_linked_review_task"
 NO_VERDICT_YET = "linked_review_has_no_verdict"
 
+#: Task types whose recorded verdict counts as an INDEPENDENT REVIEW verdict.
+#: Deliberately narrow, and deliberately checked rather than assumed: review of
+#: PR #84 found that accepting any row carrying a verdict plus a linked task
+#: silently let other work speak as a reviewer. On real local data 12 rows of
+#: type `test` carry both, and their verdicts were being attributed as review
+#: correctness for the tasks they pointed at.
+#:
+#: ⛔A tester's verdict is its own kind of evidence, not this one. A caller
+#:   that wants it counted must pass it in explicitly, so the substitution is
+#:   a visible decision rather than an accident of table shape.
+REVIEW_TASK_TYPES: frozenset[str] = frozenset({"review", "reviewer"})
+
+#: Why no verdict was read from a row that had one.
+NOT_A_REVIEW_ROW = "verdict_row_is_not_a_review_task"
+
 
 @dataclass(frozen=True)
 class TaskEvidence:
@@ -88,8 +103,19 @@ def _linked_target(context: object) -> str | None:
 def read_review_verdicts(
     db_path: str | Path,
     table: str = "tasks",
+    review_task_types: frozenset[str] = REVIEW_TASK_TYPES,
 ) -> dict[str, tuple[str, str]]:
     """Return ``{reviewed_task_id: (verdict, reviewing_task_id)}``, read-only.
+
+    Only rows whose recorded ``task_type`` is in ``review_task_types`` are
+    read. A verdict on any other kind of row is ignored: carrying a verdict and
+    a linked task does not make a row a review, and letting one speak as a
+    reviewer would fabricate the single piece of quality evidence this module
+    derives.
+
+    ⛔A table with no ``task_type`` column yields ``{}``. Without it there is no
+      way to confirm a row is a review, and "cannot confirm" must not become
+      "assume yes" for evidence that gates quality downstream.
 
     A review row links to the work it reviewed through its recorded context
     payload, not through the attribution session chain (that chain links a
@@ -107,11 +133,12 @@ def read_review_verdicts(
         conn.row_factory = sqlite3.Row
         try:
             columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
-            if not {"task_id", "context", "verdict"} <= columns:
+            # `task_type` is required, not optional: see the docstring.
+            if not {"task_id", "task_type", "context", "verdict"} <= columns:
                 return {}
             order = "created_at, task_id" if "created_at" in columns else "task_id"
             rows = conn.execute(
-                f'SELECT task_id, context, verdict FROM "{table}" ORDER BY {order}'
+                f'SELECT task_id, task_type, context, verdict FROM "{table}" ORDER BY {order}'
             ).fetchall()
         except sqlite3.Error:
             return {}
@@ -119,7 +146,11 @@ def read_review_verdicts(
         conn.close()
 
     latest: dict[str, tuple[str, str]] = {}
+    allowed = {kind.strip().lower() for kind in review_task_types}
     for row in rows:
+        task_type = row["task_type"]
+        if not isinstance(task_type, str) or task_type.strip().lower() not in allowed:
+            continue
         target = _linked_target(row["context"])
         verdict = row["verdict"]
         if not target or not isinstance(verdict, str) or not verdict.strip():
@@ -134,14 +165,17 @@ def derive_quality_evidence(
     db_path: str | Path,
     task_ids: list[str] | None = None,
     table: str = "tasks",
+    review_task_types: frozenset[str] = REVIEW_TASK_TYPES,
 ) -> dict[str, TaskEvidence]:
     """Derive per-task :class:`QualityEvidence` from recorded results.
 
     Derived today:
 
-    - ``independent_review_correct`` -- from a linked review task's recorded
+    - ``independent_review_correct`` -- from a linked REVIEW task's recorded
       ``verdict``. ``approve`` is True, ``request_changes``/``reject`` is
-      False, and no linked review or no verdict yet stays ``None``.
+      False, and no linked review or no verdict yet stays ``None``. A verdict
+      recorded on a non-review row is ignored (see
+      :func:`read_review_verdicts`).
 
     Deliberately NOT derived, and reported as such rather than guessed:
 
@@ -159,7 +193,7 @@ def derive_quality_evidence(
     A caller that HAS these facts from somewhere else should pass its own
     ``QualityEvidence`` instead of, or merged over, this result.
     """
-    verdicts = read_review_verdicts(db_path, table)
+    verdicts = read_review_verdicts(db_path, table, review_task_types)
     wanted = list(task_ids) if task_ids is not None else sorted(verdicts)
     derived: dict[str, TaskEvidence] = {}
     for task_id in wanted:
