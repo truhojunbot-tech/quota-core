@@ -15,6 +15,7 @@ INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 RISK_FIELDS = ("safety_or_live_change", "broad_architecture_change", "bounded_routine_fix", "human_gate_required")
 TOKEN_FIELDS = ("uncached_input_tokens", "cache_write_tokens", "cache_read_tokens", "output_tokens", "reasoning_tokens")
 MIN_ARTIFACTS, MIN_MEASURED_TOKEN_ARTIFACTS, MIN_RUNTIMES = 50, 30, 2
+MIN_KNOWN_RECALL_APPLICABILITY_ROWS = 30
 MIN_COVERAGE, MAX_SINGLE_TIER_SHARE = 0.80, 0.90
 
 
@@ -26,10 +27,23 @@ def _result(status: str, **details: object) -> dict[str, object]:
     return {"status": status, **details}
 
 
+def _has_trusted_producer_signal(row: Mapping[str, object]) -> bool:
+    """Return whether a row can establish the start of producer-backed evidence."""
+    provenance = _mapping(row.get("evidence_provenance"))
+    return (
+        any(provenance.get(field) == "producer_declared:explicit/high" for field in RISK_FIELDS)
+        or provenance.get("required_context_recalled") in {"observed_true", "observed_false"}
+    )
+
+
 def _post_cutoff(report: Mapping[str, object], since: int | None) -> tuple[list[dict[str, object]], list[dict[str, object]], int | None]:
     rows = [dict(value) for value in _mapping(report.get("decisions")).values() if isinstance(value, Mapping)]
     if since is None:
-        observed = [row["created_at"] for row in rows if isinstance(row.get("created_at"), int) and any(value != NOT_RECORDED for value in _mapping(row.get("evidence_provenance")).values())]
+        observed = [
+            row["created_at"]
+            for row in rows
+            if isinstance(row.get("created_at"), int) and _has_trusted_producer_signal(row)
+        ]
         since = min(observed) if observed else None
     untimestamped = [row for row in rows if not isinstance(row.get("created_at"), int)]
     return ([row for row in rows if isinstance(row.get("created_at"), int) and row["created_at"] >= since], untimestamped, since) if since is not None else ([], untimestamped, None)
@@ -70,10 +84,25 @@ def check_acceptance(
     s1_ok = len(rows) >= MIN_ARTIFACTS and measured >= MIN_MEASURED_TOKEN_ARTIFACTS and len(identities) >= MIN_RUNTIMES
     criteria["S1"] = _result(PASS if s1_ok else INSUFFICIENT_DATA, artifact_count=len(rows), untimestamped_artifact_count=len(untimestamped), measured_token_artifact_count=measured, runtime_count=len(identities), runtimes=identities, runtime_identity_field="policy_decision.provenance.provider", thresholds={"artifacts": MIN_ARTIFACTS, "measured_tokens": MIN_MEASURED_TOKEN_ARTIFACTS, "runtimes": MIN_RUNTIMES})
     recall_states = {state: sum(_mapping(row.get("evidence_provenance")).get("recall_applicability") == state for row in rows) for state in ("observed_true", "observed_false", "applicable_but_missing", "not_applicable_no_retrieval", "applicability_unknown")}
-    applicable = len(rows) - recall_states["not_applicable_no_retrieval"]
+    applicable = sum(
+        recall_states[state]
+        for state in ("observed_true", "observed_false", "applicable_but_missing")
+    )
     recall = recall_states["observed_true"] + recall_states["observed_false"]
     recall_coverage = recall / applicable if applicable else None
-    criteria["C1"] = _result(INSUFFICIENT_DATA if not applicable else PASS if recall_coverage >= MIN_COVERAGE else FAIL, recorded_count=recall, total_count=applicable, coverage=recall_coverage, recall_state_counts=recall_states, threshold=MIN_COVERAGE)
+    criteria["C1"] = _result(
+        INSUFFICIENT_DATA
+        if applicable < MIN_KNOWN_RECALL_APPLICABILITY_ROWS
+        else PASS
+        if recall_coverage >= MIN_COVERAGE
+        else FAIL,
+        recorded_count=recall,
+        total_count=applicable,
+        coverage=recall_coverage,
+        recall_state_counts=recall_states,
+        threshold=MIN_COVERAGE,
+        minimum_known_applicability_rows=MIN_KNOWN_RECALL_APPLICABILITY_ROWS,
+    )
     coverage = {field: sum(_recorded(row, field) for row in rows) / len(rows) if rows else None for field in RISK_FIELDS}
     criteria["C2"] = _result(INSUFFICIENT_DATA if not rows else PASS if all(value is not None and value >= MIN_COVERAGE for value in coverage.values()) else FAIL, coverage=coverage, threshold=MIN_COVERAGE)
     declared = [row for row in rows if all(_recorded(row, field) for field in RISK_FIELDS)]
@@ -113,15 +142,25 @@ def check_acceptance(
     structural_v3 = report.get("mode") == "shadow" and list(decisions) == sorted(decisions) and cost_totals_absent and unknowns_preserved
     v3_status = FAIL if not structural_v3 or rerun_bytes_equal is False else INSUFFICIENT_DATA if rerun_bytes_equal is None else PASS
     criteria["V3"] = _result(v3_status, checked_count=len(rows), mode=report.get("mode"), decisions_sorted=list(decisions) == sorted(decisions), component_cost_totals_absent=cost_totals_absent, unknowns_preserved_as_null=unknowns_preserved, rerun_byte_identical=rerun_bytes_equal)
-    statuses = [item["status"] for item in criteria.values()]
     safety_failures = [name for name in ("V1", "V2", "V3") if criteria[name]["status"] == FAIL]
+    recall_statuses = (criteria["C1"]["status"], criteria["D2"]["status"])
+    recall_axis = (
+        "evidence_only_deferred"
+        if INSUFFICIENT_DATA in recall_statuses
+        else "evidence_axis_failed"
+        if FAIL in recall_statuses
+        else "evidence_axis_complete"
+    )
+    required_passes = ("S1", "C2", "D1", "D3", "V1", "V2", "V3")
     if safety_failures:
         overall, action = "DO_NOT_CLOSE", "fix_safety_invariant_in_quota_core"
-    elif FAIL in statuses or INSUFFICIENT_DATA in statuses:
-        overall, action = "NOT_YET", "wait_for_coverage_or_differentiation_and_rerun"
-    else:
+    elif all(criteria[name]["status"] == PASS for name in required_passes) and all(
+        status in (PASS, INSUFFICIENT_DATA) for status in recall_statuses
+    ):
         overall, action = "READY_TO_CLOSE", "attach_summary_and_close_issue"
-    return {"checker_version": "1.0", "mode": "read_only_acceptance_check", "overall_verdict": overall, "recommended_action": action, "safety_failure_criteria": safety_failures, "cutoff_created_at": cutoff, "policy_contract": {"id": contract.get("id"), "sha256": contract.get("sha256")}, "criteria": criteria}
+    else:
+        overall, action = "NOT_YET", "wait_for_coverage_or_differentiation_and_rerun"
+    return {"checker_version": "1.0", "mode": "read_only_acceptance_check", "overall_verdict": overall, "recommended_action": action, "safety_failure_criteria": safety_failures, "recall_axis": recall_axis, "cutoff_created_at": cutoff, "policy_contract": {"id": contract.get("id"), "sha256": contract.get("sha256")}, "criteria": criteria}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

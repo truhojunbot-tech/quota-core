@@ -746,8 +746,9 @@ evaluates the pre-registered #80 S1/C1/C2/D1/D2/D3/V1/V2/V3 criteria. It emits
 machine-readable `PASS`, `FAIL`, or `INSUFFICIENT_DATA` results with counts,
 distributions, cutoff, and cited policy-contract SHA. `--since <created_at>`
 sets an inclusive cutoff; without it the checker uses the first artifact with
-producer-recorded provenance. Missing evidence remains insufficient rather
-than becoming a measured zero or a pass. V3 requires `--rerun-report` from
+a trusted producer signal (an explicit/high risk declaration or observed
+recall), rather than an unknown applicability marker. Missing evidence remains
+insufficient rather than becoming a measured zero or a pass. V3 requires `--rerun-report` from
 the same input and compares it byte-for-byte; without that independent
 determinism evidence V3 is `INSUFFICIENT_DATA`. S1 uses the policy decision's
 provider provenance for execution-identity diversity: the SQLite loader name
@@ -755,8 +756,13 @@ is deliberately not treated as a runtime identity.
 
 The overall verdict preserves the pre-registered operator routing:
 `DO_NOT_CLOSE` is reserved for a failed V1/V2/V3 safety invariant;
-coverage/differentiation failures and insufficient data yield `NOT_YET` with a
-daily-rerun action; only an all-pass report yields `READY_TO_CLOSE`.
+coverage/differentiation failures yield `NOT_YET` with a daily-rerun action.
+The recall axis is evidence-only while fewer than 30 rows have known recall
+applicability: C1 and D2 may be `INSUFFICIENT_DATA` without preventing
+`READY_TO_CLOSE`, which is surfaced as `recall_axis: evidence_only_deferred`.
+Known applicability is only `observed_true`, `observed_false`, or
+`applicable_but_missing`; unknown and affirmatively-not-applicable rows are
+not silently included in C1's coverage denominator.
 
 ### Trusted declaration and recall ingestion
 
