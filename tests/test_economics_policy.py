@@ -33,6 +33,22 @@ class EconomicsPolicyTests(unittest.TestCase):
         self.assertIsNone(decision.recommended_soft_budget.cache_read_tokens)
         self.assertIn("independent_review_correctness_unknown_or_negative", decision.override_reasons)
 
+    def test_no_retrieval_recall_exemption_keeps_review_quality_floor(self):
+        decision = recommend_task_policy(_record(), QualityEvidence(
+            safety_or_live_change=False, broad_architecture_change=False,
+            bounded_routine_fix=True, human_gate_required=False,
+            independent_review_correct=True, recall_not_applicable=True,
+        ))
+        self.assertTrue(decision.quality_preserving)
+        self.assertEqual(decision.recommended_session_treatment, "preserve")
+
+    def test_no_retrieval_exemption_cannot_bypass_unknown_risk_fail_safe(self):
+        decision = recommend_task_policy(_record(), QualityEvidence(
+            independent_review_correct=True, recall_not_applicable=True,
+        ))
+        self.assertFalse(decision.quality_preserving)
+        self.assertEqual(decision.recommended_session_treatment, "insufficient_evidence")
+
     def test_risk_is_characteristics_not_token_volume_and_new_evidence_extends_rounds(self):
         decision = recommend_task_policy(_record(uncached_input_tokens=1), QualityEvidence(
             safety_or_live_change=True, independent_review_correct=True,

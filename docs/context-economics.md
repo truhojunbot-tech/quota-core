@@ -757,3 +757,16 @@ The overall verdict preserves the pre-registered operator routing:
 `DO_NOT_CLOSE` is reserved for a failed V1/V2/V3 safety invariant;
 coverage/differentiation failures and insufficient data yield `NOT_YET` with a
 daily-rerun action; only an all-pass report yields `READY_TO_CLOSE`.
+
+### Trusted declaration and recall ingestion
+
+The organic producer reads risk facts only when the attribution row labels the
+declaration `explicit` with `high` confidence. Those facts carry
+`producer_declared:explicit/high` provenance; heuristic, low-confidence, and
+absent declarations stay unknown and retain the safety-first policy tier.
+Recall provenance distinguishes `observed_true`, `observed_false`,
+`applicable_but_missing`, `not_applicable_no_retrieval`, and
+`applicability_unknown`. A missing context-pack value is unknown rather than
+positive non-applicability evidence. `not_applicable_no_retrieval` and its
+narrow quality exemption are reserved for a future producer that affirmatively
+records no retrieval requirement; current ingestion does not emit that state.

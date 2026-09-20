@@ -230,6 +230,73 @@ def evidence_map(derived: dict[str, TaskEvidence]) -> dict[str, QualityEvidence]
     return {task_id: item.evidence for task_id, item in derived.items()}
 
 
+def ingest_attribution_quality_evidence(
+    db_path: str | Path, task_ids: list[str], table: str = "task_attribution",
+) -> dict[str, TaskEvidence]:
+    """Read trusted risk/recall facts from attribution telemetry, read-only.
+
+    Only an ``explicit`` / ``high`` declaration is trusted. Older schemas and
+    untrusted producer claims remain unknown, preserving the policy fail-safe.
+    """
+    conn = _connect_readonly(db_path)
+    if conn is None or not _SAFE_IDENTIFIER.fullmatch(table):
+        if conn is not None: conn.close()
+        return {}
+    try:
+        conn.row_factory = sqlite3.Row
+        columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        if "task_id" not in columns:
+            return {}
+        rows = conn.execute(f'SELECT * FROM "{table}" ORDER BY task_id').fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+    def boolean(value: object) -> bool | None:
+        if isinstance(value, bool): return value
+        if value in (0, 1): return bool(value)
+        if isinstance(value, str) and value.lower() in {"true", "false"}: return value.lower() == "true"
+        return None
+
+    wanted = set(task_ids)
+    result: dict[str, TaskEvidence] = {}
+    facts = ("safety_or_live_change", "broad_architecture_change", "bounded_routine_fix", "human_gate_required")
+    for row in rows:
+        raw, task_id = dict(row), row["task_id"]
+        if not isinstance(task_id, str) or task_id not in wanted: continue
+        source, confidence = raw.get("risk_declaration_source"), raw.get("risk_declaration_confidence")
+        trusted = isinstance(source, str) and source.lower() == "explicit" and isinstance(confidence, str) and confidence.lower() == "high"
+        provenance: dict[str, str] = {}
+        values: dict[str, bool | None] = {}
+        for fact in facts:
+            if fact not in columns:
+                provenance[fact] = NOT_RECORDED
+            elif trusted:
+                provenance[fact] = "producer_declared:explicit/high"
+            elif source is None and confidence is None:
+                provenance[fact] = NOT_RECORDED
+            else:
+                provenance[fact] = f"producer_declared:{source or 'absent'}/{confidence or 'absent'}_not_trusted"
+            values[fact] = boolean(raw.get(fact)) if trusted else None
+        pack = raw.get("context_pack_hash")
+        recall = boolean(raw.get("required_context_recalled")) if "required_context_recalled" in columns else None
+        if recall is True:
+            recall_state, na = "observed_true", None
+        elif recall is False:
+            recall_state, na = "observed_false", None
+        elif isinstance(pack, str) and pack:
+            recall_state, na = "applicable_but_missing", None
+        else:
+            # A missing pack hash is not affirmative evidence that retrieval
+            # was unnecessary: legacy producers simply omit this telemetry.
+            recall_state, na = "applicability_unknown", None
+        provenance["required_context_recalled"] = recall_state
+        provenance["recall_applicability"] = recall_state
+        result[task_id] = TaskEvidence(task_id, QualityEvidence(**values, required_context_recalled=recall, recall_not_applicable=na), provenance)
+    return result
+
+
 #: Provenance marker for a fact an operator asserted, rather than one the
 #: producer measured. Kept distinct on purpose: a reader must always be able
 #: to tell a declared policy from an observation.

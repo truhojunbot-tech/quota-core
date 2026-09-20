@@ -19,12 +19,12 @@ RISK = ("safety_or_live_change", "broad_architecture_change", "bounded_routine_f
 
 def _row(index: int) -> dict[str, object]:
     decision = {"risk_tier": "routine" if index % 2 else "review_or_test", "quality_preserving": True, "human_gate_required": False, "recommended_session_treatment": "preserve", "recommended_cache_treatment": "preserve", "provenance": {"provider": "provider-a" if index % 2 else "provider-b"}, "evidence": {"required_context_recalled": True, "independent_review_correct": True, "token_observations": {"uncached_input_tokens": 1, "cache_write_tokens": None, "cache_read_tokens": 0, "output_tokens": 1, "reasoning_tokens": None}}, "component_costs": {"components": {}, "non_additive_components": ["reasoning"], "aggregation": "prohibited_overlapping_components"}}
-    return {"task_id": f"task-{index:03}", "created_at": 1000 + index, "runtime": "runtime-a" if index % 2 else "runtime-b", "evidence_provenance": {"required_context_recalled": "recorded_by_producer", **{field: "recorded_by_producer" for field in RISK}}, "risk_declaration": {"kind": "bounded_routine" if index % 2 else "non_production"}, "policy_decision": decision}
+    return {"task_id": f"task-{index:03}", "created_at": 1000 + index, "runtime": "runtime-a" if index % 2 else "runtime-b", "evidence_provenance": {"required_context_recalled": "observed_true", "recall_applicability": "observed_true", **{field: "producer_declared:explicit/high" for field in RISK}}, "risk_declaration": {"kind": "bounded_routine" if index % 2 else "non_production"}, "policy_decision": decision}
 
 
 def _passing_report() -> dict[str, object]:
     rows = [_row(index) for index in range(50)]
-    rows[0]["evidence_provenance"] = {"required_context_recalled": "recorded_by_producer", **{field: "not_recorded_by_producer" for field in RISK}}
+    rows[0]["evidence_provenance"] = {"required_context_recalled": "observed_true", "recall_applicability": "observed_true", **{field: "not_recorded_by_producer" for field in RISK}}
     rows[0]["policy_decision"].update({"risk_tier": "safety_or_live", "human_gate_required": True, "recommended_session_treatment": "insufficient_evidence"})
     rows[1]["policy_decision"].update({"quality_preserving": False, "recommended_session_treatment": "insufficient_evidence", "recommended_cache_treatment": "insufficient_evidence"})
     rows[1]["policy_decision"]["evidence"]["independent_review_correct"] = False
@@ -46,6 +46,7 @@ class AcceptanceCheckTests(unittest.TestCase):
         def c1_missing(report):
             for row in list(report["decisions"].values())[10:]:
                 row["evidence_provenance"]["required_context_recalled"] = "not_recorded_by_producer"
+                row["evidence_provenance"]["recall_applicability"] = "applicable_but_missing"
                 row["policy_decision"]["evidence"]["required_context_recalled"] = None
 
         def c2_missing(report):
@@ -79,6 +80,7 @@ class AcceptanceCheckTests(unittest.TestCase):
         coverage = _passing_report()
         for row in coverage["decisions"].values():
             row["evidence_provenance"]["required_context_recalled"] = "not_recorded_by_producer"
+            row["evidence_provenance"]["recall_applicability"] = "applicable_but_missing"
             row["policy_decision"]["evidence"]["required_context_recalled"] = None
         waiting = check_acceptance(coverage, since=1000, rerun_bytes_equal=True)
         self.assertEqual(waiting["criteria"]["C1"]["status"], FAIL)
@@ -145,3 +147,16 @@ class AcceptanceCheckTests(unittest.TestCase):
         report = _passing_report()
         self.assertEqual(check_acceptance(report, since=1000)["criteria"]["V3"]["status"], INSUFFICIENT_DATA)
         self.assertEqual(check_acceptance(report, since=1000, rerun_bytes_equal=False)["criteria"]["V3"]["status"], FAIL)
+
+    def test_c1_counts_applicability_unknown_in_its_denominator(self) -> None:
+        report = _passing_report()
+        rows = list(report["decisions"].values())
+        for row in rows[1:]:
+            row["evidence_provenance"]["required_context_recalled"] = "applicability_unknown"
+            row["evidence_provenance"]["recall_applicability"] = "applicability_unknown"
+            row["policy_decision"]["evidence"]["required_context_recalled"] = None
+        result = check_acceptance(report, since=1000, rerun_bytes_equal=True)
+        c1 = result["criteria"]["C1"]
+        self.assertEqual(c1["status"], FAIL)
+        self.assertEqual(c1["total_count"], 50)
+        self.assertEqual(c1["recall_state_counts"]["applicability_unknown"], 49)
