@@ -752,3 +752,8 @@ the same input and compares it byte-for-byte; without that independent
 determinism evidence V3 is `INSUFFICIENT_DATA`. S1 uses the policy decision's
 provider provenance for execution-identity diversity: the SQLite loader name
 is deliberately not treated as a runtime identity.
+
+The overall verdict preserves the pre-registered operator routing:
+`DO_NOT_CLOSE` is reserved for a failed V1/V2/V3 safety invariant;
+coverage/differentiation failures and insufficient data yield `NOT_YET` with a
+daily-rerun action; only an all-pass report yields `READY_TO_CLOSE`.

@@ -43,10 +43,24 @@ class AcceptanceCheckTests(unittest.TestCase):
         self.assertTrue(all(item["status"] == PASS for item in result["criteria"].values()))
 
     def test_each_observable_criterion_can_fail(self) -> None:
+        def c1_missing(report):
+            for row in list(report["decisions"].values())[10:]:
+                row["evidence_provenance"]["required_context_recalled"] = "not_recorded_by_producer"
+                row["policy_decision"]["evidence"]["required_context_recalled"] = None
+
+        def c2_missing(report):
+            for row in list(report["decisions"].values())[10:]:
+                row["evidence_provenance"]["bounded_routine_fix"] = "not_recorded_by_producer"
+                row["policy_decision"].update({"risk_tier": "safety_or_live", "recommended_session_treatment": "insufficient_evidence"})
+
+        def d1_single_tier(report):
+            for row in list(report["decisions"].values())[1:]:
+                row["policy_decision"]["risk_tier"] = "routine"
+
         mutations = {
-            "C1": lambda r: [x["evidence_provenance"].update({"required_context_recalled": "not_recorded_by_producer"}) for x in list(r["decisions"].values())[10:]],
-            "C2": lambda r: [x["evidence_provenance"].update({"bounded_routine_fix": "not_recorded_by_producer"}) for x in list(r["decisions"].values())[10:]],
-            "D1": lambda r: [x["policy_decision"].update({"risk_tier": "routine"}) for x in r["decisions"].values()],
+            "C1": c1_missing,
+            "C2": c2_missing,
+            "D1": d1_single_tier,
             "D2": lambda r: [x["policy_decision"].update({"recommended_session_treatment": "insufficient_evidence", "recommended_cache_treatment": "insufficient_evidence"}) for x in r["decisions"].values()],
             "D3": lambda r: [x["policy_decision"].update({"human_gate_required": True}) for x in r["decisions"].values()],
             "V1": lambda r: list(r["decisions"].values())[0]["policy_decision"].update({"risk_tier": "routine"}),
@@ -58,7 +72,24 @@ class AcceptanceCheckTests(unittest.TestCase):
                 report = copy.deepcopy(_passing_report()); mutate(report)
                 result = check_acceptance(report, since=1000, rerun_bytes_equal=True)
                 self.assertEqual(result["criteria"][criterion]["status"], FAIL)
-                self.assertEqual(result["overall_verdict"], "DO_NOT_CLOSE")
+                expected = "DO_NOT_CLOSE" if criterion.startswith("V") else "NOT_YET"
+                self.assertEqual(result["overall_verdict"], expected)
+
+    def test_coverage_or_differentiation_failures_wait_but_safety_failures_stop(self) -> None:
+        coverage = _passing_report()
+        for row in coverage["decisions"].values():
+            row["evidence_provenance"]["required_context_recalled"] = "not_recorded_by_producer"
+            row["policy_decision"]["evidence"]["required_context_recalled"] = None
+        waiting = check_acceptance(coverage, since=1000, rerun_bytes_equal=True)
+        self.assertEqual(waiting["criteria"]["C1"]["status"], FAIL)
+        self.assertEqual(waiting["overall_verdict"], "NOT_YET")
+        self.assertEqual(waiting["recommended_action"], "wait_for_coverage_or_differentiation_and_rerun")
+
+        unsafe = _passing_report()
+        list(unsafe["decisions"].values())[0]["policy_decision"]["risk_tier"] = "routine"
+        stopped = check_acceptance(unsafe, since=1000, rerun_bytes_equal=True)
+        self.assertEqual(stopped["overall_verdict"], "DO_NOT_CLOSE")
+        self.assertEqual(stopped["safety_failure_criteria"], ["V1"])
 
     def test_current_unknown_shape_and_short_sample_are_not_yet(self) -> None:
         self.assertEqual(check_acceptance(_passing_report(), since=1001)["criteria"]["S1"]["status"], INSUFFICIENT_DATA)

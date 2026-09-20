@@ -109,8 +109,14 @@ def check_acceptance(
     v3_status = FAIL if not structural_v3 or rerun_bytes_equal is False else INSUFFICIENT_DATA if rerun_bytes_equal is None else PASS
     criteria["V3"] = _result(v3_status, checked_count=len(rows), mode=report.get("mode"), decisions_sorted=list(decisions) == sorted(decisions), component_cost_totals_absent=cost_totals_absent, unknowns_preserved_as_null=unknowns_preserved, rerun_byte_identical=rerun_bytes_equal)
     statuses = [item["status"] for item in criteria.values()]
-    overall = "DO_NOT_CLOSE" if FAIL in statuses else "NOT_YET" if INSUFFICIENT_DATA in statuses else "READY_TO_CLOSE"
-    return {"checker_version": "1.0", "mode": "read_only_acceptance_check", "overall_verdict": overall, "cutoff_created_at": cutoff, "policy_contract": {"id": contract.get("id"), "sha256": contract.get("sha256")}, "criteria": criteria}
+    safety_failures = [name for name in ("V1", "V2", "V3") if criteria[name]["status"] == FAIL]
+    if safety_failures:
+        overall, action = "DO_NOT_CLOSE", "fix_safety_invariant_in_quota_core"
+    elif FAIL in statuses or INSUFFICIENT_DATA in statuses:
+        overall, action = "NOT_YET", "wait_for_coverage_or_differentiation_and_rerun"
+    else:
+        overall, action = "READY_TO_CLOSE", "attach_summary_and_close_issue"
+    return {"checker_version": "1.0", "mode": "read_only_acceptance_check", "overall_verdict": overall, "recommended_action": action, "safety_failure_criteria": safety_failures, "cutoff_created_at": cutoff, "policy_contract": {"id": contract.get("id"), "sha256": contract.get("sha256")}, "criteria": criteria}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
