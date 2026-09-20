@@ -46,6 +46,26 @@ def build_parser() -> argparse.ArgumentParser:
     shadow_parser.add_argument("--database", required=True, help="SQLite task-attribution database path")
     shadow_parser.add_argument("--table", default="task_attribution", help="task-attribution table name")
     shadow_parser.add_argument("--output", help="optional JSON output path; stdout is always emitted")
+    shadow_parser.add_argument(
+        "--results-database",
+        help="optional SQLite database holding task results/review verdicts "
+             "(defaults to --database); used read-only to derive quality evidence",
+    )
+    shadow_parser.add_argument("--results-table", default="tasks", help="task-results table name")
+    shadow_parser.add_argument(
+        "--pricing",
+        help="optional JSON price book: {provider: {model|default: {component: rate}}}. "
+             "quota-core ships no rates; unpriced components stay unknown, never zero",
+    )
+    shadow_parser.add_argument(
+        "--declare-non-production",
+        action="append",
+        default=[],
+        metavar="TASK_TYPE",
+        help="OPT-IN operator declaration that this task type does not change live "
+             "surface. Repeatable. Without it, unassessed risk stays unknown and every "
+             "task keeps the highest-scrutiny fail-safe tier",
+    )
     return parser
 
 
@@ -99,8 +119,44 @@ def main(argv: list[str] | None = None) -> int:
             shadow_comparison_report,
         )
 
+        from .context_economics import (
+            PricingBook,
+            TaskTypeRiskDeclaration,
+            apply_risk_declaration,
+            derive_quality_evidence,
+            evidence_map,
+        )
+
+        records = read_task_attribution_sqlite(args.database, args.table)
+        results_db = args.results_database or args.database
+        derived = derive_quality_evidence(
+            results_db, [record.task_id for record in records], args.results_table
+        )
+        if args.declare_non_production:
+            derived = apply_risk_declaration(
+                derived,
+                {record.task_id: record.task_type for record in records},
+                TaskTypeRiskDeclaration(
+                    non_production_types=frozenset(
+                        value.strip().lower() for value in args.declare_non_production if value.strip()
+                    )
+                ),
+            )
+        pricing = None
+        if args.pricing:
+            try:
+                pricing = PricingBook.from_mapping(
+                    json.loads(Path(args.pricing).expanduser().read_text())
+                )
+            except (OSError, ValueError):
+                # An unreadable price book leaves costs unknown rather than
+                # failing a read-only report or costing anything at zero.
+                pricing = None
         report = shadow_comparison_report(
-            read_task_attribution_sqlite(args.database, args.table)
+            records,
+            evidence_map(derived),
+            pricing,
+            {task_id: item.provenance for task_id, item in derived.items()},
         )
         rendered = json.dumps(report, ensure_ascii=False, indent=2)
         if args.output:

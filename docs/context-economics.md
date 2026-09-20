@@ -584,3 +584,89 @@ in the same `context_id`, reporting task count, average tokens, success
 rate, and average duration for each side. This is the primitive
 `quota-ops` issue #7's compact telemetry is meant to feed, to evaluate
 whether proactive compaction actually helped rather than assuming it did.
+
+## Derived quality evidence and pricing (quota-core#80)
+
+PR #82's shadow report over live databases produced artifacts that were all
+`risk_tier=safety_or_live` with `insufficient_evidence` treatments. That was
+the fail-safe working — nothing supplied `QualityEvidence` — but it left the
+report with no signal. This slice closes the gap without inventing anything.
+
+### What is derived, and what is not
+
+`derive_quality_evidence(db_path, task_ids)` reads a task-results database
+**read-only** (`mode=ro`) and derives one field:
+
+- `independent_review_correct`, from a linked review task's recorded
+  `verdict`. `approve` is `True`; `request_changes`/`reject` is `False`; no
+  linked review, or a review with no verdict yet, stays `None`. The link comes
+  from the review's own recorded context payload, not from the attribution
+  session chain — that chain links a review to the *previous review*, which is
+  a different relationship. On a fix loop the latest review wins.
+
+Everything else is reported as **not recorded**, never guessed:
+
+| field | status |
+|---|---|
+| `required_context_recalled` | `not_recorded_by_producer` |
+| the four risk facts | `not_recorded_by_producer` |
+
+⛔Nothing is inferred from a task's description, summary or prompt. #80's
+non-goals forbid it, and a risk tier inferred from prose would be
+indistinguishable downstream from a measured one.
+
+Each task's `provenance` map says which case applies, and the shadow report
+carries it as `evidence_provenance`, so a reader can tell "measured false"
+from "never recorded" without reading source.
+
+**The one missing producer signal.** The policy's quality gate requires
+`required_context_recalled is True`. No producer field records whether the
+context a task needed was actually present, so a task read from a database
+alone can never pass that gate and its session/cache treatment stays
+`insufficient_evidence`. That is honest rather than broken — but it is the
+single field that would unlock measured quality conclusions, and it is the one
+to ask a producer for next.
+
+### Opt-in risk declaration
+
+`TaskTypeRiskDeclaration` lets an operator declare that a task *type* does not
+change live surface. It is **opt-in and never a default**: without it, risk
+stays unknown and the fail-safe assigns the highest-scrutiny tier plus a human
+gate. A declared fact is recorded as `operator_declared_by_task_type`, kept
+distinct from a measurement on purpose, and a declaration never overwrites
+measured review evidence. An unlisted task type keeps the fail-safe.
+
+### Pricing
+
+`PricingBook` resolves caller-supplied rates by provider and model **version**:
+an exact `(provider, model)` entry beats the provider-wide default, and an
+unknown provider is never costed at another provider's rates.
+
+⛔quota-core ships **no** rate table. Rates are commercial policy, differ per
+account and change without notice, so a table baked in here would be stale
+immediately and would silently mis-cost every consumer that trusted it.
+
+`price_task()` costs the five components separately and holds three
+invariants: no fabricated universal total (`reasoning` overlaps `output`, so
+summing double-counts); unknown is never zero (a missing rate, missing token
+count or unknown provider yields `null`, while a *measured* zero costs zero);
+and retry/failover cost is attributed to its own side using the producer's
+`retry_of`/`fallback_of` lineage, so "what did retries cost" is answerable
+without double-counting a task.
+
+### Baseline versus recommended
+
+Each artifact gains `baseline_vs_recommended`: per component, what the task
+actually used, what the policy recommends, and the `headroom` between them.
+Headroom is `null` whenever either side is unknown — a difference against an
+unknown is not a number — and components are never totalled.
+
+### CLI
+
+    quota-core context-economics-shadow-report \
+      --database <attribution.db> \
+      [--results-database <results.db>] [--pricing <price_book.json>] \
+      [--declare-non-production review --declare-non-production test]
+
+Still read-only and recommendation-only: it reads the databases, never writes
+back, and emits no enforcement of any kind.
