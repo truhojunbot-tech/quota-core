@@ -174,6 +174,8 @@ class AcceptanceCheckTests(unittest.TestCase):
         passing = check_acceptance(with_recall_shape(30, 24), since=1000, rerun_bytes_equal=True)["criteria"]["C1"]
         failing = check_acceptance(with_recall_shape(30, 23), since=1000, rerun_bytes_equal=True)["criteria"]["C1"]
         self.assertEqual((insufficient["status"], insufficient["total_count"]), (INSUFFICIENT_DATA, 29))
+        self.assertEqual(insufficient["denominator_basis"], "known_recall_applicability_rows")
+        self.assertEqual(insufficient["excluded_unknown_applicability_count"], 21)
         self.assertEqual((passing["status"], passing["total_count"]), (PASS, 30))
         self.assertEqual((failing["status"], failing["total_count"]), (FAIL, 30))
 
@@ -189,6 +191,8 @@ class AcceptanceCheckTests(unittest.TestCase):
         ready = check_acceptance(deferred_recall_report(), since=1000, rerun_bytes_equal=True)
         self.assertEqual(ready["overall_verdict"], "READY_TO_CLOSE")
         self.assertEqual(ready["recall_axis"], "evidence_only_deferred")
+        self.assertEqual(ready["criteria"]["C1"]["status"], INSUFFICIENT_DATA)
+        self.assertEqual(ready["criteria"]["C1"]["total_count"], 0)
 
         waiting_report = deferred_recall_report()
         for index, row in enumerate(waiting_report["decisions"].values()):

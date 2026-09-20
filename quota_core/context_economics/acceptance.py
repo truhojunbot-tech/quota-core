@@ -100,6 +100,9 @@ def check_acceptance(
         total_count=applicable,
         coverage=recall_coverage,
         recall_state_counts=recall_states,
+        denominator_basis="known_recall_applicability_rows",
+        excluded_unknown_applicability_count=recall_states["applicability_unknown"],
+        excluded_not_applicable_count=recall_states["not_applicable_no_retrieval"],
         threshold=MIN_COVERAGE,
         minimum_known_applicability_rows=MIN_KNOWN_RECALL_APPLICABILITY_ROWS,
     )

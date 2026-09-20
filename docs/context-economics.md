@@ -757,12 +757,14 @@ is deliberately not treated as a runtime identity.
 The overall verdict preserves the pre-registered operator routing:
 `DO_NOT_CLOSE` is reserved for a failed V1/V2/V3 safety invariant;
 coverage/differentiation failures yield `NOT_YET` with a daily-rerun action.
-The recall axis is evidence-only while fewer than 30 rows have known recall
-applicability: C1 and D2 may be `INSUFFICIENT_DATA` without preventing
-`READY_TO_CLOSE`, which is surfaced as `recall_axis: evidence_only_deferred`.
-Known applicability is only `observed_true`, `observed_false`, or
-`applicable_but_missing`; unknown and affirmatively-not-applicable rows are
-not silently included in C1's coverage denominator.
+The later checker-defects amendment makes the recall axis evidence-only while
+fewer than 30 rows have known recall applicability: C1 and D2 may be
+`INSUFFICIENT_DATA` without preventing `READY_TO_CLOSE`, which is surfaced as
+`recall_axis: evidence_only_deferred`. Known applicability is only
+`observed_true`, `observed_false`, or `applicable_but_missing`; unknown and
+affirmatively-not-applicable rows are excluded from C1's intentionally narrow
+denominator. The C1 result declares this basis and the excluded-state counts,
+so its coverage is not confused with an all-artifact coverage rate.
 
 ### Trusted declaration and recall ingestion
 
