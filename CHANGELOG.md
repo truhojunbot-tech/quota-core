@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.1.22 - 2026-09-20
+
+Review fixes for #80's evidence/pricing slice (PR #84).
+
+- `read_review_verdicts()` now requires a row's recorded `task_type` to be a
+  review type. Carrying a verdict plus a linked task did not make a row a
+  review: on real local data 12 `test` rows carry both, and their verdicts were
+  being read as review correctness for the tasks they pointed at. Widening to
+  other types is possible but must be passed explicitly. A table with no
+  `task_type` column now yields nothing rather than accepting every verdict.
+- `price_task()` splits coverage into `rates_found` (a rate entry matched) and
+  `priced` (at least one component actually costed). Previously `priced` was
+  true whenever rates existed, so a task with no measured tokens advertised
+  itself as priced while every component was null. A measured zero still counts
+  as priced, at `0.0`.
+
+## 0.1.21 - 2026-09-20
+
+Derived quality evidence and provider/version pricing for the shadow economics
+report (partially addresses #80).
+
+- `quality_evidence.derive_quality_evidence()` reads a task-results database
+  **read-only** and derives `independent_review_correct` from a linked review
+  task's recorded `verdict` (`approve` -> True, `request_changes`/`reject` ->
+  False). On real local data this derives a verdict for 580 tasks that
+  previously all carried `None`. The latest review wins on a fix loop.
+- Fields the producer does not record stay `None` and say so: every derived
+  task carries `provenance` distinguishing a measured value from
+  `not_recorded_by_producer`. `required_context_recalled` is the one missing
+  producer signal that currently keeps every database-only task below the
+  policy quality gate; that is now visible in the artifact instead of silent.
+- `TaskTypeRiskDeclaration` is an **opt-in** operator declaration that a task
+  type does not change live surface, recorded as `operator_declared_by_task_type`
+  rather than as a measurement. Without it risk stays unknown and the #80
+  fail-safe keeps the highest-scrutiny tier plus a human gate.
+- `pricing.PricingBook` resolves caller-supplied rates per provider and model
+  **version** (exact version beats the provider default; an unknown provider is
+  never costed at another's rates). quota-core still ships no rate table.
+- `price_task()` costs the five components separately, with retry/failover cost
+  attributed to its own side via the producer's `retry_of`/`fallback_of`
+  lineage. No universal total anywhere: `reasoning` overlaps `output`.
+- The shadow report gains `baseline_vs_recommended` (per-component observed vs
+  recommended with null-safe headroom), `cost`, and `evidence_provenance`.
+- CLI: `--results-database`, `--results-table`, `--pricing`,
+  `--declare-non-production`. Still recommendation-only and read-only.
+
 ## 0.1.20 - 2026-09-19
 
 Adds quota-core#80's portable, recommendation-only economics policy contract.

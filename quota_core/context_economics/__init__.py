@@ -47,6 +47,23 @@ from .policy import (
     policy_contract_schema,
     shadow_policy_report,
 )
+from .pricing import (
+    PRICED_COMPONENTS,
+    PricingBook,
+    TaskCostBreakdown,
+    price_task,
+)
+from .quality_evidence import (
+    NOT_RECORDED,
+    REVIEW_TASK_TYPES,
+    OPERATOR_DECLARED,
+    TaskEvidence,
+    TaskTypeRiskDeclaration,
+    apply_risk_declaration,
+    derive_quality_evidence,
+    evidence_map,
+    read_review_verdicts,
+)
 from .shadow_report import shadow_comparison_report
 from .sqlite_attribution import read_task_attribution_sqlite
 from .compact_analysis import before_after_compact
@@ -113,6 +130,19 @@ from .token_components import (
 )
 
 __all__ = [
+    "REVIEW_TASK_TYPES",
+    "read_review_verdicts",
+    "evidence_map",
+    "derive_quality_evidence",
+    "apply_risk_declaration",
+    "TaskTypeRiskDeclaration",
+    "TaskEvidence",
+    "OPERATOR_DECLARED",
+    "NOT_RECORDED",
+    "price_task",
+    "TaskCostBreakdown",
+    "PricingBook",
+    "PRICED_COMPONENTS",
     "POLICY_CONTRACT_VERSION",
     "POLICY_CONTRACT_SCHEMA",
     "ComponentPrice",
