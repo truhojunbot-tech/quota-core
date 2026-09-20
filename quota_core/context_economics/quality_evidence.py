@@ -254,9 +254,11 @@ class TaskTypeRiskDeclaration:
 
     ⛔Only ever declare a task type DOWN to lower scrutiny when the operator
       is sure. An unlisted type stays unknown and keeps the fail-safe. If a
-      type appears in more than one category, safety_or_live takes precedence,
-      then architecture, routine, human-gated, and non-production. A broader
-      declaration must never dilute an explicit safety declaration.
+      type appears in more than one tier category, safety_or_live takes
+      precedence, then architecture, routine, and non-production. The human
+      gate is orthogonal to those tiers and is retained with any of them. A
+      broader declaration must never dilute an explicit safety or gate
+      declaration.
     """
 
     safety_or_live_types: frozenset[str] = frozenset()
@@ -278,39 +280,40 @@ class TaskTypeRiskDeclaration:
         )
         if kind not in known:
             return None
+        gate = kind in self.human_gate_types
         if kind in self.safety_or_live_types:
             return QualityEvidence(
                 safety_or_live_change=True,
                 broad_architecture_change=False,
                 bounded_routine_fix=False,
-                human_gate_required=False,
+                human_gate_required=gate,
             )
         if kind in self.architecture_types:
             return QualityEvidence(
                 safety_or_live_change=False,
                 broad_architecture_change=True,
                 bounded_routine_fix=False,
-                human_gate_required=False,
+                human_gate_required=gate,
             )
         if kind in self.routine_types:
             return QualityEvidence(
                 safety_or_live_change=False,
                 broad_architecture_change=False,
                 bounded_routine_fix=True,
-                human_gate_required=False,
+                human_gate_required=gate,
             )
         if kind in self.human_gate_types:
             return QualityEvidence(
                 safety_or_live_change=False,
                 broad_architecture_change=False,
                 bounded_routine_fix=False,
-                human_gate_required=True,
+                human_gate_required=gate,
             )
         return QualityEvidence(
             safety_or_live_change=False,
             broad_architecture_change=False,
             bounded_routine_fix=False,
-            human_gate_required=False,
+            human_gate_required=gate,
         )
 
 

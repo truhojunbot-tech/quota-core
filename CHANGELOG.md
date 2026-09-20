@@ -13,7 +13,10 @@ Post-merge correctness fixes for the #80 evidence/pricing report.
 - Risk declaration categories now state and enforce safety-first precedence
   when an operator places one task type in more than one category.
 - The runtime-environment unit test now clears ambient `BOT_NAME`, making its
-  configured-path assertion hermetic without changing production behavior.
+  configured-path assertion hermetic. `runtime_env(base_env={})` now also
+  honors the explicit empty mapping instead of inheriting ambient variables.
+- Human-gate declarations are orthogonal to tier declarations, so an explicit
+  gate is retained when a type is also declared routine or architectural.
 
 ## 0.1.22 - 2026-09-20
 

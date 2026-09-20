@@ -86,6 +86,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(env.get("BOT_NAME"), "manual")
         self.assertIsNone(env.get("LLM_USAGE_CLASS"))
 
+    def test_runtime_env_explicit_empty_base_does_not_inherit_ambient_env(self):
+        with patch.dict(os.environ, {"BOT_NAME": "ambient-bot"}, clear=True):
+            env = runtime_env("/tmp", {"demo-bot": ("/tmp",)}, base_env={})
+        self.assertEqual(env.get("BOT_NAME"), "demo-bot")
+        self.assertEqual(env.get("LLM_USAGE_CLASS"), "runtime")
+
 
 class SnapshotTests(unittest.TestCase):
     def test_claude_legacy_payload_normalizes(self):

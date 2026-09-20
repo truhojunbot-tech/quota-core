@@ -645,9 +645,10 @@ gate. A declared fact is recorded as `operator_declared_by_task_type`, kept
 distinct from a measurement on purpose, and a declaration never overwrites
 measured review evidence. It also preserves every non-risk policy input,
 including review-progress, context-growth, and orchestration-waste evidence.
-If a task type is listed in more than one declared category, safety/live takes
-precedence over architecture, routine, human-gated, and non-production. An
-unlisted task type keeps the fail-safe.
+If a task type is listed in more than one declared tier, safety/live takes
+precedence over architecture, routine, and non-production. A human gate is
+orthogonal to that tier choice and remains required when explicitly declared.
+An unlisted task type keeps the fail-safe.
 
 ### Pricing
 

@@ -238,6 +238,24 @@ class RiskDeclarationTests(unittest.TestCase):
             "architecture",
         )
 
+    def test_human_gate_is_retained_with_routine_or_architecture_tiers(self):
+        for task_type, declaration in (
+            ("routine", TaskTypeRiskDeclaration(
+                routine_types=frozenset({"routine"}),
+                human_gate_types=frozenset({"routine"}),
+            )),
+            ("architecture", TaskTypeRiskDeclaration(
+                architecture_types=frozenset({"architecture"}),
+                human_gate_types=frozenset({"architecture"}),
+            )),
+        ):
+            evidence = declaration.declare(task_type)
+            decision = recommend_task_policy(_record(task_type=task_type), evidence)
+            self.assertTrue(evidence.human_gate_required, task_type)
+            self.assertTrue(decision.human_gate_required, task_type)
+            self.assertEqual(decision.risk_tier, "safety_or_live", task_type)
+            self.assertEqual(decision.recommended_max_review_fix_rounds, 3, task_type)
+
     def test_risk_declaration_preserves_all_non_risk_policy_evidence(self):
         original = QualityEvidence(
             independent_review_correct=True,
