@@ -147,3 +147,16 @@ class AcceptanceCheckTests(unittest.TestCase):
         report = _passing_report()
         self.assertEqual(check_acceptance(report, since=1000)["criteria"]["V3"]["status"], INSUFFICIENT_DATA)
         self.assertEqual(check_acceptance(report, since=1000, rerun_bytes_equal=False)["criteria"]["V3"]["status"], FAIL)
+
+    def test_c1_counts_applicability_unknown_in_its_denominator(self) -> None:
+        report = _passing_report()
+        rows = list(report["decisions"].values())
+        for row in rows[1:]:
+            row["evidence_provenance"]["required_context_recalled"] = "applicability_unknown"
+            row["evidence_provenance"]["recall_applicability"] = "applicability_unknown"
+            row["policy_decision"]["evidence"]["required_context_recalled"] = None
+        result = check_acceptance(report, since=1000, rerun_bytes_equal=True)
+        c1 = result["criteria"]["C1"]
+        self.assertEqual(c1["status"], FAIL)
+        self.assertEqual(c1["total_count"], 50)
+        self.assertEqual(c1["recall_state_counts"]["applicability_unknown"], 49)

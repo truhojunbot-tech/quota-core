@@ -767,6 +767,6 @@ absent declarations stay unknown and retain the safety-first policy tier.
 Recall provenance distinguishes `observed_true`, `observed_false`,
 `applicable_but_missing`, `not_applicable_no_retrieval`, and
 `applicability_unknown`. A missing context-pack value is unknown rather than
-positive non-applicability evidence. No-retrieval work
-is not counted as recalled or unrecalled; it still requires successful,
-independently reviewed work before the quality gate permits treatments.
+positive non-applicability evidence. `not_applicable_no_retrieval` and its
+narrow quality exemption are reserved for a future producer that affirmatively
+records no retrieval requirement; current ingestion does not emit that state.
