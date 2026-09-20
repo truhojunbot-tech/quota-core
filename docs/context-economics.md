@@ -692,3 +692,38 @@ unknown is not a number — and components are never totalled.
 
 Still read-only and recommendation-only: it reads the databases, never writes
 back, and emits no enforcement of any kind.
+
+### Organic shadow-report producer
+
+`python -m quota_core.context_economics.report_producer` creates the portable
+receipt lookup artifact for organically produced task IDs:
+
+```bash
+python -m quota_core.context_economics.report_producer \
+  --db /path/to/task-attribution.sqlite \
+  --db /another/path/task-attribution.sqlite \
+  --out /path/to/organic-shadow-report.json
+```
+
+The module opens every source SQLite database using `mode=ro`; `--out` is the
+only file it writes. Re-running with the same `--out` is a rolling upsert: the
+`decisions` object is keyed by `task_id`, the `watermark.created_at` boundary
+is inclusive for tied timestamps, and NULL timestamps are deliberately
+rechecked rather than silently skipped. `--db-list paths.json` accepts a JSON
+array of source paths when a path list is managed outside the command line.
+
+The stable outer report schema is
+`https://quota-core.dev/contracts/organic-shadow-report/1.0`, available to
+Python consumers as `report_contract_schema()`. Each report has
+`policy_version` and `policy_contract` (`id` plus canonical-schema `sha256`),
+so a consumer can cite precisely the policy contract that produced a receipt.
+Each `decisions[task_id]` value is the existing actual-versus-recommended
+shadow artifact; use `decision_for(report, task_id)` or `--lookup-task` for a
+lookup. A miss is always the explicit status `NOT_COVERED`, never an empty or
+guessed decision.
+
+No unavailable quality fact is synthesized: in particular,
+`required_context_recalled` remains `null` with
+`not_recorded_by_producer` provenance, so the policy correctly keeps its
+quality gate at `insufficient_evidence`. This remains reporting only: it does
+not select a provider, modify a task, or write back to a runtime database.

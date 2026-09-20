@@ -1,0 +1,26 @@
+[
+  {
+    "task_id": "organic-known-zero",
+    "created_at": 100,
+    "outcome": "completed",
+    "provider": "example-provider",
+    "model": "example-model",
+    "uncached_input_tokens": 0,
+    "cache_read_tokens": null,
+    "cache_write_tokens": null,
+    "output_tokens": 4,
+    "reasoning_tokens": null
+  },
+  {
+    "task_id": "organic-null-created-at",
+    "created_at": null,
+    "outcome": "completed",
+    "provider": "example-provider",
+    "model": "example-model",
+    "uncached_input_tokens": null,
+    "cache_read_tokens": null,
+    "cache_write_tokens": null,
+    "output_tokens": null,
+    "reasoning_tokens": null
+  }
+]

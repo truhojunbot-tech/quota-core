@@ -66,6 +66,18 @@ from .quality_evidence import (
 )
 from .shadow_report import shadow_comparison_report
 from .sqlite_attribution import read_task_attribution_sqlite
+from .report_producer import (
+    COVERED,
+    NOT_COVERED,
+    REPORT_CONTRACT_ID,
+    REPORT_CONTRACT_SCHEMA,
+    REPORT_SCHEMA_VERSION,
+    decision_for,
+    policy_contract_sha256,
+    produce_shadow_report,
+    read_organic_task_records,
+    report_contract_schema,
+)
 from .compact_analysis import before_after_compact
 from .context_pack_analytics import (
     context_composition,
@@ -155,6 +167,16 @@ __all__ = [
     "shadow_policy_report",
     "shadow_comparison_report",
     "read_task_attribution_sqlite",
+    "REPORT_SCHEMA_VERSION",
+    "REPORT_CONTRACT_ID",
+    "REPORT_CONTRACT_SCHEMA",
+    "COVERED",
+    "NOT_COVERED",
+    "read_organic_task_records",
+    "produce_shadow_report",
+    "decision_for",
+    "policy_contract_sha256",
+    "report_contract_schema",
     "task_telemetry_by_stable_prefix",
     "task_token_telemetry_summary",
     "context_window_observations",
