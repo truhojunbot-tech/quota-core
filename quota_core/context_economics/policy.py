@@ -111,11 +111,12 @@ POLICY_CONTRACT_SCHEMA: dict[str, object] = {
         },
         "evidence": {
             "type": "object",
-            "required": ["outcome", "independent_review_correct", "required_context_recalled", "context_growth_tokens", "retry_of", "fallback_of", "token_observations"],
+            "required": ["outcome", "independent_review_correct", "required_context_recalled", "recall_not_applicable", "context_growth_tokens", "retry_of", "fallback_of", "token_observations"],
             "properties": {
                 "outcome": {"type": ["string", "null"]},
                 "independent_review_correct": {"type": ["boolean", "null"]},
                 "required_context_recalled": {"type": ["boolean", "null"]},
+                "recall_not_applicable": {"type": ["boolean", "null"]},
                 "context_growth_tokens": {"type": ["integer", "null"], "minimum": 0},
                 "retry_of": {"type": ["string", "null"]},
                 "fallback_of": {"type": ["string", "null"]},
@@ -149,6 +150,7 @@ class QualityEvidence:
     bounded_routine_fix: bool | None = None
     independent_review_correct: bool | None = None
     required_context_recalled: bool | None = None
+    recall_not_applicable: bool | None = None
     new_evidence_or_progress: bool | None = None
     repeated_unchanged_state: bool | None = None
     human_gate_required: bool | None = None
@@ -320,11 +322,12 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     tier = _risk(record, evidence)
     risk_unassessed = _risk_is_unassessed(evidence)
     human_gate = evidence.human_gate_required is True or risk_unassessed
-    quality = record.outcome == "success" and evidence.independent_review_correct is True and evidence.required_context_recalled is True
+    recall_ok = evidence.required_context_recalled is True or evidence.recall_not_applicable is True
+    quality = record.outcome == "success" and evidence.independent_review_correct is True and recall_ok
     overrides = []
     if record.outcome != "success": overrides.append("task_outcome_not_success")
     if evidence.independent_review_correct is not True: overrides.append("independent_review_correctness_unknown_or_negative")
-    if evidence.required_context_recalled is not True: overrides.append("required_context_recall_unknown_or_negative")
+    if not recall_ok: overrides.append("required_context_recall_unknown_or_negative")
     if evidence.human_gate_required is True: overrides.append("human_gate_required")
     if risk_unassessed: overrides.append("risk_assessment_unknown_requires_human_gate")
     multiplier = {"safety_or_live": 1.5, "architecture": 1.4, "routine": 1.2, "review_or_test": 1.25, "research": 1.3}[tier]
@@ -359,7 +362,7 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
         "preserve" if quality and cache_seen else "no_cache_signal" if quality else "insufficient_evidence",
         _costs(record, pricing), waste,
         {"outcome": record.outcome, "independent_review_correct": evidence.independent_review_correct,
-         "required_context_recalled": evidence.required_context_recalled, "context_growth_tokens": _nonnegative_int_or_none(evidence.context_growth_tokens),
+         "required_context_recalled": evidence.required_context_recalled, "recall_not_applicable": evidence.recall_not_applicable, "context_growth_tokens": _nonnegative_int_or_none(evidence.context_growth_tokens),
          "retry_of": record.retry_of, "fallback_of": record.fallback_of,
          "token_observations": {
              name: _nonnegative_int_or_none(getattr(record.task_telemetry, name))

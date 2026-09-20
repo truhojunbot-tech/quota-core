@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added conservative ingestion of explicit/high risk declarations and recall
+  applicability states to organic shadow reporting; legacy attribution schemas
+  remain supported as unknown evidence.
+
 - Added the read-only #80 acceptance checker for organic shadow reports. It
   evaluates the pre-registered S/C/D/V closing criteria with explicit
   PASS/FAIL/INSUFFICIENT_DATA outcomes and preserves unknown evidence as

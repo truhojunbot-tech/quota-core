@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from .policy import POLICY_CONTRACT_VERSION, policy_contract_schema
-from .quality_evidence import derive_quality_evidence
+from .quality_evidence import derive_quality_evidence, ingest_attribution_quality_evidence
+from dataclasses import replace
 from .schema import TaskEconomicsRecord, parse_flexible_timestamp
 from .shadow_report import shadow_comparison_report
 from .sqlite_attribution import read_task_attribution_sqlite
@@ -174,6 +175,25 @@ def _artifact_evidence(
 ) -> tuple[dict[str, object], dict[str, dict[str, str]]]:
     """Derive only structured evidence available in each source database."""
     derived = derive_quality_evidence(db_path, task_ids)
+    ingested = ingest_attribution_quality_evidence(db_path, task_ids)
+    for task_id, incoming in ingested.items():
+        current = derived.get(task_id)
+        if current is None:
+            derived[task_id] = incoming
+            continue
+        derived[task_id] = type(current)(
+            task_id,
+            replace(
+                current.evidence,
+                safety_or_live_change=incoming.evidence.safety_or_live_change,
+                broad_architecture_change=incoming.evidence.broad_architecture_change,
+                bounded_routine_fix=incoming.evidence.bounded_routine_fix,
+                human_gate_required=incoming.evidence.human_gate_required,
+                required_context_recalled=incoming.evidence.required_context_recalled,
+                recall_not_applicable=incoming.evidence.recall_not_applicable,
+            ),
+            {**current.provenance, **incoming.provenance},
+        )
     return (
         {task_id: item.evidence for task_id, item in derived.items()},
         {task_id: item.provenance for task_id, item in derived.items()},
