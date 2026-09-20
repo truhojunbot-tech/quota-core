@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added the read-only #80 acceptance checker for organic shadow reports. It
+  evaluates the pre-registered S/C/D/V closing criteria with explicit
+  PASS/FAIL/INSUFFICIENT_DATA outcomes and preserves unknown evidence as
+  insufficient rather than treating it as zero.
+
 - Added the read-only, deterministic organic shadow-report producer for #80.
   It emits task-ID-keyed recommendation artifacts with the exact policy schema
   identifier/hash they cite, and safely rechecks tied or NULL creation times

@@ -736,3 +736,24 @@ No unavailable quality fact is synthesized: in particular,
 `not_recorded_by_producer` provenance, so the policy correctly keeps its
 quality gate at `insufficient_evidence`. This remains reporting only: it does
 not select a provider, modify a task, or write back to a runtime database.
+
+### #80 acceptance checker
+
+`python -m quota_core.context_economics.acceptance --report report.json \
+--rerun-report rerun.json`
+reads an organic shadow report without touching its source databases and
+evaluates the pre-registered #80 S1/C1/C2/D1/D2/D3/V1/V2/V3 criteria. It emits
+machine-readable `PASS`, `FAIL`, or `INSUFFICIENT_DATA` results with counts,
+distributions, cutoff, and cited policy-contract SHA. `--since <created_at>`
+sets an inclusive cutoff; without it the checker uses the first artifact with
+producer-recorded provenance. Missing evidence remains insufficient rather
+than becoming a measured zero or a pass. V3 requires `--rerun-report` from
+the same input and compares it byte-for-byte; without that independent
+determinism evidence V3 is `INSUFFICIENT_DATA`. S1 uses the policy decision's
+provider provenance for execution-identity diversity: the SQLite loader name
+is deliberately not treated as a runtime identity.
+
+The overall verdict preserves the pre-registered operator routing:
+`DO_NOT_CLOSE` is reserved for a failed V1/V2/V3 safety invariant;
+coverage/differentiation failures and insufficient data yield `NOT_YET` with a
+daily-rerun action; only an all-pass report yields `READY_TO_CLOSE`.

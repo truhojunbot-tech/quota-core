@@ -66,6 +66,7 @@ from .quality_evidence import (
 )
 from .shadow_report import shadow_comparison_report
 from .sqlite_attribution import read_task_attribution_sqlite
+from .acceptance import check_acceptance
 from .report_producer import (
     COVERED,
     NOT_COVERED,
@@ -167,6 +168,7 @@ __all__ = [
     "shadow_policy_report",
     "shadow_comparison_report",
     "read_task_attribution_sqlite",
+    "check_acceptance",
     "REPORT_SCHEMA_VERSION",
     "REPORT_CONTRACT_ID",
     "REPORT_CONTRACT_SCHEMA",
