@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Added the read-only, deterministic organic shadow-report producer for #80.
+  It emits task-ID-keyed recommendation artifacts with the exact policy schema
+  identifier/hash they cite, and safely rechecks tied or NULL creation times
+  rather than treating unknown timestamps as zero.
+
 ## 0.1.23 - 2026-09-20
 
 Post-merge correctness fixes for the #80 evidence/pricing report.
