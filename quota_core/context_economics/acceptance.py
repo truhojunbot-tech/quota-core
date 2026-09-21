@@ -60,20 +60,21 @@ def _recorded(row: Mapping[str, object], field: str) -> bool:
     return value not in (None, NOT_RECORDED, "applicable_but_missing", "not_applicable_no_retrieval")
 
 
-def _risk_evidence(row: Mapping[str, object]) -> Mapping[str, object]:
-    return _mapping(_decision(row).get("evidence"))
+def _risk_facts(row: Mapping[str, object]) -> Mapping[str, object]:
+    """Return report-level declared risk inputs, not policy output evidence."""
+    return _mapping(row.get("risk_facts"))
 
 
 def _declaration_category(row: Mapping[str, object]) -> str:
     """Classify a fully recorded declaration from its evidence facts."""
-    evidence = _risk_evidence(row)
-    if evidence.get("safety_or_live_change") is True:
+    facts = _risk_facts(row)
+    if facts.get("safety_or_live_change") is True:
         return "safety_or_live"
-    if evidence.get("human_gate_required") is True:
+    if facts.get("human_gate_required") is True:
         return "gate"
-    if evidence.get("broad_architecture_change") is True:
+    if facts.get("broad_architecture_change") is True:
         return "architecture"
-    if evidence.get("bounded_routine_fix") is True:
+    if facts.get("bounded_routine_fix") is True:
         return "routine"
     if _decision(row).get("risk_tier") == "review_or_test":
         return "review_or_test"
@@ -147,7 +148,7 @@ def check_acceptance(
     criteria["D2"] = _result(INSUFFICIENT_DATA if not complete else PASS if sessions and caches else FAIL, complete_quality_count=len(complete), non_insufficient_session_count=sessions, non_insufficient_cache_count=caches)
     low_intent = [
         row for row in declared
-        if _risk_evidence(row).get("bounded_routine_fix") is True
+        if _risk_facts(row).get("bounded_routine_fix") is True
         or _decision(row).get("risk_tier") == "review_or_test"
     ]
     low = [
@@ -161,14 +162,14 @@ def check_acceptance(
             _decision(row).get("risk_tier") == "safety_or_live"
             or _decision(row).get("human_gate_required") is True
         )
-        and _risk_evidence(row).get("safety_or_live_change") is not True
-        and _risk_evidence(row).get("human_gate_required") is not True
+        and _risk_facts(row).get("safety_or_live_change") is not True
+        and _risk_facts(row).get("human_gate_required") is not True
     ]
     d3_ok = bool(low) and non_gated == len(low) and all(
         _decision(row).get("risk_tier") != "safety_or_live" for row in low
     ) and not unexpected_escalations
     criteria["D3"] = _result(
-        INSUFFICIENT_DATA if not low else PASS if d3_ok else FAIL,
+        FAIL if unexpected_escalations else INSUFFICIENT_DATA if not low else PASS if d3_ok else FAIL,
         declared_low_scrutiny_count=len(low),
         non_gated_count=non_gated,
         unexpected_escalation_count=len(unexpected_escalations),

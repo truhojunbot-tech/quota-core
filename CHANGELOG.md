@@ -5,6 +5,8 @@
 - Corrected #80 acceptance D3 and V1 evidence scope: D3 now derives declared
   low-scrutiny cohorts from trusted risk facts, and V1 checks undeclared rows
   across the full report rather than only the post-cutoff population.
+  Organic shadow artifacts now emit the null-preserving report-level
+  `risk_facts` inputs needed to audit D1/D3, separate from policy output.
 
 - Corrected #80 acceptance-checker cutoff and recall-axis handling: automatic
   cutoff now requires trusted producer evidence, and insufficient known recall

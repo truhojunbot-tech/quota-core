@@ -17,6 +17,17 @@ _BUDGET_TOKEN_FIELD: dict[str, str] = {
     "output_tokens": "output_tokens",
     "reasoning_tokens": "reasoning_tokens",
 }
+_RISK_FACT_FIELDS = (
+    "safety_or_live_change",
+    "broad_architecture_change",
+    "bounded_routine_fix",
+    "human_gate_required",
+)
+
+
+def _risk_facts(evidence: QualityEvidence) -> dict[str, bool | None]:
+    """Expose the declared risk inputs separately from policy output fields."""
+    return {field: getattr(evidence, field) for field in _RISK_FACT_FIELDS}
 
 
 def _baseline_vs_recommended(
@@ -85,8 +96,9 @@ def shadow_comparison_report(
     evidence_provenance = evidence_provenance or {}
     artifacts: list[dict[str, object]] = []
     for record in records:
+        evidence = evidence_by_task.get(record.task_id, QualityEvidence())
         decision = recommend_task_policy(
-            record, evidence_by_task.get(record.task_id, QualityEvidence())
+            record, evidence
         ).to_dict()
         actual = {
             "review_fix_rounds": _actual_review_fix_rounds(),
@@ -115,6 +127,9 @@ def shadow_comparison_report(
                 record, decision["recommended_soft_budget"]
             ),
             "cost": price_task(record, pricing).to_dict(),
+            # Input facts are report-level evidence, distinct from the stable
+            # policy decision contract and its output human-gate field.
+            "risk_facts": _risk_facts(evidence),
             # Why each evidence field says what it says, so a reader can tell
             # "measured false" from "never recorded" without reading source.
             "evidence_provenance": dict(evidence_provenance.get(record.task_id, {})),

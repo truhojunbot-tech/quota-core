@@ -17,6 +17,7 @@ from quota_core.context_economics import (
     produce_shadow_report,
     report_contract_schema,
 )
+from quota_core.context_economics.acceptance import PASS, check_acceptance
 from quota_core.context_economics.report_producer import main
 
 
@@ -37,6 +38,26 @@ def _db(path: Path, rows: list[dict[str, object]]) -> None:
             ":provider, :model, :uncached_input_tokens, :cache_read_tokens, "
             ":cache_write_tokens, :output_tokens, :reasoning_tokens)", row,
         )
+    conn.commit()
+    conn.close()
+
+
+def _risk_db(path: Path) -> None:
+    """Create a producer-shaped explicit/high routine declaration."""
+    conn = sqlite3.connect(path)
+    conn.execute("""CREATE TABLE task_attribution (
+        task_id TEXT PRIMARY KEY, created_at REAL, outcome TEXT,
+        provider TEXT, model TEXT, uncached_input_tokens INTEGER,
+        cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+        output_tokens INTEGER, reasoning_tokens INTEGER,
+        safety_or_live_change INTEGER, broad_architecture_change INTEGER,
+        bounded_routine_fix INTEGER, human_gate_required INTEGER,
+        risk_declaration_source TEXT, risk_declaration_confidence TEXT
+    )""")
+    conn.executemany("INSERT INTO task_attribution VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        ("declared-routine", 100, "completed", "example-provider", "example-model", 1, 0, 0, 1, 0, 0, 0, 1, 0, "explicit", "high"),
+        ("declared-safety", 101, "completed", "example-provider", "example-model", 1, 0, 0, 1, 0, 1, 0, 0, 0, "explicit", "high"),
+    ])
     conn.commit()
     conn.close()
 
@@ -69,6 +90,33 @@ class OrganicReportProducerTests(unittest.TestCase):
         observed = artifact["baseline_vs_recommended"]
         self.assertEqual(observed["uncached_input_tokens"]["observed"], 0)
         self.assertIsNone(observed["cache_read_tokens"]["observed"])
+
+    def test_risk_facts_are_emitted_separately_from_policy_decision_evidence(self) -> None:
+        risk_db = Path(self.temp.name) / "risk.sqlite"
+        _risk_db(risk_db)
+        report = produce_shadow_report([risk_db])
+        artifact = report["decisions"]["declared-routine"]
+        self.assertEqual(artifact["risk_facts"], {
+            "safety_or_live_change": False,
+            "broad_architecture_change": False,
+            "bounded_routine_fix": True,
+            "human_gate_required": False,
+        })
+        self.assertNotIn("bounded_routine_fix", artifact["policy_decision"]["evidence"])
+        result = check_acceptance(report, since=100, rerun_bytes_equal=True)
+        self.assertEqual(result["criteria"]["D3"]["status"], PASS)
+        self.assertEqual(result["criteria"]["D1"]["declaration_distribution"], {
+            "routine": 1, "safety_or_live": 1,
+        })
+
+        escalated = json.loads(json.dumps(report))
+        escalated["decisions"]["declared-routine"]["policy_decision"].update({
+            "risk_tier": "safety_or_live", "human_gate_required": True,
+        })
+        self.assertEqual(
+            check_acceptance(escalated, since=100, rerun_bytes_equal=True)["criteria"]["D3"]["status"],
+            "FAIL",
+        )
 
     def test_rerun_upserts_new_tied_and_null_timestamp_rows_deterministically(self) -> None:
         first = produce_shadow_report([self.db_path])
