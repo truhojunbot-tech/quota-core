@@ -7,6 +7,8 @@
   across the full report rather than only the post-cutoff population.
   Organic shadow artifacts now emit the null-preserving report-level
   `risk_facts` inputs needed to audit D1/D3, separate from policy output.
+  Partial declarations remain unknown for those criteria, and rolling reports
+  refresh artifacts written before this additive field existed.
 
 - Corrected #80 acceptance-checker cutoff and recall-axis handling: automatic
   cutoff now requires trusted producer evidence, and insufficient known recall

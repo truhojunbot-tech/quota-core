@@ -56,7 +56,10 @@ def _decision(row: Mapping[str, object]) -> Mapping[str, object]:
 def _recorded(row: Mapping[str, object], field: str) -> bool:
     value = _mapping(row.get("evidence_provenance")).get(field)
     if field in RISK_FIELDS:
-        return value == "producer_declared:explicit/high"
+        return (
+            value == "producer_declared:explicit/high"
+            and _risk_facts(row).get(field) is not None
+        )
     return value not in (None, NOT_RECORDED, "applicable_but_missing", "not_applicable_no_retrieval")
 
 
@@ -130,6 +133,7 @@ def check_acceptance(
     coverage = {field: sum(_recorded(row, field) for row in rows) / len(rows) if rows else None for field in RISK_FIELDS}
     criteria["C2"] = _result(INSUFFICIENT_DATA if not rows else PASS if all(value is not None and value >= MIN_COVERAGE for value in coverage.values()) else FAIL, coverage=coverage, threshold=MIN_COVERAGE)
     declared = [row for row in rows if all(_recorded(row, field) for field in RISK_FIELDS)]
+    missing_risk_facts_count = sum(not isinstance(row.get("risk_facts"), Mapping) for row in rows)
     tiers: dict[str, int] = {}
     for row in declared:
         tier = _decision(row).get("risk_tier")
@@ -141,7 +145,7 @@ def check_acceptance(
         declarations[category] = declarations.get(category, 0) + 1
     declarations_uniform = len(declarations) == 1 and sum(declarations.values()) == len(declared)
     d1_ok = declarations_uniform or (len(tiers) >= 2 and largest is not None and largest <= MAX_SINGLE_TIER_SHARE)
-    criteria["D1"] = _result(INSUFFICIENT_DATA if not declared else PASS if d1_ok else FAIL, declared_count=len(declared), tier_distribution=tiers, declaration_distribution=declarations, declarations_uniform=declarations_uniform, largest_tier_share=largest, threshold=MAX_SINGLE_TIER_SHARE)
+    criteria["D1"] = _result(INSUFFICIENT_DATA if not declared else PASS if d1_ok else FAIL, declared_count=len(declared), missing_risk_facts_count=missing_risk_facts_count, tier_distribution=tiers, declaration_distribution=declarations, declarations_uniform=declarations_uniform, largest_tier_share=largest, threshold=MAX_SINGLE_TIER_SHARE)
     complete = [row for row in rows if _mapping(_decision(row).get("evidence")).get("required_context_recalled") is True and _mapping(_decision(row).get("evidence")).get("independent_review_correct") is True]
     sessions = sum(_decision(row).get("recommended_session_treatment") != "insufficient_evidence" for row in complete)
     caches = sum(_decision(row).get("recommended_cache_treatment") != "insufficient_evidence" for row in complete)
@@ -173,6 +177,7 @@ def check_acceptance(
         declared_low_scrutiny_count=len(low),
         non_gated_count=non_gated,
         unexpected_escalation_count=len(unexpected_escalations),
+        missing_risk_facts_count=missing_risk_facts_count,
     )
     all_rows = [
         dict(value)

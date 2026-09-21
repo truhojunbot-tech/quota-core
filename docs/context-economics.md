@@ -774,7 +774,12 @@ recorded `routine` and `review_or_test` decisions and requires every such
 decision to remain ungated. V1 deliberately has wider scope than the
 post-cutoff metrics: it checks every undeclared artifact in the report, so a
 legacy fail-safe violation cannot disappear merely because it predates the
-trusted-producer cutoff.
+trusted-producer cutoff. A fact is recorded for D1/D3 only when it has
+explicit/high provenance and a non-null `risk_facts` value; partial
+declarations remain unknown and are checked by V1's fail-safe invariant.
+Rolling reports refresh retained artifacts that predate `risk_facts`, and D1
+and D3 disclose any still-missing artifact fields rather than classifying them
+as a declaration category.
 
 ### Trusted declaration and recall ingestion
 

@@ -245,7 +245,11 @@ def _is_new_since_watermark(
     if task_id not in decisions:
         return True
     existing = decisions[task_id]
-    if not isinstance(existing, Mapping) or existing.get("evidence_fingerprint") != evidence_fingerprint:
+    if (
+        not isinstance(existing, Mapping)
+        or not isinstance(existing.get("risk_facts"), Mapping)
+        or existing.get("evidence_fingerprint") != evidence_fingerprint
+    ):
         return True
     if item.created_at is None or watermark is None:
         return True

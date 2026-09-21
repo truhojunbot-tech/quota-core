@@ -43,7 +43,7 @@ def _db(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def _risk_db(path: Path) -> None:
-    """Create a producer-shaped explicit/high routine declaration."""
+    """Create producer-shaped complete and partial explicit/high declarations."""
     conn = sqlite3.connect(path)
     conn.execute("""CREATE TABLE task_attribution (
         task_id TEXT PRIMARY KEY, created_at REAL, outcome TEXT,
@@ -57,6 +57,7 @@ def _risk_db(path: Path) -> None:
     conn.executemany("INSERT INTO task_attribution VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         ("declared-routine", 100, "completed", "example-provider", "example-model", 1, 0, 0, 1, 0, 0, 0, 1, 0, "explicit", "high"),
         ("declared-safety", 101, "completed", "example-provider", "example-model", 1, 0, 0, 1, 0, 1, 0, 0, 0, "explicit", "high"),
+        ("partial-routine", 102, "completed", "example-provider", "example-model", 1, 0, 0, 1, 0, None, None, 1, None, "explicit", "high"),
     ])
     conn.commit()
     conn.close()
@@ -105,9 +106,16 @@ class OrganicReportProducerTests(unittest.TestCase):
         self.assertNotIn("bounded_routine_fix", artifact["policy_decision"]["evidence"])
         result = check_acceptance(report, since=100, rerun_bytes_equal=True)
         self.assertEqual(result["criteria"]["D3"]["status"], PASS)
+        self.assertEqual(result["criteria"]["D3"]["declared_low_scrutiny_count"], 1)
+        self.assertEqual(result["criteria"]["D3"]["unexpected_escalation_count"], 0)
         self.assertEqual(result["criteria"]["D1"]["declaration_distribution"], {
             "routine": 1, "safety_or_live": 1,
         })
+        self.assertEqual(
+            (result["criteria"]["V1"]["status"], result["criteria"]["V1"]["checked_count"]),
+            (PASS, 1),
+        )
+        self.assertEqual(result["criteria"]["C2"]["coverage"]["safety_or_live_change"], 2 / 3)
 
         escalated = json.loads(json.dumps(report))
         escalated["decisions"]["declared-routine"]["policy_decision"].update({
@@ -117,6 +125,18 @@ class OrganicReportProducerTests(unittest.TestCase):
             check_acceptance(escalated, since=100, rerun_bytes_equal=True)["criteria"]["D3"]["status"],
             "FAIL",
         )
+
+    def test_rolling_report_refreshes_artifacts_that_predate_risk_facts(self) -> None:
+        risk_db = Path(self.temp.name) / "risk.sqlite"
+        _risk_db(risk_db)
+        legacy = produce_shadow_report([risk_db])
+        for artifact in legacy["decisions"].values():
+            artifact.pop("risk_facts")
+        refreshed = produce_shadow_report([risk_db], legacy)
+        self.assertTrue(all("risk_facts" in artifact for artifact in refreshed["decisions"].values()))
+        criteria = check_acceptance(refreshed, since=100, rerun_bytes_equal=True)["criteria"]
+        self.assertEqual(criteria["D1"]["missing_risk_facts_count"], 0)
+        self.assertEqual(criteria["D3"]["declared_low_scrutiny_count"], 1)
 
     def test_rerun_upserts_new_tied_and_null_timestamp_rows_deterministically(self) -> None:
         first = produce_shadow_report([self.db_path])
