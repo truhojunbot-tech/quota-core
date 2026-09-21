@@ -766,6 +766,21 @@ affirmatively-not-applicable rows are excluded from C1's intentionally narrow
 denominator. The C1 result declares this basis and the excluded-state counts,
 so its coverage is not confused with an all-artifact coverage rate.
 
+D1 and D3 derive declaration categories from the trusted `risk_facts` object
+on each report artifact, not from a producer-specific declaration label or a
+policy-output field. The object preserves null for unknown facts and is kept
+separate from the versioned policy-decision contract. D3 considers fully
+recorded `routine` and `review_or_test` decisions and requires every such
+decision to remain ungated. V1 deliberately has wider scope than the
+post-cutoff metrics: it checks every undeclared artifact in the report, so a
+legacy fail-safe violation cannot disappear merely because it predates the
+trusted-producer cutoff. A fact is recorded for D1/D3 only when it has
+explicit/high provenance and a non-null `risk_facts` value; partial
+declarations remain unknown and are checked by V1's fail-safe invariant.
+Rolling reports refresh retained artifacts that predate `risk_facts`, and D1
+and D3 disclose any still-missing artifact fields rather than classifying them
+as a declaration category.
+
 ### Trusted declaration and recall ingestion
 
 The organic producer reads risk facts only when the attribution row labels the
