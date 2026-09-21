@@ -18,7 +18,8 @@ RISK = ("safety_or_live_change", "broad_architecture_change", "bounded_routine_f
 
 
 def _row(index: int) -> dict[str, object]:
-    decision = {"risk_tier": "routine" if index % 2 else "review_or_test", "quality_preserving": True, "human_gate_required": False, "recommended_session_treatment": "preserve", "recommended_cache_treatment": "preserve", "provenance": {"provider": "provider-a" if index % 2 else "provider-b"}, "evidence": {"required_context_recalled": True, "independent_review_correct": True, "token_observations": {"uncached_input_tokens": 1, "cache_write_tokens": None, "cache_read_tokens": 0, "output_tokens": 1, "reasoning_tokens": None}}, "component_costs": {"components": {}, "non_additive_components": ["reasoning"], "aggregation": "prohibited_overlapping_components"}}
+    routine = index % 2 == 1
+    decision = {"risk_tier": "routine" if routine else "review_or_test", "quality_preserving": True, "human_gate_required": False, "recommended_session_treatment": "preserve", "recommended_cache_treatment": "preserve", "provenance": {"provider": "provider-a" if index % 2 else "provider-b"}, "evidence": {"safety_or_live_change": False, "broad_architecture_change": False, "bounded_routine_fix": routine, "human_gate_required": False, "required_context_recalled": True, "independent_review_correct": True, "token_observations": {"uncached_input_tokens": 1, "cache_write_tokens": None, "cache_read_tokens": 0, "output_tokens": 1, "reasoning_tokens": None}}, "component_costs": {"components": {}, "non_additive_components": ["reasoning"], "aggregation": "prohibited_overlapping_components"}}
     return {"task_id": f"task-{index:03}", "created_at": 1000 + index, "runtime": "runtime-a" if index % 2 else "runtime-b", "evidence_provenance": {"required_context_recalled": "observed_true", "recall_applicability": "observed_true", **{field: "producer_declared:explicit/high" for field in RISK}}, "risk_declaration": {"kind": "bounded_routine" if index % 2 else "non_production"}, "policy_decision": decision}
 
 
@@ -26,6 +27,7 @@ def _passing_report() -> dict[str, object]:
     rows = [_row(index) for index in range(50)]
     rows[0]["evidence_provenance"] = {"required_context_recalled": "observed_true", "recall_applicability": "observed_true", **{field: "not_recorded_by_producer" for field in RISK}}
     rows[0]["policy_decision"].update({"risk_tier": "safety_or_live", "human_gate_required": True, "recommended_session_treatment": "insufficient_evidence"})
+    rows[0]["policy_decision"]["evidence"].update({field: None for field in RISK})
     rows[1]["policy_decision"].update({"quality_preserving": False, "recommended_session_treatment": "insufficient_evidence", "recommended_cache_treatment": "insufficient_evidence"})
     rows[1]["policy_decision"]["evidence"]["independent_review_correct"] = False
     return {"mode": "shadow", "policy_contract": {"id": "policy-v1", "sha256": "a" * 64}, "decisions": {row["task_id"]: row for row in rows}}
@@ -52,7 +54,7 @@ class AcceptanceCheckTests(unittest.TestCase):
         def c2_missing(report):
             for row in list(report["decisions"].values())[10:]:
                 row["evidence_provenance"]["bounded_routine_fix"] = "not_recorded_by_producer"
-                row["policy_decision"].update({"risk_tier": "safety_or_live", "recommended_session_treatment": "insufficient_evidence"})
+                row["policy_decision"].update({"risk_tier": "safety_or_live", "human_gate_required": True, "recommended_session_treatment": "insufficient_evidence"})
 
         def d1_single_tier(report):
             for row in list(report["decisions"].values())[1:]:
@@ -135,14 +137,11 @@ class AcceptanceCheckTests(unittest.TestCase):
                 main(["--report", str(path), "--rerun-report", str(path), "--since", "1000"])
         self.assertEqual(error.exception.code, 2)
 
-    def test_uniform_declarations_are_d1_exception_and_are_reported(self) -> None:
+    def test_fact_derived_declarations_are_reported(self) -> None:
         report = _passing_report()
-        for row in report["decisions"].values():
-            row["risk_declaration"] = {"kind": "bounded_routine"}
-            row["policy_decision"]["risk_tier"] = "routine"
         result = check_acceptance(report, since=1000, rerun_bytes_equal=True)
         self.assertEqual(result["criteria"]["D1"]["status"], PASS)
-        self.assertEqual(result["criteria"]["D1"]["declaration_distribution"], {"bounded_routine": 49})
+        self.assertEqual(result["criteria"]["D1"]["declaration_distribution"], {"routine": 25, "review_or_test": 24})
 
     def test_untimestamped_safety_violation_is_not_dropped(self) -> None:
         report = _passing_report()
@@ -159,6 +158,41 @@ class AcceptanceCheckTests(unittest.TestCase):
         report = _passing_report()
         self.assertEqual(check_acceptance(report, since=1000)["criteria"]["V3"]["status"], INSUFFICIENT_DATA)
         self.assertEqual(check_acceptance(report, since=1000, rerun_bytes_equal=False)["criteria"]["V3"]["status"], FAIL)
+
+    def test_d3_uses_recorded_facts_for_pass_fail_and_insufficient_data(self) -> None:
+        passing = check_acceptance(_passing_report(), since=1000, rerun_bytes_equal=True)["criteria"]["D3"]
+        self.assertEqual((passing["status"], passing["declared_low_scrutiny_count"]), (PASS, 49))
+
+        gated_report = _passing_report()
+        gated_report["decisions"]["task-001"]["policy_decision"]["human_gate_required"] = True
+        gated = check_acceptance(gated_report, since=1000, rerun_bytes_equal=True)["criteria"]["D3"]
+        self.assertEqual(gated["status"], FAIL)
+
+        escalated_report = _passing_report()
+        escalated_report["decisions"]["task-001"]["policy_decision"]["risk_tier"] = "safety_or_live"
+        escalated = check_acceptance(escalated_report, since=1000, rerun_bytes_equal=True)["criteria"]["D3"]
+        self.assertEqual((escalated["status"], escalated["unexpected_escalation_count"]), (FAIL, 1))
+
+        unknown_report = _passing_report()
+        for row in unknown_report["decisions"].values():
+            row["evidence_provenance"].update({field: "not_recorded_by_producer" for field in RISK})
+        insufficient = check_acceptance(unknown_report, since=1000, rerun_bytes_equal=True)["criteria"]["D3"]
+        self.assertEqual(insufficient["status"], INSUFFICIENT_DATA)
+
+    def test_v1_checks_undeclared_rows_before_the_cutoff(self) -> None:
+        report = _passing_report()
+        legacy = report["decisions"]["task-000"]
+        legacy["created_at"] = 999
+        legacy["evidence_provenance"].update({
+            "required_context_recalled": "applicability_unknown",
+            "recall_applicability": "applicability_unknown",
+        })
+        legacy["policy_decision"].update({"risk_tier": "routine", "human_gate_required": False, "recommended_session_treatment": "preserve"})
+        legacy["policy_decision"]["evidence"]["required_context_recalled"] = None
+        result = check_acceptance(report, rerun_bytes_equal=True)
+        self.assertEqual(result["cutoff_created_at"], 1001)
+        self.assertEqual(result["criteria"]["V1"]["scope"], "all_report_rows")
+        self.assertEqual(result["criteria"]["V1"]["status"], FAIL)
 
     def test_c1_uses_known_applicability_and_requires_thirty_rows(self) -> None:
         def with_recall_shape(known_count: int, recorded_count: int) -> dict[str, object]:

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Corrected #80 acceptance D3 and V1 evidence scope: D3 now derives declared
+  low-scrutiny cohorts from trusted risk facts, and V1 checks undeclared rows
+  across the full report rather than only the post-cutoff population.
+
 - Corrected #80 acceptance-checker cutoff and recall-axis handling: automatic
   cutoff now requires trusted producer evidence, and insufficient known recall
   applicability is explicitly deferred rather than treated as coverage failure.

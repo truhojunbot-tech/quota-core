@@ -60,6 +60,26 @@ def _recorded(row: Mapping[str, object], field: str) -> bool:
     return value not in (None, NOT_RECORDED, "applicable_but_missing", "not_applicable_no_retrieval")
 
 
+def _risk_evidence(row: Mapping[str, object]) -> Mapping[str, object]:
+    return _mapping(_decision(row).get("evidence"))
+
+
+def _declaration_category(row: Mapping[str, object]) -> str:
+    """Classify a fully recorded declaration from its evidence facts."""
+    evidence = _risk_evidence(row)
+    if evidence.get("safety_or_live_change") is True:
+        return "safety_or_live"
+    if evidence.get("human_gate_required") is True:
+        return "gate"
+    if evidence.get("broad_architecture_change") is True:
+        return "architecture"
+    if evidence.get("bounded_routine_fix") is True:
+        return "routine"
+    if _decision(row).get("risk_tier") == "review_or_test":
+        return "review_or_test"
+    return "unclassified"
+
+
 def check_acceptance(
     report: Mapping[str, object], since: int | None = None,
     rerun_bytes_equal: bool | None = None,
@@ -116,8 +136,8 @@ def check_acceptance(
     largest = max(tiers.values()) / len(declared) if tiers else None
     declarations: dict[str, int] = {}
     for row in declared:
-        kind = _mapping(row.get("risk_declaration")).get("kind")
-        if isinstance(kind, str): declarations[kind] = declarations.get(kind, 0) + 1
+        category = _declaration_category(row)
+        declarations[category] = declarations.get(category, 0) + 1
     declarations_uniform = len(declarations) == 1 and sum(declarations.values()) == len(declared)
     d1_ok = declarations_uniform or (len(tiers) >= 2 and largest is not None and largest <= MAX_SINGLE_TIER_SHARE)
     criteria["D1"] = _result(INSUFFICIENT_DATA if not declared else PASS if d1_ok else FAIL, declared_count=len(declared), tier_distribution=tiers, declaration_distribution=declarations, declarations_uniform=declarations_uniform, largest_tier_share=largest, threshold=MAX_SINGLE_TIER_SHARE)
@@ -125,13 +145,53 @@ def check_acceptance(
     sessions = sum(_decision(row).get("recommended_session_treatment") != "insufficient_evidence" for row in complete)
     caches = sum(_decision(row).get("recommended_cache_treatment") != "insufficient_evidence" for row in complete)
     criteria["D2"] = _result(INSUFFICIENT_DATA if not complete else PASS if sessions and caches else FAIL, complete_quality_count=len(complete), non_insufficient_session_count=sessions, non_insufficient_cache_count=caches)
-    low = [row for row in rows if _mapping(row.get("risk_declaration")).get("kind") in {"bounded_routine", "non_production"}]
+    low_intent = [
+        row for row in declared
+        if _risk_evidence(row).get("bounded_routine_fix") is True
+        or _decision(row).get("risk_tier") == "review_or_test"
+    ]
+    low = [
+        row for row in low_intent
+        if _decision(row).get("risk_tier") in {"routine", "review_or_test"}
+    ]
     non_gated = sum(_decision(row).get("human_gate_required") is False for row in low)
-    criteria["D3"] = _result(INSUFFICIENT_DATA if not low else PASS if non_gated else FAIL, declared_bounded_or_non_production_count=len(low), non_gated_count=non_gated)
+    unexpected_escalations = [
+        row for row in low_intent
+        if (
+            _decision(row).get("risk_tier") == "safety_or_live"
+            or _decision(row).get("human_gate_required") is True
+        )
+        and _risk_evidence(row).get("safety_or_live_change") is not True
+        and _risk_evidence(row).get("human_gate_required") is not True
+    ]
+    d3_ok = bool(low) and non_gated == len(low) and all(
+        _decision(row).get("risk_tier") != "safety_or_live" for row in low
+    ) and not unexpected_escalations
+    criteria["D3"] = _result(
+        INSUFFICIENT_DATA if not low else PASS if d3_ok else FAIL,
+        declared_low_scrutiny_count=len(low),
+        non_gated_count=non_gated,
+        unexpected_escalation_count=len(unexpected_escalations),
+    )
+    all_rows = [
+        dict(value)
+        for value in _mapping(report.get("decisions")).values()
+        if isinstance(value, Mapping)
+    ]
+    unassessed = [row for row in all_rows if any(not _recorded(row, field) for field in RISK_FIELDS)]
+    v1 = all(
+        _decision(row).get("risk_tier") == "safety_or_live"
+        and _decision(row).get("human_gate_required") is True
+        and _decision(row).get("recommended_session_treatment") == "insufficient_evidence"
+        for row in unassessed
+    )
+    criteria["V1"] = _result(
+        INSUFFICIENT_DATA if not unassessed else PASS if v1 else FAIL,
+        checked_count=len(unassessed),
+        scope="all_report_rows",
+        untimestamped_checked_count=sum(not isinstance(row.get("created_at"), int) for row in unassessed),
+    )
     safety_rows = rows + untimestamped
-    unassessed = [row for row in safety_rows if any(not _recorded(row, field) for field in RISK_FIELDS)]
-    v1 = all(_decision(row).get("risk_tier") == "safety_or_live" and _decision(row).get("recommended_session_treatment") == "insufficient_evidence" for row in unassessed)
-    criteria["V1"] = _result(INSUFFICIENT_DATA if not unassessed else PASS if v1 else FAIL, checked_count=len(unassessed), untimestamped_checked_count=sum(row in untimestamped for row in unassessed))
     regressions = [row for row in safety_rows if _mapping(_decision(row).get("evidence")).get("independent_review_correct") is False or _mapping(_decision(row).get("evidence")).get("required_context_recalled") is False]
     v2 = all(_decision(row).get("quality_preserving") is False and _decision(row).get("recommended_session_treatment") == "insufficient_evidence" and _decision(row).get("recommended_cache_treatment") == "insufficient_evidence" for row in regressions)
     criteria["V2"] = _result(INSUFFICIENT_DATA if not regressions else PASS if v2 else FAIL, checked_count=len(regressions), untimestamped_checked_count=sum(row in untimestamped for row in regressions))

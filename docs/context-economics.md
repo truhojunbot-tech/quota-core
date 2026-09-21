@@ -766,6 +766,14 @@ affirmatively-not-applicable rows are excluded from C1's intentionally narrow
 denominator. The C1 result declares this basis and the excluded-state counts,
 so its coverage is not confused with an all-artifact coverage rate.
 
+D1 and D3 derive declaration categories from the trusted risk facts in each
+policy decision, not from a producer-specific declaration label. D3 considers
+fully recorded `routine` and `review_or_test` decisions and requires every
+such decision to remain ungated. V1 deliberately has wider scope than the
+post-cutoff metrics: it checks every undeclared artifact in the report, so a
+legacy fail-safe violation cannot disappear merely because it predates the
+trusted-producer cutoff.
+
 ### Trusted declaration and recall ingestion
 
 The organic producer reads risk facts only when the attribution row labels the
