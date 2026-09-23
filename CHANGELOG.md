@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Added `scripts/tokenomics_feedback_record.py`, the SEV-0 §12 feedback-loop
+  recorder for the one pinned tokenomics canary task. It reads the runtime
+  (`tasks`, `task_attribution`, `tokenomics_shadow_receipts.canary_*`,
+  `authorization_receipts`) through `sqlite mode=ro`, re-runs the existing
+  contract emitter read-only, and writes
+  `evidence/sev0/tokenomics-feedback-loop.{md,json}` — nothing is published and
+  no runtime row is written. The generator is two-pass by design: pass 1 stores
+  the BEFORE decision record for the recommendation kind
+  `suppress_identical_sha_rereview` while the canary window is still open and
+  marks every outcome field `PENDING`; re-running it after the cascade is
+  terminal reloads that snapshot, captures AFTER and emits the field-level diff
+  with the canary receipt rows cited.
+- Recorded as a finding rather than a claim: the canary outcome has **no
+  mechanical path into the next decision**. `repeated_unchanged_state` and
+  `new_evidence_or_progress` are the only inputs that move
+  `recommended_max_review_fix_rounds`, and no producer in this repo writes
+  either; quota-core also never reads the `canary_*` columns. The artifact
+  labels that link `no_producer` and lists the affected fields explicitly
+  instead of reporting the loop as closed.
+
 - Added an atomic emitter that writes the existing organic shadow policy
   report in the shape its contract consumer reads (top-level
   `contract_version`/`mode` plus a `decisions` list matched by `task_id`),
