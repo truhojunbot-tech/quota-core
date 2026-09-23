@@ -374,6 +374,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--db-list", help="JSON list of SQLite attribution DB paths")
     parser.add_argument("--table", default="task_attribution")
     parser.add_argument("--out", required=True, help="report JSON; prior output is the rolling state")
+    parser.add_argument(
+        "--contract-out",
+        help="also emit the reader-compatible policy contract atomically to this path",
+    )
     parser.add_argument("--lookup-task", help="also print a COVERED/NOT_COVERED lookup result")
     args = parser.parse_args(argv)
     db_paths = _db_paths_from_args(args.db, args.db_list)
@@ -383,6 +387,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = produce_shadow_report(db_paths, _load_existing(out), args.table)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.contract_out:
+        # Imported here so the rolling producer keeps no import-time dependency
+        # on the emitter, which in turn reads this module.
+        from .contract_emitter import emit_contract
+
+        _, contract_sha = emit_contract(args.contract_out, db_paths, args.table)
+        print(json.dumps(
+            {"contract_out": str(args.contract_out), "contract_sha256": contract_sha},
+            sort_keys=True,
+        ))
     if args.lookup_task:
         print(json.dumps(decision_for(report, args.lookup_task), sort_keys=True))
     return 0

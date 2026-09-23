@@ -79,6 +79,14 @@ from .report_producer import (
     read_organic_task_records,
     report_contract_schema,
 )
+from .contract_emitter import (
+    TASK_DECISION_UNAVAILABLE,
+    build_contract,
+    emit_contract,
+    producer_commit,
+    resolve_decision,
+    write_contract_atomically,
+)
 from .compact_analysis import before_after_compact
 from .context_pack_analytics import (
     context_composition,
@@ -143,6 +151,12 @@ from .token_components import (
 )
 
 __all__ = [
+    "TASK_DECISION_UNAVAILABLE",
+    "build_contract",
+    "emit_contract",
+    "producer_commit",
+    "resolve_decision",
+    "write_contract_atomically",
     "REVIEW_TASK_TYPES",
     "read_review_verdicts",
     "evidence_map",

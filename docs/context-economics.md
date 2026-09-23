@@ -737,6 +737,45 @@ No unavailable quality fact is synthesized: in particular,
 quality gate at `insufficient_evidence`. This remains reporting only: it does
 not select a provider, modify a task, or write back to a runtime database.
 
+### Reader-compatible contract emitter
+
+The rolling report above is keyed by `task_id` for lookup. The consumer of the
+policy contract reads a different, flatter shape: a top-level
+`contract_version` / `mode` plus a `decisions` **list** whose entries carry
+their own `task_id`. That shape is exactly what `shadow_policy_report()`
+already returns, so the emitter adds no policy — it only writes that existing
+artifact atomically:
+
+```bash
+python -m quota_core.context_economics.contract_emitter \
+  --db /path/to/task-attribution.sqlite \
+  --out /path/to/tokenomics-policy.json \
+  --lookup-task some-task-id
+```
+
+The same artifact can be produced alongside the rolling report with
+`report_producer --contract-out /path/to/tokenomics-policy.json`; both read the
+identical organic records, quality evidence and watermark.
+
+The write is atomic: the JSON is written to a temporary file in the
+destination directory, `fsync`ed, then `os.replace`d into place, so a reader
+polling the path sees either the previous complete artifact or the new one —
+never a partial file. A failed write leaves no temporary file behind.
+
+Emitted contracts carry one additive top-level `provenance` block
+(`report_contract_id`, `policy_contract` `id`+`sha256`, `producer_commit`,
+`produced_at`, `source_dbs`, `decision_count`). Each `source_dbs` entry states
+the source by `path_basename`, the canonical `sha256_of_rows_or_rowcount` of
+the rows that contributed (with `row_count` alongside), and that source's
+rolling `watermark`. Consumers match on `contract_version`, `mode` and
+`task_id` only, so the block travels with the artifact without changing how it
+reads; `resolve_decision(contract, task_id)` mirrors that consumer rule for
+verification without importing any orchestrator.
+
+Publication is a separate, human-gated step: nothing here writes a live
+contract path on its own, and the emitted artifact remains recommend-only
+shadow evidence.
+
 ### #80 acceptance checker
 
 `python -m quota_core.context_economics.acceptance --report report.json \
