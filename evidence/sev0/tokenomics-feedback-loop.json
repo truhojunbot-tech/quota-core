@@ -1,8 +1,111 @@
 {
   "artifact": "sev0-tokenomics-feedback-loop",
-  "canary_receipt_rows": [],
+  "canary_receipt_rows": [
+    {
+      "canary_applied": false,
+      "canary_cea_receipt_id": "14bcfb14-d694-4173-8b8c-55f14ea28e6f",
+      "canary_counterfactual": null,
+      "canary_decision_source": "quota_core_contract",
+      "canary_reason": "standing_verdict_is_approve",
+      "canary_recommendation": {
+        "applied": false,
+        "counterfactual": "",
+        "kind": "suppress_identical_sha_rereview",
+        "pinned_task_id": "sev0-tokenomics-feedback-loop-x",
+        "reason": "standing_verdict_is_approve",
+        "reviewed_sha": "886dda3b0a905a866c42663cbcdd6827d556d5bd",
+        "shadow_decision_source": "quota_core_contract",
+        "standing_review_task_id": "review-fix-review-fix-review-sev0-tokenomics-canary-one-r2-atomic-suppression-r0-r1-r1-r2-r2",
+        "target": "branch:sev0/cea-lineage"
+      },
+      "canary_resolved_at": 1790206397.1993399,
+      "task_id": "review-sev0-tokenomics-feedback-loop-x-r1"
+    }
+  ],
   "decision_record": {
-    "after": null,
+    "after": {
+      "contract_fields": [
+        "recommended_max_review_fix_rounds"
+      ],
+      "fleet": {
+        "decision_count": 629,
+        "kind_rationale_fired": {
+          "new_evidence_extends_review_fix_envelope": 0,
+          "unchanged_state_does_not_extend_review_fix_envelope": 0
+        },
+        "recommended_max_review_fix_rounds_histogram": {
+          "1": 31,
+          "3": 598
+        }
+      },
+      "kind": "suppress_identical_sha_rereview",
+      "per_task": {
+        "fix-review-sev0-tokenomics-feedback-loop-x-r1-r1": {
+          "kind_rationale": [],
+          "outcome": null,
+          "override_reasons": [
+            "task_outcome_not_success",
+            "independent_review_correctness_unknown_or_negative",
+            "required_context_recall_unknown_or_negative",
+            "risk_assessment_unknown_requires_human_gate",
+            "no_budget_anchor_for_non_successful_or_unknown_outcome"
+          ],
+          "present": true,
+          "quality_preserving": false,
+          "recommended_max_review_fix_rounds": 3,
+          "risk_tier": "safety_or_live",
+          "token_observations": {
+            "cache_read_tokens": null,
+            "cache_write_tokens": null,
+            "output_tokens": null,
+            "reasoning_tokens": null,
+            "uncached_input_tokens": null
+          }
+        },
+        "review-sev0-tokenomics-feedback-loop-x-r1": {
+          "kind_rationale": [],
+          "outcome": "success",
+          "override_reasons": [
+            "independent_review_correctness_unknown_or_negative",
+            "required_context_recall_unknown_or_negative",
+            "risk_assessment_unknown_requires_human_gate"
+          ],
+          "present": true,
+          "quality_preserving": false,
+          "recommended_max_review_fix_rounds": 3,
+          "risk_tier": "safety_or_live",
+          "token_observations": {
+            "cache_read_tokens": 671744,
+            "cache_write_tokens": 0,
+            "output_tokens": 4811,
+            "reasoning_tokens": 1461,
+            "uncached_input_tokens": 62156
+          }
+        },
+        "sev0-tokenomics-feedback-loop-x": {
+          "kind_rationale": [],
+          "outcome": "failed",
+          "override_reasons": [
+            "task_outcome_not_success",
+            "independent_review_correctness_unknown_or_negative",
+            "required_context_recall_unknown_or_negative",
+            "risk_assessment_unknown_requires_human_gate",
+            "no_budget_anchor_for_non_successful_or_unknown_outcome"
+          ],
+          "present": true,
+          "quality_preserving": false,
+          "recommended_max_review_fix_rounds": 3,
+          "risk_tier": "safety_or_live",
+          "token_observations": {
+            "cache_read_tokens": 4280309,
+            "cache_write_tokens": 119907,
+            "output_tokens": 35652,
+            "reasoning_tokens": null,
+            "uncached_input_tokens": 94
+          }
+        }
+      }
+    },
     "before": {
       "contract_fields": [
         "recommended_max_review_fix_rounds"
@@ -46,27 +149,189 @@
     },
     "before_captured_at": "2026-09-23T23:29:58+00:00",
     "consumption_claim": {
-      "status": "NOT_ESTABLISHED_YET",
-      "why": "pass 1 captures the BEFORE decision only; the canary window (this task's own review cascade) has not run."
+      "explanation": "no_producer is a claim about the ROUND INPUTS only: repeated_unchanged_state / new_evidence_or_progress are the sole QualityEvidence fields that move recommended_max_review_fix_rounds and nothing writes them. It is NOT a claim that the emitter reads task_attribution alone \u2014 it also reads tasks.verdict through derive_quality_evidence (producer_read_path below). So any change in the diff comes from rows the producer does read \u2014 task_attribution outcome/token columns, tasks.verdict via quality evidence, and new lineage tasks entering the contract \u2014 and never from the canary columns, which quota_core does not read at all; see unknown_fields[0] and unknown_fields[1].",
+      "mechanical_link": "no_producer",
+      "outcome_rows_cited": [
+        {
+          "canary_applied": false,
+          "canary_reason": "standing_verdict_is_approve",
+          "canary_resolved_at": 1790206397.1993399,
+          "table": "tokenomics_shadow_receipts",
+          "task_id": "review-sev0-tokenomics-feedback-loop-x-r1"
+        }
+      ],
+      "status": "SEE_DIFF"
     },
-    "diff": null,
+    "diff": {
+      "changed": true,
+      "fleet": {
+        "decision_count": {
+          "after": 629,
+          "before": 626
+        },
+        "recommended_max_review_fix_rounds_histogram": {
+          "after": {
+            "1": 31,
+            "3": 598
+          },
+          "before": {
+            "1": 31,
+            "3": 595
+          }
+        }
+      },
+      "per_task": {
+        "fix-review-sev0-tokenomics-feedback-loop-x-r1-r1": {
+          "kind_rationale": {
+            "after": [],
+            "before": "UNKNOWN"
+          },
+          "override_reasons": {
+            "after": [
+              "task_outcome_not_success",
+              "independent_review_correctness_unknown_or_negative",
+              "required_context_recall_unknown_or_negative",
+              "risk_assessment_unknown_requires_human_gate",
+              "no_budget_anchor_for_non_successful_or_unknown_outcome"
+            ],
+            "before": "UNKNOWN"
+          },
+          "present": {
+            "after": true,
+            "before": "UNKNOWN"
+          },
+          "quality_preserving": {
+            "after": false,
+            "before": "UNKNOWN"
+          },
+          "recommended_max_review_fix_rounds": {
+            "after": 3,
+            "before": "UNKNOWN"
+          },
+          "risk_tier": {
+            "after": "safety_or_live",
+            "before": "UNKNOWN"
+          },
+          "token_observations": {
+            "after": {
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "output_tokens": null,
+              "reasoning_tokens": null,
+              "uncached_input_tokens": null
+            },
+            "before": "UNKNOWN"
+          }
+        },
+        "review-sev0-tokenomics-feedback-loop-x-r1": {
+          "kind_rationale": {
+            "after": [],
+            "before": "UNKNOWN"
+          },
+          "outcome": {
+            "after": "success",
+            "before": "UNKNOWN"
+          },
+          "override_reasons": {
+            "after": [
+              "independent_review_correctness_unknown_or_negative",
+              "required_context_recall_unknown_or_negative",
+              "risk_assessment_unknown_requires_human_gate"
+            ],
+            "before": "UNKNOWN"
+          },
+          "present": {
+            "after": true,
+            "before": "UNKNOWN"
+          },
+          "quality_preserving": {
+            "after": false,
+            "before": "UNKNOWN"
+          },
+          "recommended_max_review_fix_rounds": {
+            "after": 3,
+            "before": "UNKNOWN"
+          },
+          "risk_tier": {
+            "after": "safety_or_live",
+            "before": "UNKNOWN"
+          },
+          "token_observations": {
+            "after": {
+              "cache_read_tokens": 671744,
+              "cache_write_tokens": 0,
+              "output_tokens": 4811,
+              "reasoning_tokens": 1461,
+              "uncached_input_tokens": 62156
+            },
+            "before": "UNKNOWN"
+          }
+        },
+        "sev0-tokenomics-feedback-loop-x": {
+          "outcome": {
+            "after": "failed",
+            "before": null
+          },
+          "token_observations": {
+            "after": {
+              "cache_read_tokens": 4280309,
+              "cache_write_tokens": 119907,
+              "output_tokens": 35652,
+              "reasoning_tokens": null,
+              "uncached_input_tokens": 94
+            },
+            "before": {
+              "cache_read_tokens": null,
+              "cache_write_tokens": null,
+              "output_tokens": null,
+              "reasoning_tokens": null,
+              "uncached_input_tokens": null
+            }
+          }
+        }
+      }
+    },
     "kind": "suppress_identical_sha_rereview",
-    "producer": "quota_core.context_economics.contract_emitter.build_contract (read-only; emitter path cfba4e8)"
+    "producer": "quota_core.context_economics.contract_emitter.build_contract (read-only; emitter path cfba4e8)",
+    "producer_read_path": {
+      "round_inputs_without_a_producer": {
+        "columns": "repeated_unchanged_state / new_evidence_or_progress",
+        "read": "n/a",
+        "via": "declared on QualityEvidence and consumed by the policy, but written by no producer in this repo \u2014 this, not the tasks.verdict read path, is why the consumption link is labelled no_producer"
+      },
+      "task_attribution": {
+        "columns": "outcome and the token columns consumed by read_organic_task_records",
+        "read": true,
+        "via": "contract_emitter.build_contract -> report_producer.read_organic_task_records"
+      },
+      "tasks": {
+        "columns": "task_id, task_type, context, verdict",
+        "read": true,
+        "via": "contract_emitter.build_contract:126-135 -> report_producer._artifact_evidence (report_producer.py:173-188) -> quality_evidence.derive_quality_evidence -> quality_evidence.read_review_verdicts; the verdict of a linked REVIEW row becomes QualityEvidence.independent_review_correct"
+      },
+      "tokenomics_shadow_receipts": {
+        "columns": "canary_* (canary_applied, canary_reason, canary_counterfactual, ...)",
+        "read": false,
+        "via": "nothing \u2014 the substring `canary_` does not occur anywhere in quota_core at this commit, so the canary outcome cannot reach the contract"
+      }
+    }
   },
   "feedback_record": {
     "actual_action": {
-      "canary_evaluations_recorded": 0,
-      "note": "pass 1 runs inside the canary window: the pinned task's own review cascade has not been dispatched yet, so no canary evaluation exists to report.",
-      "open_lineage_tasks": [
-        "sev0-tokenomics-feedback-loop-x"
+      "canary_evaluations_recorded": 1,
+      "note": "cascade terminal; every canary evaluation recorded at dispatch is listed above.",
+      "open_lineage_tasks": [],
+      "reviews_in_lineage": [
+        "review-sev0-tokenomics-feedback-loop-x-r1"
       ],
-      "reviews_in_lineage": [],
-      "state": "PENDING",
-      "suppressed_review_task_ids": "PENDING",
+      "state": "OBSERVED",
+      "suppressed_review_task_ids": [],
       "suppressions_applied": 0
     },
     "authorization_receipt_id": {
-      "canary_receipt_ids": "PENDING",
+      "canary_receipt_ids": [
+        "14bcfb14-d694-4173-8b8c-55f14ea28e6f"
+      ],
       "cea_receipt_id": "7567a365-fec7-418b-8709-9554519b4416",
       "decision": "BLOCK",
       "enforced": false,
@@ -80,20 +345,21 @@
         "QUEUED",
         "CLAIMED",
         "CLAIMED",
-        "RUNNING"
+        "RUNNING",
+        "CONSUMED"
       ]
     },
     "avoided_duplicate_rework": {
-      "duplicate_reviews_avoided": "PENDING",
-      "findings_reused_instead_of_regenerated": "PENDING",
+      "duplicate_reviews_avoided": 0,
+      "findings_reused_instead_of_regenerated": 0,
       "reused_from_task_ids": "PENDING",
-      "state": "PENDING"
+      "state": "OBSERVED"
     },
     "counterfactual_baseline": {
       "baseline_window_reference": "evidence/sev0/tokenomics-matched-evidence.json candidate_canary.cohorts.after_standing_request_changes \u2014 11 organic tasks, 0 approve",
       "counterfactuals": "PENDING",
       "method": "the canary records its own counterfactual at dispatch (tokenomics_shadow_receipts.canary_counterfactual): the review that would have been dispatched on the unchanged sha",
-      "state": "PENDING"
+      "state": "OBSERVED"
     },
     "policy_recommendation": {
       "armed_via": "AGENT_CREW_TOKENOMICS_CANARY_TASK_ID",
@@ -102,7 +368,7 @@
       ],
       "emitted_recommendation_for_pinned_task": {
         "kind_rationale": [],
-        "outcome": null,
+        "outcome": "failed",
         "override_reasons": [
           "task_outcome_not_success",
           "independent_review_correctness_unknown_or_negative",
@@ -115,11 +381,11 @@
         "recommended_max_review_fix_rounds": 3,
         "risk_tier": "safety_or_live",
         "token_observations": {
-          "cache_read_tokens": null,
-          "cache_write_tokens": null,
-          "output_tokens": null,
+          "cache_read_tokens": 4280309,
+          "cache_write_tokens": 119907,
+          "output_tokens": 35652,
           "reasoning_tokens": null,
-          "uncached_input_tokens": null
+          "uncached_input_tokens": 94
         }
       },
       "kind": "suppress_identical_sha_rereview",
@@ -131,28 +397,36 @@
     "provider_capacity_economics": {
       "capacity_failures_in_lineage": [],
       "note": "each applied suppression is one reviewer invocation not spent against the claude weekly limit; the figure is a count of dispatches, not of tokens.",
-      "reviewer_dispatches_avoided": "PENDING",
-      "state": "PENDING"
+      "reviewer_dispatches_avoided": 0,
+      "state": "OBSERVED"
     },
     "quality_result": {
       "caveat": "quality_preserving is contract-side and stays False while independent_review_correct has no producer (see unknown_fields).",
       "lineage_statuses": {
-        "sev0-tokenomics-feedback-loop-x": "in_progress"
+        "fix-review-sev0-tokenomics-feedback-loop-x-r1-r1": "cancelled",
+        "review-sev0-tokenomics-feedback-loop-x-r1": "completed",
+        "sev0-tokenomics-feedback-loop-x": "failed"
       },
-      "lineage_verdicts": {},
+      "lineage_verdicts": {
+        "review-sev0-tokenomics-feedback-loop-x-r1": "request_changes"
+      },
       "quality_preserving_in_contract": {
+        "fix-review-sev0-tokenomics-feedback-loop-x-r1-r1": false,
+        "review-sev0-tokenomics-feedback-loop-x-r1": false,
         "sev0-tokenomics-feedback-loop-x": false
       },
       "reused_verdict_count": 0,
-      "state": "PENDING"
+      "state": "OBSERVED"
     },
     "retry_round_reduction": {
       "caveat": "a suppression removes a review dispatch from the round, it does not lower the contract's recommended_max_review_fix_rounds (no producer for the inputs that would).",
-      "fix_rounds_observed": "PENDING",
+      "fix_rounds_observed": {
+        "1": 1
+      },
       "recommended_max_review_fix_rounds_for_pinned_task": 3,
-      "reduction_measured": "PENDING",
-      "review_round_count": 0,
-      "state": "PENDING"
+      "reduction_measured": 0,
+      "review_round_count": 1,
+      "state": "OBSERVED"
     },
     "rollback_status": {
       "mechanism": "unset AGENT_CREW_TOKENOMICS_CANARY_TASK_ID",
@@ -168,32 +442,42 @@
       "avoided_at_suppression": "PENDING",
       "lineage_review_tasks": {
         "cache_read_tokens": {
-          "known": 0,
-          "n": 0,
-          "sum": "UNKNOWN"
+          "known": 1,
+          "max": 671744,
+          "min": 671744,
+          "n": 1,
+          "sum": 671744
         },
         "cache_write_tokens": {
-          "known": 0,
-          "n": 0,
-          "sum": "UNKNOWN"
+          "known": 1,
+          "max": 0,
+          "min": 0,
+          "n": 1,
+          "sum": 0
         },
         "output_tokens": {
-          "known": 0,
-          "n": 0,
-          "sum": "UNKNOWN"
+          "known": 1,
+          "max": 4811,
+          "min": 4811,
+          "n": 1,
+          "sum": 4811
         },
         "reasoning_tokens": {
-          "known": 0,
-          "n": 0,
-          "sum": "UNKNOWN"
+          "known": 1,
+          "max": 1461,
+          "min": 1461,
+          "n": 1,
+          "sum": 1461
         },
         "uncached_input_tokens": {
-          "known": 0,
-          "n": 0,
-          "sum": "UNKNOWN"
+          "known": 1,
+          "max": 62156,
+          "min": 62156,
+          "n": 1,
+          "sum": 62156
         }
       },
-      "state": "PENDING",
+      "state": "OBSERVED",
       "unit": "tokens (no currency \u2014 quota-core ships no pricing table)"
     },
     "unknown_fields": [
@@ -207,13 +491,13 @@
         "consequence": "the canary outcome is joinable by task_id for a human reader, but is not an input to the emitted contract",
         "field": "tokenomics_shadow_receipts.canary_*",
         "where": "agent_crew tasks.db",
-        "why": "quota-core reads task_attribution only; it never reads the canary columns"
+        "why": "the emitter's read path is task_attribution (token/outcome columns) plus tasks(task_id, task_type, context, verdict) via quality evidence; `canary_` appears nowhere in quota_core at this commit"
       },
       {
-        "consequence": "quality_preserving stays False for the lineage regardless of verdict",
-        "field": "independent_review_correct",
-        "where": "decision.evidence.independent_review_correct",
-        "why": "tasks.verdict is measured by agent_crew but is not on quota-core's read path"
+        "consequence": "quality_preserving stays False for the lineage even on tasks whose independent_review_correct was derived from a real verdict; the override_reasons say required_context_recall_unknown_or_negative",
+        "field": "required_context_recalled",
+        "where": "decision.evidence.required_context_recalled \u2014 the policy quality gate's other required input",
+        "why": "no producer records whether the context a task needed was present; quality_evidence.derive_quality_evidence names this as the single missing producer signal. tasks.verdict, by contrast, IS read (see producer_read_path)"
       },
       {
         "consequence": "avoided_duplicate_rework is counted in tasks and in the standing review's own token rows, never as a contract-side waste figure",
@@ -230,31 +514,53 @@
     ]
   },
   "lineage": {
-    "canary_receipts_resolved": 0,
-    "open_tasks": [
-      "sev0-tokenomics-feedback-loop-x"
+    "canary_receipts_resolved": 1,
+    "open_tasks": [],
+    "reviews": [
+      "review-sev0-tokenomics-feedback-loop-x-r1"
     ],
-    "reviews": [],
     "rows": [
       {
         "created_at": 1790205958.9478633,
-        "error_reason": null,
+        "error_reason": "no_artifact",
         "fix_round": null,
         "reviewed_sha": null,
-        "status": "in_progress",
+        "status": "failed",
         "task_id": "sev0-tokenomics-feedback-loop-x",
+        "task_type": "implement",
+        "verdict": null
+      },
+      {
+        "created_at": 1790206395.0984163,
+        "error_reason": null,
+        "fix_round": null,
+        "reviewed_sha": "886dda3b0a905a866c42663cbcdd6827d556d5bd",
+        "status": "completed",
+        "task_id": "review-sev0-tokenomics-feedback-loop-x-r1",
+        "task_type": "review",
+        "verdict": "request_changes"
+      },
+      {
+        "created_at": 1790206519.8103209,
+        "error_reason": null,
+        "fix_round": 1,
+        "reviewed_sha": null,
+        "status": "cancelled",
+        "task_id": "fix-review-sev0-tokenomics-feedback-loop-x-r1-r1",
         "task_type": "implement",
         "verdict": null
       }
     ],
     "task_ids": [
-      "sev0-tokenomics-feedback-loop-x"
+      "sev0-tokenomics-feedback-loop-x",
+      "review-sev0-tokenomics-feedback-loop-x-r1",
+      "fix-review-sev0-tokenomics-feedback-loop-x-r1-r1"
     ]
   },
   "mode": "evidence_only_no_enforcement",
-  "pass": 1,
+  "pass": 2,
   "pinned_task_id": "sev0-tokenomics-feedback-loop-x",
-  "produced_at": "2026-09-23T23:31:47+00:00",
+  "produced_at": "2026-09-23T23:37:46+00:00",
   "provenance": {
     "canary_implementation": "agent_crew 3be7afc src/agent_crew/tokenomics_canary.py",
     "gate": "canary executed 2026-09-23T23:25:37Z; :8105 restarted onto agent_crew fd4f4cb with AGENT_CREW_TOKENOMICS_CANARY_TASK_ID=sev0-tokenomics-feedback-loop-x",
@@ -265,17 +571,17 @@
       "verified_at": "2026-09-23T23:31Z"
     },
     "policy_contract_sha256": "e325a5412e32fc22901731bd5a24d92d4ac47afc699c5357dfd6e8f246e14218",
-    "producer_commit": "869a3cf76a3306d94f44c700f2afbda741c32825",
+    "producer_commit": "513d7cbdaa736c2c3fa64ba235802d69860485fc",
     "publishes": [],
     "sources": [
       {
         "access": "sqlite mode=ro",
         "path_basename": "tasks.db",
         "row_counts": {
-          "authorization_receipts": 101,
-          "task_attribution": 626,
-          "tasks": 657,
-          "tokenomics_shadow_receipts": 202
+          "authorization_receipts": 118,
+          "task_attribution": 629,
+          "tasks": 660,
+          "tokenomics_shadow_receipts": 205
         }
       }
     ],

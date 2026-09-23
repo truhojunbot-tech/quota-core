@@ -71,6 +71,39 @@ KIND_RATIONALE = (
 #: in this repo at the commit below, which is why the link is not mechanical.
 KIND_INPUT_FIELDS = ("repeated_unchanged_state", "new_evidence_or_progress")
 
+#: What the emitter actually reads out of an agent_crew tasks.db, established by
+#: following the call path rather than by assumption.  Recorded because the
+#: earlier wording of this artifact claimed the read path was ``task_attribution``
+#: only, which is false: the quality-evidence branch reads ``tasks.verdict``.
+PRODUCER_READ_PATH = {
+    "task_attribution": {
+        "read": True,
+        "columns": "outcome and the token columns consumed by read_organic_task_records",
+        "via": "contract_emitter.build_contract -> report_producer.read_organic_task_records",
+    },
+    "tasks": {
+        "read": True,
+        "columns": "task_id, task_type, context, verdict",
+        "via": "contract_emitter.build_contract:126-135 -> report_producer._artifact_evidence "
+               "(report_producer.py:173-188) -> quality_evidence.derive_quality_evidence -> "
+               "quality_evidence.read_review_verdicts; the verdict of a linked REVIEW row becomes "
+               "QualityEvidence.independent_review_correct",
+    },
+    "tokenomics_shadow_receipts": {
+        "read": False,
+        "columns": "canary_* (canary_applied, canary_reason, canary_counterfactual, ...)",
+        "via": "nothing — the substring `canary_` does not occur anywhere in quota_core at this "
+               "commit, so the canary outcome cannot reach the contract",
+    },
+    "round_inputs_without_a_producer": {
+        "read": "n/a",
+        "columns": " / ".join(KIND_INPUT_FIELDS),
+        "via": "declared on QualityEvidence and consumed by the policy, but written by no "
+               "producer in this repo — this, not the tasks.verdict read path, is why the "
+               "consumption link is labelled no_producer",
+    },
+}
+
 CAPACITY_REASONS = ("agy_quota_exhausted", "transient_claude_429_max_retries")
 SUPPRESSED_REASON = "tokenomics_canary_suppressed_identical_sha_rereview"
 
@@ -275,13 +308,20 @@ def build(pinned: str, db_path: str, previous: dict | None) -> dict:
                         "recommendation; the link is reported as no_producer, not as closed"},
         {"field": "tokenomics_shadow_receipts.canary_*",
          "where": "agent_crew tasks.db",
-         "why": "quota-core reads task_attribution only; it never reads the canary columns",
+         "why": "the emitter's read path is task_attribution (token/outcome columns) plus "
+                "tasks(task_id, task_type, context, verdict) via quality evidence; "
+                "`canary_` appears nowhere in quota_core at this commit",
          "consequence": "the canary outcome is joinable by task_id for a human reader, "
                         "but is not an input to the emitted contract"},
-        {"field": "independent_review_correct",
-         "where": "decision.evidence.independent_review_correct",
-         "why": "tasks.verdict is measured by agent_crew but is not on quota-core's read path",
-         "consequence": "quality_preserving stays False for the lineage regardless of verdict"},
+        {"field": "required_context_recalled",
+         "where": "decision.evidence.required_context_recalled — the policy quality gate's "
+                  "other required input",
+         "why": "no producer records whether the context a task needed was present; "
+                "quality_evidence.derive_quality_evidence names this as the single missing "
+                "producer signal. tasks.verdict, by contrast, IS read (see producer_read_path)",
+         "consequence": "quality_preserving stays False for the lineage even on tasks whose "
+                        "independent_review_correct was derived from a real verdict; the "
+                        "override_reasons say required_context_recall_unknown_or_negative"},
         {"field": "orchestration_waste.duplicate_tokens",
          "where": "decision.orchestration_waste",
          "why": "no producer attributes tokens to a waste class",
@@ -412,6 +452,7 @@ def build(pinned: str, db_path: str, previous: dict | None) -> dict:
     before = (previous or {}).get("decision_record", {}).get("before")
     decision_record = {
         "kind": KIND,
+        "producer_read_path": PRODUCER_READ_PATH,
         "producer": "quota_core.context_economics.contract_emitter.build_contract (read-only; "
                     "emitter path cfba4e8)",
         "before": before or projection,
@@ -430,10 +471,17 @@ def build(pinned: str, db_path: str, previous: dict | None) -> dict:
                   "canary_applied": row["canary_applied"], "canary_reason": row["canary_reason"],
                   "canary_resolved_at": row["canary_resolved_at"]} for row in canary],
              "mechanical_link": "no_producer",
-             "explanation": "any change in the diff comes from rows the producer DOES read "
-                            "(task_attribution outcome/token columns, new lineage tasks entering "
-                            "the contract), never from the canary columns; "
-                            "see unknown_fields[0]."}),
+             "explanation": "no_producer is a claim about the ROUND INPUTS only: "
+                            "repeated_unchanged_state / new_evidence_or_progress are the sole "
+                            "QualityEvidence fields that move recommended_max_review_fix_rounds "
+                            "and nothing writes them. It is NOT a claim that the emitter reads "
+                            "task_attribution alone — it also reads tasks.verdict through "
+                            "derive_quality_evidence (producer_read_path below). So any change in "
+                            "the diff comes from rows the producer does read — task_attribution "
+                            "outcome/token columns, tasks.verdict via quality evidence, and new "
+                            "lineage tasks entering the contract — and never from the canary "
+                            "columns, which quota_core does not read at all; "
+                            "see unknown_fields[0] and unknown_fields[1]."}),
     }
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -530,6 +578,15 @@ def to_markdown(payload: dict) -> str:
     ]
     for item in record["unknown_fields"]:
         lines.append(f"| `{item['field']}` | {item['why']} | {item['consequence']} |")
+    lines += [
+        "",
+        "## What the emitter actually reads",
+        "",
+        "| source | read? | columns | via |",
+        "| --- | --- | --- | --- |",
+    ]
+    for source, item in decision["producer_read_path"].items():
+        lines.append(f"| `{source}` | {item['read']} | {item['columns']} | {item['via']} |")
     lines += [
         "",
         f"## Decision record for kind `{KIND}`",
