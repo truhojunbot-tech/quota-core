@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added an atomic emitter that writes the existing organic shadow policy
+  report in the shape its contract consumer reads (top-level
+  `contract_version`/`mode` plus a `decisions` list matched by `task_id`),
+  via `python -m quota_core.context_economics.contract_emitter` or
+  `report_producer --contract-out`. The write is tmp-file + `os.replace`, so
+  a polling reader never sees a partial artifact, and an additive top-level
+  `provenance` block records the cited policy contract, producer commit,
+  emission time, per-source row hash/count/watermark and decision count.
+  Policy, metrics and recommend-only shadow semantics are unchanged, and no
+  live contract path is written by the emitter itself.
+
 - Corrected #80 acceptance D3 and V1 evidence scope: D3 now derives declared
   low-scrutiny cohorts from trusted risk facts, and V1 checks undeclared rows
   across the full report rather than only the post-cutoff population.
