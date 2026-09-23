@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from .policy import POLICY_CONTRACT_VERSION, policy_contract_schema
-from .quality_evidence import derive_quality_evidence, ingest_attribution_quality_evidence
+from .quality_evidence import (
+    derive_progress_evidence, derive_quality_evidence, ingest_attribution_quality_evidence,
+)
 from dataclasses import replace
 from .schema import TaskEconomicsRecord, parse_flexible_timestamp
 from .shadow_report import shadow_comparison_report
@@ -193,6 +195,21 @@ def _artifact_evidence(
                 recall_not_applicable=incoming.evidence.recall_not_applicable,
             ),
             {**current.provenance, **incoming.provenance},
+        )
+    # Progress / unchanged-state from the review lineage the producer recorded.
+    for task_id, progress in derive_progress_evidence(db_path, task_ids).items():
+        current = derived.get(task_id)
+        if current is None:
+            derived[task_id] = progress
+            continue
+        derived[task_id] = type(current)(
+            task_id,
+            replace(
+                current.evidence,
+                new_evidence_or_progress=progress.evidence.new_evidence_or_progress,
+                repeated_unchanged_state=progress.evidence.repeated_unchanged_state,
+            ),
+            {**current.provenance, **progress.provenance},
         )
     return (
         {task_id: item.evidence for task_id, item in derived.items()},
