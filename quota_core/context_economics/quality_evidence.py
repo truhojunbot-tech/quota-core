@@ -254,9 +254,20 @@ def derive_progress_evidence(
 
     A lineage is every row reached through recorded ``prev_task_id`` links
     (``fix-<review>-rN`` -> review -> ... -> implement), walked at most 10 deep
-    and cycle-safe. Same ``reviewed_sha`` with a standing ``request_changes`` is
-    the predicate agent_crew's ``tokenomics_canary.evaluate_review_dispatch``
-    suppresses on, so both sides agree. Anything short of that evidence stays
+    and cycle-safe. Unchanged-state means the last two verdict-bearing reviews
+    of the lineage carry the same ``reviewed_sha`` (both with parsable
+    findings) under a standing ``request_changes``; progress needs a moved
+    ``reviewed_sha`` plus a verdict or findings change.
+
+    This is NOT agent_crew's ``tokenomics_canary.evaluate_review_dispatch``
+    predicate. Only the full-object-id validator for ``reviewed_sha`` (40 or 64
+    hex chars, case-insensitive) is shared. This side is lineage-scoped (via
+    ``prev_task_id``) and findings-sensitive; the canary is scoped to the
+    incoming review's PR/branch and does not parse findings. The two can
+    diverge in both directions: this may mark unchanged where the canary would
+    not suppress, and vice versa. A differential test is a follow-up.
+
+    Anything short of the evidence above stays
     ``None`` with a ``progress_not_determinable:<why>`` provenance -- never False.
     Tasks in no lineage with a verdicted review are omitted (nothing to say).
     """
