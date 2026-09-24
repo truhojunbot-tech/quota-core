@@ -225,7 +225,11 @@ def derive_quality_evidence(
     return derived
 
 
-_REVIEWED_SHA = re.compile(r"^[0-9a-f]{7,40}$")
+# Same full-object-id validator as agent_crew ``tokenomics_canary._OBJECT_ID_RE``:
+# a 40 (SHA-1) or 64 (SHA-256) hex object id, case-insensitive. Abbreviated
+# hashes are rejected so a lineage is never marked unchanged on an id the
+# dispatcher's suppression would not accept; comparison uses the lowercase form.
+_REVIEWED_SHA = re.compile(r"\A[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\Z")
 PROGRESS_NOT_DETERMINABLE = "progress_not_determinable"
 
 
@@ -307,7 +311,7 @@ def derive_progress_evidence(
                 except (TypeError, ValueError):
                     ctx = {}
                 sha = ctx.get("reviewed_sha") if isinstance(ctx, dict) else None
-                shas.append(sha if isinstance(sha, str) and _REVIEWED_SHA.fullmatch(sha) else None)
+                shas.append(sha.lower() if isinstance(sha, str) and _REVIEWED_SHA.fullmatch(sha) else None)
             before, after = _findings_set(prev["findings"]), _findings_set(last["findings"])
             verdicts = [prev["verdict"].strip().lower(), last["verdict"].strip().lower()]
             if None in shas:

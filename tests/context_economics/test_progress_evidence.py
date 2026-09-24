@@ -12,7 +12,7 @@ from quota_core.context_economics import emit_contract, recommend_task_policy
 from quota_core.context_economics.quality_evidence import derive_progress_evidence
 from quota_core.context_economics.report_producer import _artifact_evidence, read_organic_task_records
 
-SHA_A, SHA_B = "a" * 40, "b1c2d3e"
+SHA_A, SHA_B = "a" * 40, "b1c2d3e" + "0" * 33
 
 
 def _review(task_id, prev, sha, verdict, findings, created_at):
@@ -114,6 +114,26 @@ class ProgressEvidenceTests(unittest.TestCase):
         self.assertIsNone(item.evidence.repeated_unchanged_state)
         self.assertEqual(item.provenance["repeated_unchanged_state"],
                          "progress_not_determinable:standing_verdict_is_approve")
+
+    def test_reviewed_sha_uses_the_canary_full_object_id_validator(self) -> None:
+        def pair(first, second):
+            return [_review("rev1", "impl", first, "request_changes", ["x"], 2), UNCHANGED[1],
+                    _review("rev2", "fix-rev1-r1", second, "request_changes", ["x"], 4)]
+
+        abbreviated = self.derive(pair("b1c2d3e", "b1c2d3e"))["impl"]
+        self.assertIsNone(abbreviated.evidence.repeated_unchanged_state)
+        self.assertEqual(abbreviated.provenance["repeated_unchanged_state"],
+                         "progress_not_determinable:reviewed_sha_missing")
+        for sha in ("ABCDEF0123" * 4, "c" * 64):
+            with self.subTest(length=len(sha)):
+                item = self.derive(pair(sha, sha.lower()))["impl"]
+                self.assertIs(item.evidence.repeated_unchanged_state, True)
+                self.assertEqual(item.provenance["repeated_unchanged_state"],
+                                 f"review_sha_unchanged:{sha.lower()}:rev2")
+        for bad in ("c" * 41, "g" * 40, "c" * 63):
+            with self.subTest(bad=bad):
+                item = self.derive(pair(bad, bad))["impl"]
+                self.assertIsNone(item.evidence.repeated_unchanged_state)
 
     def test_prev_task_id_cycle_terminates_without_evidence(self) -> None:
         rows = [
