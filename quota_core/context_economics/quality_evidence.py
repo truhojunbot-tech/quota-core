@@ -225,6 +225,129 @@ def derive_quality_evidence(
     return derived
 
 
+# Same full-object-id validator as agent_crew ``tokenomics_canary._OBJECT_ID_RE``:
+# a 40 (SHA-1) or 64 (SHA-256) hex object id, case-insensitive. Abbreviated
+# hashes are rejected so a lineage is never marked unchanged on an id the
+# dispatcher's suppression would not accept; comparison uses the lowercase form.
+_REVIEWED_SHA = re.compile(r"\A[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\Z")
+PROGRESS_NOT_DETERMINABLE = "progress_not_determinable"
+
+
+def _findings_set(raw: object) -> frozenset[str] | None:
+    """Normalized findings, or ``None`` when the recorded value is unparsable."""
+    try:
+        items = json.loads(raw) if isinstance(raw, (str, bytes)) and raw else (raw or [])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(items, list):
+        return None
+    return frozenset(
+        " ".join(item.split()).lower() if isinstance(item, str) else json.dumps(item, sort_keys=True)
+        for item in items
+    )
+
+
+def derive_progress_evidence(
+    db_path: str | Path, task_ids: list[str], table: str = "tasks",
+) -> dict[str, TaskEvidence]:
+    """Derive progress / unchanged-state from a lineage's last two reviews, read-only.
+
+    A lineage is every row reached through recorded ``prev_task_id`` links
+    (``fix-<review>-rN`` -> review -> ... -> implement), walked at most 10 deep
+    and cycle-safe. Unchanged-state means the last two verdict-bearing reviews
+    of the lineage carry the same ``reviewed_sha`` (both with parsable
+    findings) under a standing ``request_changes``; progress needs a moved
+    ``reviewed_sha`` plus a verdict or findings change.
+
+    This is NOT agent_crew's ``tokenomics_canary.evaluate_review_dispatch``
+    predicate. Only the full-object-id validator for ``reviewed_sha`` (40 or 64
+    hex chars, case-insensitive) is shared. This side is lineage-scoped (via
+    ``prev_task_id``) and findings-sensitive; the canary is scoped to the
+    incoming review's PR/branch and does not parse findings. The two can
+    diverge in both directions: this may mark unchanged where the canary would
+    not suppress, and vice versa. A differential test is a follow-up.
+
+    Anything short of the evidence above stays
+    ``None`` with a ``progress_not_determinable:<why>`` provenance -- never False.
+    Tasks in no lineage with a verdicted review are omitted (nothing to say).
+    """
+    conn = _connect_readonly(db_path)
+    if conn is None or not _SAFE_IDENTIFIER.fullmatch(table):
+        if conn is not None: conn.close()
+        return {}
+    try:
+        conn.row_factory = sqlite3.Row
+        columns = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        if not {"task_id", "task_type", "context", "verdict", "findings"} <= columns:
+            return {}
+        order = "created_at, task_id" if "created_at" in columns else "task_id"
+        rows = conn.execute(f'SELECT task_id, task_type, context, verdict, findings FROM "{table}" ORDER BY {order}').fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+    parent = {str(row["task_id"]): _linked_target(row["context"]) for row in rows}
+
+    def root_of(task_id: str) -> str | None:
+        seen, node = {task_id}, task_id
+        for _ in range(10):
+            link = parent.get(node)
+            if not link:
+                return node
+            if link in seen:
+                return None  # a cycle has no honest root
+            seen.add(link)
+            node = link
+        return None if parent.get(node) else node
+
+    roots = {task_id: root_of(task_id) for task_id in parent}
+    reviews: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        kind, verdict, root = row["task_type"], row["verdict"], roots.get(str(row["task_id"]))
+        if (root and isinstance(kind, str) and kind.strip().lower() in REVIEW_TASK_TYPES
+                and isinstance(verdict, str) and verdict.strip()):
+            reviews.setdefault(root, []).append(row)
+
+    wanted, result = set(task_ids), {}
+    for root, history in reviews.items():
+        new = unchanged = None
+        if len(history) < 2:
+            why = f"{PROGRESS_NOT_DETERMINABLE}:fewer_than_two_verdicted_reviews"
+        else:
+            (prev, last), shas = history[-2:], []
+            for row in history[-2:]:
+                try:
+                    ctx = json.loads(row["context"] or "{}")
+                except (TypeError, ValueError):
+                    ctx = {}
+                sha = ctx.get("reviewed_sha") if isinstance(ctx, dict) else None
+                shas.append(sha.lower() if isinstance(sha, str) and _REVIEWED_SHA.fullmatch(sha) else None)
+            before, after = _findings_set(prev["findings"]), _findings_set(last["findings"])
+            verdicts = [prev["verdict"].strip().lower(), last["verdict"].strip().lower()]
+            if None in shas:
+                why = f"{PROGRESS_NOT_DETERMINABLE}:reviewed_sha_missing"
+            elif before is None or after is None:
+                why = f"{PROGRESS_NOT_DETERMINABLE}:findings_unparsable"
+            elif shas[0] == shas[1]:
+                if verdicts[1] == "request_changes":
+                    unchanged, why = True, f"review_sha_unchanged:{shas[1]}:{last['task_id']}"
+                else:
+                    why = f"{PROGRESS_NOT_DETERMINABLE}:standing_verdict_is_{verdicts[1]}"
+            elif verdicts[0] != verdicts[1] or before != after:
+                new, why = True, f"review_sha_moved:{shas[0]}->{shas[1]}:findings_delta={len(before ^ after)}"
+            else:
+                why = f"{PROGRESS_NOT_DETERMINABLE}:sha_moved_without_verdict_or_findings_change"
+        lineage = {t for t, r in roots.items() if r == root} | {root}
+        for task_id in sorted(lineage & wanted):
+            result[task_id] = TaskEvidence(
+                task_id,
+                QualityEvidence(new_evidence_or_progress=new, repeated_unchanged_state=unchanged),
+                {"new_evidence_or_progress": why, "repeated_unchanged_state": why},
+            )
+    return result
+
+
 def evidence_map(derived: dict[str, TaskEvidence]) -> dict[str, QualityEvidence]:
     """Reduce to the ``{task_id: QualityEvidence}`` the policy engine takes."""
     return {task_id: item.evidence for task_id, item in derived.items()}

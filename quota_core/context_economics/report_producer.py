@@ -12,6 +12,10 @@ import argparse
 import hashlib
 import json
 import logging
+import os
+import subprocess
+import tempfile
+from datetime import datetime, timezone
 import re
 import sqlite3
 from dataclasses import asdict, dataclass
@@ -19,7 +23,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from .policy import POLICY_CONTRACT_VERSION, policy_contract_schema
-from .quality_evidence import derive_quality_evidence, ingest_attribution_quality_evidence
+from .quality_evidence import derive_progress_evidence, derive_quality_evidence, ingest_attribution_quality_evidence
 from dataclasses import replace
 from .schema import TaskEconomicsRecord, parse_flexible_timestamp
 from .shadow_report import shadow_comparison_report
@@ -194,6 +198,20 @@ def _artifact_evidence(
             ),
             {**current.provenance, **incoming.provenance},
         )
+    for task_id, progress in derive_progress_evidence(db_path, task_ids).items():
+        current = derived.get(task_id)
+        if current is None:
+            derived[task_id] = progress
+            continue
+        derived[task_id] = type(current)(
+            task_id,
+            replace(
+                current.evidence,
+                new_evidence_or_progress=progress.evidence.new_evidence_or_progress,
+                repeated_unchanged_state=progress.evidence.repeated_unchanged_state,
+            ),
+            {**current.provenance, **progress.provenance},
+        )
     return (
         {task_id: item.evidence for task_id, item in derived.items()},
         {task_id: item.provenance for task_id, item in derived.items()},
@@ -256,11 +274,11 @@ def _is_new_since_watermark(
     return item.created_at >= watermark
 
 
-def produce_shadow_report(
+def _produce_shadow_report(
     db_paths: Iterable[str | Path],
     existing_report: Mapping[str, object] | None = None,
     table: str = "task_attribution",
-) -> dict[str, object]:
+) -> tuple[dict[str, object], dict[str, _SourcedRecord]]:
     """Build an idempotent rolling, recommendation-only report keyed by ID.
 
     The producer upserts new records, records at the prior watermark or later,
@@ -329,7 +347,107 @@ def produce_shadow_report(
             "null_created_at_rechecked": True,
         },
         "decisions": {task_id: decisions[task_id] for task_id in sorted(decisions)},
+    }, records
+
+
+def produce_shadow_report(
+    db_paths: Iterable[str | Path],
+    existing_report: Mapping[str, object] | None = None,
+    table: str = "task_attribution",
+) -> dict[str, object]:
+    """Preserve the public rolling-report API and its keyed decision shape."""
+    return _produce_shadow_report(db_paths, existing_report, table)[0]
+
+
+def _canonical_sha256(payload: object) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def producer_commit() -> str | None:
+    override = (os.getenv("QUOTA_CORE_PRODUCER_COMMIT") or "").strip()
+    if override:
+        return override
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit if result.returncode == 0 and commit else None
+
+
+def _source_provenance(
+    records: Mapping[str, _SourcedRecord], db_paths: Iterable[str | Path]
+) -> list[dict[str, object]]:
+    by_source: dict[str, list[tuple[str, _SourcedRecord]]] = {}
+    for task_id in sorted(records):
+        item = records[task_id]
+        by_source.setdefault(item.source_key, []).append((task_id, item))
+    entries = []
+    for source in sorted({str(Path(path).expanduser()) for path in db_paths}):
+        contributed = by_source.get(source, [])
+        rows = [{"task_id": task_id, "created_at": item.created_at,
+                 "record": asdict(item.record)} for task_id, item in contributed]
+        known_times = [item.created_at for _, item in contributed if item.created_at is not None]
+        entries.append({
+            "path_basename": Path(source).name,
+            "sha256_of_rows_or_rowcount": _canonical_sha256(rows),
+            "row_count": len(rows),
+            "watermark": max(known_times) if known_times else None,
+        })
+    return entries
+
+
+def build_contract(
+    report: Mapping[str, object], records: Mapping[str, _SourcedRecord],
+    db_paths: Iterable[str | Path], produced_at: str | None = None,
+) -> dict[str, object]:
+    """Serialize policy decisions already computed by the rolling producer."""
+    artifacts = report["decisions"]
+    if not isinstance(artifacts, Mapping):
+        raise ValueError("rolling report decisions must be keyed by task ID")
+    decisions = []
+    for task_id in sorted(records):
+        artifact = artifacts.get(task_id)
+        if not isinstance(artifact, Mapping) or not isinstance(artifact.get("policy_decision"), Mapping):
+            raise ValueError(f"missing policy decision for {task_id}")
+        decisions.append(artifact["policy_decision"])
+    contract = {"contract_version": POLICY_CONTRACT_VERSION, "mode": "shadow",
+                "decision_count": len(decisions), "decisions": decisions}
+    contract["provenance"] = {
+        "report_contract_id": REPORT_CONTRACT_ID,
+        "policy_contract": {"id": policy_contract_schema()["$id"],
+                            "sha256": policy_contract_sha256()},
+        "producer_commit": producer_commit(),
+        "produced_at": produced_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "source_dbs": _source_provenance(records, db_paths),
+        "decision_count": len(decisions),
     }
+    return contract
+
+
+def write_contract_atomically(path: str | Path, contract: Mapping[str, object]) -> str:
+    destination = Path(path).expanduser()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(contract, indent=2, sort_keys=True) + "\n"
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=destination.parent,
+        prefix=f".{destination.name}.", suffix=".tmp", delete=False,
+    )
+    temp_path = Path(handle.name)
+    try:
+        with handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, destination)
+    except BaseException:
+        temp_path.unlink(missing_ok=True)
+        raise
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def decision_for(report: Mapping[str, object], task_id: str) -> dict[str, object]:
@@ -374,15 +492,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--db-list", help="JSON list of SQLite attribution DB paths")
     parser.add_argument("--table", default="task_attribution")
     parser.add_argument("--out", required=True, help="report JSON; prior output is the rolling state")
+    parser.add_argument("--contract-out", help="also write the reader-compatible list contract")
     parser.add_argument("--lookup-task", help="also print a COVERED/NOT_COVERED lookup result")
     args = parser.parse_args(argv)
     db_paths = _db_paths_from_args(args.db, args.db_list)
     if not db_paths:
         parser.error("at least one --db or --db-list entry is required")
     out = Path(args.out)
-    report = produce_shadow_report(db_paths, _load_existing(out), args.table)
+    if args.contract_out and Path(args.contract_out).resolve() == out.resolve():
+        parser.error("--contract-out must differ from --out")
+    report, records = _produce_shadow_report(db_paths, _load_existing(out), args.table)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if args.contract_out:
+        contract = build_contract(report, records, db_paths)
+        contract_sha = write_contract_atomically(args.contract_out, contract)
+        print(json.dumps({"contract_out": str(args.contract_out),
+                          "contract_sha256": contract_sha}, sort_keys=True))
     if args.lookup_task:
         print(json.dumps(decision_for(report, args.lookup_task), sort_keys=True))
     return 0

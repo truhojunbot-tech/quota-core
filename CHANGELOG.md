@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a reader-compatible list contract output to the organic shadow-report
+  producer. Both outputs use the same policy decisions, and review-lineage
+  evidence now distinguishes progress from repeated unchanged state.
+
 - Corrected #80 acceptance D3 and V1 evidence scope: D3 now derives declared
   low-scrutiny cohorts from trusted risk facts, and V1 checks undeclared rows
   across the full report rather than only the post-cutoff population.
