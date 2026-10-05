@@ -23,6 +23,8 @@ def differences(expected, actual, path=""):
         result = []
         for key in sorted(set(expected) | set(actual)):
             child = f"{path}.{key}" if path else key
+            if child in ALLOWED_PATHS:
+                continue
             if key not in expected or key not in actual:
                 result.append((child, expected.get(key, "<missing>"), actual.get(key, "<missing>")))
             else:

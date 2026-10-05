@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a top-level UTC `produced_at` to the reader-compatible #80 list
+  contract, identical to `provenance.produced_at`. Contract equivalence permits
+  this clock field to be absent from older published artifacts.
+
 - Added a reader-compatible list contract output to the organic shadow-report
   producer. Both outputs use the same policy decisions, and review-lineage
   evidence now distinguishes progress from repeated unchanged state.

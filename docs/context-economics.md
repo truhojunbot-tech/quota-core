@@ -705,8 +705,11 @@ python -m quota_core.context_economics.report_producer \
   --out /path/to/organic-shadow-report.json
 ```
 
-The module opens every source SQLite database using `mode=ro`; `--out` is the
-only file it writes. Re-running with the same `--out` is a rolling upsert: the
+The module opens every source SQLite database using `mode=ro`; it writes only
+the paths explicitly passed as `--out` and optional `--contract-out`.
+The optional reader-compatible list contract has top-level `produced_at` in
+UTC ISO 8601, identical to `provenance.produced_at`; older published contracts
+may omit the top-level copy. Re-running with the same `--out` is a rolling upsert: the
 `decisions` object is keyed by `task_id`, the `watermark.created_at` boundary
 is inclusive for tied timestamps, and NULL timestamps are deliberately
 rechecked rather than silently skipped. `--db-list paths.json` accepts a JSON

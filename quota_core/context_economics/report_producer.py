@@ -417,15 +417,17 @@ def build_contract(
         decisions.append(artifact["policy_decision"])
     contract = {"contract_version": POLICY_CONTRACT_VERSION, "mode": "shadow",
                 "decision_count": len(decisions), "decisions": decisions}
+    timestamp = produced_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
     contract["provenance"] = {
         "report_contract_id": REPORT_CONTRACT_ID,
         "policy_contract": {"id": policy_contract_schema()["$id"],
                             "sha256": policy_contract_sha256()},
         "producer_commit": producer_commit(),
-        "produced_at": produced_at or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "produced_at": timestamp,
         "source_dbs": _source_provenance(records, db_paths),
         "decision_count": len(decisions),
     }
+    contract["produced_at"] = timestamp
     return contract
 
 
