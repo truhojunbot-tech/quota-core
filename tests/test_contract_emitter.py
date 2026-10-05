@@ -60,6 +60,24 @@ class ContractOutputTests(unittest.TestCase):
             contract = build_contract(report, records, [self.db])
         self.assertEqual(contract["decision_count"], len(self.rows))
 
+    def test_top_level_produced_at_matches_provenance_and_reader_shape(self):
+        report, records = _produce_shadow_report([self.db])
+        timestamp = "2026-10-01T12:34:56+00:00"
+        contract = build_contract(report, records, [self.db], produced_at=timestamp)
+        self.assertEqual(contract["produced_at"], timestamp)
+        self.assertEqual(contract["produced_at"], contract["provenance"]["produced_at"])
+        contract_path = self.root / "contract.json"
+        write_contract_atomically(contract_path, contract)
+        contract = json.loads(contract_path.read_text())
+        # The consumer accepts extra top-level keys and resolves by task ID.
+        self.assertEqual(contract["contract_version"], "1.0")
+        self.assertEqual(contract["mode"], "shadow")
+        decision = next(
+            item for item in contract["decisions"]
+            if isinstance(item, dict) and item.get("task_id") == self.rows[0]["task_id"]
+        )
+        self.assertEqual(decision["task_id"], self.rows[0]["task_id"])
+
     def test_atomic_write_keeps_previous_contract_on_failure(self):
         path = self.root / "contract.json"
         write_contract_atomically(path, {"decisions": []})
