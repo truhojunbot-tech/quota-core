@@ -5,6 +5,8 @@
 - Added read-only #74 review-cascade validity correlation from durable task
   context: stale/misrouted review and child work stays visible as orchestration
   waste, separate from pure context-policy cohorts; missing signals stay unknown.
+  A prior review's result commit is not treated as an implementer's pushed
+  commit, and unknown reviews retain their recorded policy cohort.
 
 - Corrected #72 clearing correlation for events carrying a pre-clear context
   identity. Fresh, same-provider successor joins require an advanced generation

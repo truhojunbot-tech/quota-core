@@ -484,7 +484,10 @@ usage remain in `compare_context_policies` under `+orchestration_stale` or
 Each cohort reports validity counts and known waste tokens under
 `orchestration`; `orchestration_cascade_summary` gives a deduplicated total by
 task ID. Older rows without producer signals stay unknown. Post-deployment
-organic verification remains the separate #74 acceptance item 8.
+organic verification remains the separate #74 acceptance item 8. Unknown rows
+retain their recorded context-policy cohort, while validity counts disclose
+their sample size. The result-ref mismatch rule applies only to an implement
+parent; a later review round may legitimately target a newer commit.
 
 ## Context Pack economics (`context_pack_analytics.py`, quota-core#62)
 

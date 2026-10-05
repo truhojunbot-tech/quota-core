@@ -56,11 +56,19 @@ def test_production_shaped_cascade_signals_are_not_context_policy_samples(tmp_pa
                             context_policy="fresh")], signals)
     assert test_row.orchestration_validity == "misrouted"
     assert context_policy_cohort(test_row) != "fresh"
+    round_review, round_fix = attach_task_cascade_validity([
+        TaskEconomicsRecord(task_id="review-harvest-499-r1", runtime="cli", task_type="review", context_policy="resume"),
+        TaskEconomicsRecord(task_id="fix-review-harvest-499-r1-r1", runtime="cli", task_type="implement", context_policy="resume"),
+    ], signals)
+    assert round_review.orchestration_validity == "unknown"
+    assert round_fix.orchestration_validity == "unknown"
+    assert context_policy_cohort(round_review) == "resume"
+    assert orchestration_cascade_summary([round_review, round_fix])["waste_task_count"] == 0
 
 
 def test_missing_signal_is_unknown_not_valid():
     record = TaskEconomicsRecord(task_id="old-review", runtime="cli", task_type="review", context_policy="fresh")
     [out] = attach_task_cascade_validity([record], {})
     assert out.orchestration_validity == "unknown"
-    assert not out.orchestration_evidence_present
+    assert context_policy_cohort(out) == "fresh"
     assert orchestration_cascade_summary([out])["counts"]["valid"] == 0

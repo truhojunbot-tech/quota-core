@@ -1143,7 +1143,6 @@ class TaskEconomicsRecord:
     # Unknown is not valid; invalid rows retain their tokens as waste.
     orchestration_validity: Literal["valid", "stale", "misrouted", "unknown"] = "unknown"
     orchestration_origin_task_id: str | None = None
-    orchestration_evidence_present: bool = False
     attribution_confidence: AttributionConfidence = "low"
     attribution_notes: tuple[str, ...] = ()
 
@@ -1570,7 +1569,6 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "context_clear_outcome": record.context_clear_outcome,
         "orchestration_validity": record.orchestration_validity,
         "orchestration_origin_task_id": record.orchestration_origin_task_id,
-        "orchestration_evidence_present": record.orchestration_evidence_present,
         "attribution_confidence": record.attribution_confidence,
         "attribution_notes": list(record.attribution_notes),
     }

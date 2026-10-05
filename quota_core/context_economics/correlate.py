@@ -409,7 +409,10 @@ def attach_task_cascade_validity(
                 answer = ("unknown", None)
             else:
                 parent = signals.get(parent_id) if isinstance(parent_id, str) else None
-                parent_ctx = parent.get("context") if isinstance(parent, Mapping) else None
+                # #305's pushed refs belong to implement results. A later
+                # review legitimately targets a newer SHA than a prior review.
+                parent_ctx = (parent.get("context") if isinstance(parent, Mapping)
+                              and parent.get("task_type") == "implement" else None)
                 if not isinstance(parent_ctx, Mapping):
                     parent_ctx = {}
                 branch = parent_ctx.get("result_branch")
@@ -444,7 +447,6 @@ def attach_task_cascade_validity(
         out.append(replace(
             record, orchestration_validity=validity,
             orchestration_origin_task_id=origin,
-            orchestration_evidence_present=record.task_id in signals,
             attribution_notes=record.attribution_notes + note if validity in ("stale", "misrouted")
                               else record.attribution_notes,
         ))

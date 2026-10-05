@@ -3,3 +3,5 @@ These redacted task rows model the two 2026-09-14 incidents in quota-core#74.
 `result_commit` are the durable #305/#348 result refs. The historical incident
 rows predate these producer fixes, so the fixture uses their post-fix storage
 shape without claiming the original rows carry these fields.
+The fixture also includes a later review round whose parent is an earlier
+review: a changed reviewed SHA on the same branch is not a #305 misroute.

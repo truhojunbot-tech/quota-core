@@ -325,9 +325,6 @@ def context_policy_cohort(record: TaskEconomicsRecord) -> str:
               if record.context_clear_status == "attempted" else record.context_policy)
     if record.orchestration_validity in ("stale", "misrouted"):
         return f"{cohort}+orchestration_{record.orchestration_validity}"
-    if (record.orchestration_validity == "unknown" and record.orchestration_evidence_present
-            and record.task_type in ("review", "test")):
-        return f"{cohort}+orchestration_unknown"
     return cohort
 
 
