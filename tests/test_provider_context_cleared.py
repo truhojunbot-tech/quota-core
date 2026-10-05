@@ -169,6 +169,89 @@ def test_a_clearing_joins_by_task_and_context_identity():
         [_record()], [provider_context_clearing_from_event(_cleared_event())])
     assert out.context_clear_status == "attempted"
     assert out.context_clear_outcome == "attempted"
+    assert not any("pre-clear identity" in note for note in out.attribution_notes)
+
+
+def test_fresh_dispatch_joins_clearing_of_previous_context_identity():
+    """The clearing event names the old context; attribution names its successor."""
+    clearing = provider_context_clearing_from_event(_cleared_event(
+        task_id="review-86c8bf56", context_id="52aab9a4",
+        context_generation=3, provider_session_id="6c7c74b7",
+    ))
+    record = _record(
+        task_id="review-86c8bf56", context_id="fa89365f",
+        context_generation=4, provider_session_id="9095e1b6", policy="fresh",
+    )
+    [out] = attach_provider_context_clearings([record], [clearing])
+    assert out.context_clear_status == "attempted"
+    assert out.context_clear_outcome == "attempted"
+    assert out.context_policy == "fresh"
+    assert context_policy_cohort(out) != "fresh"
+    assert any("pre-clear identity" in note for note in out.attribution_notes)
+
+
+def test_adjacent_generation_can_join_even_when_context_id_is_unchanged():
+    clearing = provider_context_clearing_from_event(_cleared_event(
+        context_id="same", context_generation=3, provider_session_id="old-session",
+    ))
+    [out] = attach_provider_context_clearings(
+        [_record(context_id="same", context_generation=4,
+                 provider_session_id="new-session", policy="fresh")], [clearing],
+    )
+    assert out.context_clear_status == "attempted"
+    assert context_policy_cohort(out) == "fresh+auto_clear_unconfirmed"
+    assert any("pre-clear identity" in note for note in out.attribution_notes)
+
+
+def test_failed_send_cannot_infer_a_successor_context():
+    clearing = provider_context_clearing_from_event(_cleared_event(
+        "send_failed", context_id="old", context_generation=3,
+        provider_session_id="old-session",
+    ))
+    [out] = attach_provider_context_clearings(
+        [_record(context_id="new", context_generation=4,
+                 provider_session_id="new-session", policy="fresh")], [clearing],
+    )
+    assert out.context_clear_status is None
+    assert out.context_clear_outcome is None
+    assert out.context_policy == "fresh"
+    assert context_policy_cohort(out) == "fresh"
+    assert any("clearing refused" in note for note in out.attribution_notes)
+
+
+def test_pre_clear_join_requires_fresh_policy_same_provider_and_forward_generation():
+    clearing = provider_context_clearing_from_event(_cleared_event(
+        context_id="old", context_generation=3, provider_session_id="old-session",
+    ))
+    for overrides in (
+        {"provider": "another-provider"},
+        {"provider": None},
+        {"context_generation": 2},
+        {"policy": "resume"},
+    ):
+        record_kwargs = dict(context_id="new", context_generation=4,
+                             provider_session_id="new-session", policy="fresh")
+        record_kwargs.update(overrides)
+        record = _record(**record_kwargs)
+        [out] = attach_provider_context_clearings([record], [clearing])
+        assert out.context_clear_status is None, overrides
+        assert any("clearing refused" in note for note in out.attribution_notes), overrides
+
+
+def test_non_adjacent_generation_requires_a_changed_context_id():
+    clearing = provider_context_clearing_from_event(_cleared_event(
+        context_id="old", context_generation=3, provider_session_id="old-session",
+    ))
+    [accepted] = attach_provider_context_clearings(
+        [_record(context_id="new", context_generation=5,
+                 provider_session_id="new-session")], [clearing],
+    )
+    [refused] = attach_provider_context_clearings(
+        [_record(context_id="old", context_generation=5,
+                 provider_session_id="new-session")], [clearing],
+    )
+    assert accepted.context_clear_status == "attempted"
+    assert refused.context_clear_status is None
 
 
 def test_a_record_with_no_clearing_stays_unknown():

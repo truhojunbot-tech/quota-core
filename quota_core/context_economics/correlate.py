@@ -305,11 +305,11 @@ def attach_provider_context_clearings(
 ) -> list[TaskEconomicsRecord]:
     """Join context-clearing interventions onto task economics (quota-core#72).
 
-    Matched on ``task_id`` **and** context identity, exactly like
-    :func:`attach_provider_context_observations`, and for the same reason: the
-    producer already knows which dispatch it cleared and says so in the row, so
-    any timing or proximity heuristic here would invent a treatment assignment
-    the data already carries.
+    Matched on ``task_id`` and context identity. A fresh dispatch may instead
+    name the successor context: its clearing row names the pre-clear identity,
+    so a same-provider, forward-generation transition also joins when the
+    clearing send landed. That inferred join is noted in ``attribution_notes``;
+    no timing or proximity heuristic is used.
 
     ⛔This never touches ``context_policy``. The producer decides policy; this
       join only records what intervention was observed alongside it. In
@@ -340,7 +340,24 @@ def attach_provider_context_clearings(
             )
             if left is not None and right is not None and left != right
         ]
-        if conflicts:
+        generation_advanced = (
+            record.context_generation is not None
+            and clearing.context_generation is not None
+            and record.context_generation > clearing.context_generation
+        )
+        pre_clear_identity = (
+            record.context_policy == "fresh"
+            and clearing.status in ("attempted", "confirmed")
+            and record.provider is not None
+            and record.provider == clearing.provider
+            and generation_advanced
+            and (
+                record.context_generation == clearing.context_generation + 1
+                or (record.context_id is not None and clearing.context_id is not None
+                    and record.context_id != clearing.context_id)
+            )
+        )
+        if conflicts and not pre_clear_identity:
             out.append(replace(
                 record,
                 attribution_notes=record.attribution_notes + (
@@ -353,6 +370,9 @@ def attach_provider_context_clearings(
             record,
             context_clear_status=clearing.status,
             context_clear_outcome=clearing.raw_outcome,
+            attribution_notes=record.attribution_notes + ((
+                "provider context clearing joined via pre-clear identity: "
+                "context identity disagrees on " + ", ".join(conflicts),
+            ) if conflicts else ()),
         ))
     return out
-

@@ -1,8 +1,9 @@
 # Context-clearing interventions (quota-core#72)
 
-**Status: production-sample pending.** The consumer path below is implemented
-and tested. It has never been run against organic data, and nothing it produces
-may be presented as measured auto-clear economics until it has. See
+**Status: economics sample pending.** One organic clearing/dispatch identity
+pair is documented in quota-core#72, but it does not establish auto-clear
+economics. Nothing this path produces may be presented as measured auto-clear
+economics until the full path is checked against organic data. See
 [What is still missing](#what-is-still-missing).
 
 ## The problem
@@ -50,15 +51,19 @@ downstream.
 provider_context_cleared (JSONL)
   → provider_context_clearing_from_event        parse one row
   → provider_context_clearings_from_events      one clearing per dispatch
-  → attach_provider_context_clearings           join on task_id + context identity
+  → attach_provider_context_clearings           exact or noted pre-clear identity join
   → context_policy_cohort / compare_context_policies
 ```
 
 Two properties this path is built on, both inherited from quota-core#70:
 
-- **Joined on identity, never on timing.** The producer already knows which
-  dispatch it cleared. A shared `task_id` whose context identity *contradicts*
-  the record is refused with a note rather than merged.
+- **Two-tier identity join, never timing.** Exact context identity joins as
+  before. A `fresh` dispatch can also join a clearing that names its prior
+  context when task ID and provider match, the generation advances, and the
+  clearing send landed (`attempted` or `confirmed`). An adjacent generation
+  qualifies even if the context ID is unchanged; a larger advance requires a
+  changed context ID. This inferred join is marked in `attribution_notes`.
+  Other known identity contradictions are refused with a note.
 - **The join never edits `context_policy`.** The producer decides policy; this
   only records what intervention was observed alongside it. In particular a
   `send_failed` clearing cannot make anything look fresh.
@@ -71,10 +76,9 @@ reader working from the artifact alone reaches the same cohort.
 
 ## What is still missing
 
-1. **No organic sample.** Every fixture is shaped from the producer's emit site,
-   not captured from a live run. Until post-deployment clearing rows exist and
-   have been run through this path, the cohort split is a mechanism with no
-   measurement behind it.
+1. **No organic economics measurement.** An organic pre/post identity pair is
+   known, but the cohort split remains a mechanism until clearing rows are run
+   through the full path and evaluated with post-deployment outcomes.
 2. **No confirmation signal.** `"confirmed"` cannot occur until a provider
    exposes something that actually establishes the context was cleared. Until
    then every real intervention lands in the unconfirmed cohort, which is
