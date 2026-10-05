@@ -1139,6 +1139,10 @@ class TaskEconomicsRecord:
     # recognise.
     context_clear_status: ContextClearStatus | None = None
     context_clear_outcome: str | None = None
+    # #74: review/cascade validity from durable task-row artifact evidence.
+    # Unknown is not valid; invalid rows retain their tokens as waste.
+    orchestration_validity: Literal["valid", "stale", "misrouted", "unknown"] = "unknown"
+    orchestration_origin_task_id: str | None = None
     attribution_confidence: AttributionConfidence = "low"
     attribution_notes: tuple[str, ...] = ()
 
@@ -1563,6 +1567,8 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         # to rebuild the same cohort this process did.
         "context_clear_status": record.context_clear_status,
         "context_clear_outcome": record.context_clear_outcome,
+        "orchestration_validity": record.orchestration_validity,
+        "orchestration_origin_task_id": record.orchestration_origin_task_id,
         "attribution_confidence": record.attribution_confidence,
         "attribution_notes": list(record.attribution_notes),
     }

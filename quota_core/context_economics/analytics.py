@@ -321,9 +321,31 @@ def context_policy_cohort(record: TaskEconomicsRecord) -> str:
     must not be presented as measured auto-clear economics.
     """
 
-    if record.context_clear_status == "attempted":
-        return f"{record.context_policy}{UNCONFIRMED_CLEAR_COHORT_SUFFIX}"
-    return record.context_policy
+    cohort = (f"{record.context_policy}{UNCONFIRMED_CLEAR_COHORT_SUFFIX}"
+              if record.context_clear_status == "attempted" else record.context_policy)
+    if record.orchestration_validity in ("stale", "misrouted"):
+        return f"{cohort}+orchestration_{record.orchestration_validity}"
+    return cohort
+
+
+def orchestration_cascade_summary(records: Iterable[TaskEconomicsRecord]) -> dict[str, object]:
+    """Count validity states and retained invalid-task tokens, once per task ID."""
+    unique = {record.task_id: record for record in records}
+    counts = {state: 0 for state in ("valid", "stale", "misrouted", "unknown")}
+    waste_totals = []
+    for record in unique.values():
+        counts[record.orchestration_validity] += 1
+        if record.orchestration_validity in ("stale", "misrouted"):
+            total = token_components_total(record.tokens)
+            if total is not None:
+                waste_totals.append(total)
+    return {
+        "counts": counts,
+        "sample_count": len(unique),
+        "waste_task_count": counts["stale"] + counts["misrouted"],
+        "waste_known_token_count": len(waste_totals),
+        "waste_known_tokens": sum(waste_totals) if waste_totals else None,
+    }
 
 
 def compare_context_policies(records: Iterable[TaskEconomicsRecord]) -> dict[str, dict[str, float | int | None | str]]:
@@ -361,6 +383,7 @@ def compare_context_policies(records: Iterable[TaskEconomicsRecord]) -> dict[str
         }
         stratified = stratified_failure_rates(rows)
         entry.update(stratified)
+        entry["orchestration"] = orchestration_cascade_summary(rows)
         warning = unknown_cause_warning(stratified)
         if warning is not None:
             entry["warning"] = warning

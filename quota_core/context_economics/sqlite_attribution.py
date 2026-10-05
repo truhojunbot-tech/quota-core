@@ -6,7 +6,8 @@ import re
 import sqlite3
 from pathlib import Path
 
-from .correlate import correlate_task_economics
+from .agent_crew_adapter import read_task_cascade_signals
+from .correlate import attach_task_cascade_validity, correlate_task_economics
 from .schema import TaskEconomicsRecord, attribution_from_dict
 
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -82,4 +83,5 @@ def read_task_attribution_sqlite(
             attributions.append(attribution_from_dict(raw))
         except (TypeError, ValueError):
             continue
-    return correlate_task_economics(attributions, [])
+    records = correlate_task_economics(attributions, [])
+    return attach_task_cascade_validity(records, read_task_cascade_signals(path))

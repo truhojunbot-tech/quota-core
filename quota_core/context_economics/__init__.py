@@ -18,6 +18,7 @@ from .analytics import (
     cache_read_per_task,
     compare_context_policies,
     context_policy_cohort,
+    orchestration_cascade_summary,
     context_age_vs_failure_rate,
     context_age_vs_token_usage,
     failed_retry_token_waste,
@@ -89,10 +90,12 @@ from .correlate import (
     ProviderUsageRecord,
     attach_provider_context_observations,
     attach_provider_context_clearings,
+    attach_task_cascade_validity,
     correlate_task_economics,
 )
 from .agent_crew_adapter import (
     context_pack_attributions_from_events,
+    read_task_cascade_signals,
     reconcile_attribution_by_task,
     test_stage_deferrals_for_task,
 )
@@ -234,6 +237,9 @@ __all__ = [
     "merge_token_components",
     "attach_provider_context_observations",
     "attach_provider_context_clearings",
+    "attach_task_cascade_validity",
+    "read_task_cascade_signals",
+    "orchestration_cascade_summary",
     "correlate_task_economics",
     "fresh_input_per_successful_task",
     "cache_creation_per_successful_task",
