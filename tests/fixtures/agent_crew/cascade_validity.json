@@ -1,0 +1,9 @@
+[
+  {"task_id":"review-5652-old","task_type":"review","branch":"feature","context":{"pr_number":5652,"reviewed_sha":"5b496a9f00000000000000000000000000000000","review_publication":"stale"}},
+  {"task_id":"fix-review-5652-old-r1","task_type":"implement","branch":"feature","context":{"prev_task_id":"review-5652-old","fix_round":1}},
+  {"task_id":"review-5652-28419e96","task_type":"review","branch":"feature","context":{"pr_number":5652,"superseded_review":"review-5652-old","expected_head_sha":"28419e9600000000000000000000000000000000","worktree_base_sha":"28419e9600000000000000000000000000000000"}},
+  {"task_id":"impl-watch-0073c3a7","task_type":"implement","branch":"main","context":{"result_branch":"fix/304-stale-pr-head-review","result_commit":"9edda69000000000000000000000000000000000"}},
+  {"task_id":"review-9aeb0354","task_type":"review","branch":"main","context":{"prev_task_id":"impl-watch-0073c3a7","reviewed_sha":"990ce86000000000000000000000000000000000"}},
+  {"task_id":"fix-review-9aeb0354-r1","task_type":"implement","branch":"main","context":{"prev_task_id":"review-9aeb0354","fix_round":1}},
+  {"task_id":"review-impl-watch-corrected","task_type":"review","branch":"fix/304-stale-pr-head-review","context":{"prev_task_id":"impl-watch-0073c3a7","reviewed_sha":"9edda69000000000000000000000000000000000"}}
+]

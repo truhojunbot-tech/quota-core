@@ -115,6 +115,39 @@ def read_lifecycle_events_jsonl(path: str | Path) -> list[ContextLifecycleEvent]
     return events
 
 
+def read_task_cascade_signals(db_path: str | Path) -> dict[str, dict]:
+    """Read durable review/routing evidence from tasks.db without writing to it.
+
+    #304 persists suppressed review publication in ``tasks.context``;
+    #305/#348 persist an implementer's reported branch and commit there. An
+    older database without these keys remains unknown to the consumer.
+    """
+    path = Path(db_path).expanduser()
+    if not path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        rows = conn.execute("SELECT task_id, task_type, branch, context FROM tasks").fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    signals = {}
+    for task_id, task_type, branch, raw_context in rows:
+        if not isinstance(task_id, str) or not task_id:
+            continue
+        try:
+            context = json.loads(raw_context or "{}")
+        except (TypeError, ValueError):
+            context = {}
+        signals[task_id] = {"task_type": task_type, "branch": branch,
+                            "context": context if isinstance(context, dict) else {}}
+    return signals
+
+
 def context_pack_attributions_from_events(
     events: Iterable[ContextLifecycleEvent],
 ) -> list[ContextPackAttribution]:

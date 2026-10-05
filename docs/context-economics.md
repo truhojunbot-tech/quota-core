@@ -466,6 +466,26 @@ Until then this consumer is validated against fixtures only. Outstanding:
    hypothesised from the producer's branch structure, not yet observed;
 3. only then publish any resume/fresh/reset window comparison from this path.
 
+## Review-cascade validity (quota-core#74)
+
+When reading a runtime `tasks.db`, the attribution loader also reads its
+`tasks.context` rows in SQLite read-only mode. Agent Crew #304 records
+suppressed publication as `review_publication=stale|unknown`; #305/#348 record
+the implementer's actual `result_branch` and `result_commit`. A review is
+misrouted only when its recorded branch or reviewed SHA contradicts those
+durable parent refs. A child fix/test inherits a known-invalid parent review's
+classification through `prev_task_id`. A requeued review's `superseded_review`
+is provenance, not a parent to inherit invalidity from.
+
+`TaskEconomicsRecord.orchestration_validity` is `valid`, `stale`,
+`misrouted`, or `unknown` (never silently valid). Invalid rows and their token
+usage remain in `compare_context_policies` under `+orchestration_stale` or
+`+orchestration_misrouted` cohorts, outside pure `fresh`/`resume`/`compact`.
+Each cohort reports validity counts and known waste tokens under
+`orchestration`; `orchestration_cascade_summary` gives a deduplicated total by
+task ID. Older rows without producer signals stay unknown. Post-deployment
+organic verification remains the separate #74 acceptance item 8.
+
 ## Context Pack economics (`context_pack_analytics.py`, quota-core#62)
 
 Consumes Agent Crew #239's real Context Pack producer contract: a

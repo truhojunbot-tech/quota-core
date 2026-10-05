@@ -10,7 +10,7 @@ heuristics. Confidence is always reported explicitly so downstream analytics
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .schema import (
     ProviderContextClearing,
@@ -374,5 +374,78 @@ def attach_provider_context_clearings(
                 "provider context clearing joined via pre-clear identity: "
                 "context identity disagrees on " + ", ".join(conflicts),
             ) if conflicts else ()),
+        ))
+    return out
+
+
+def attach_task_cascade_validity(
+    records: Iterable[TaskEconomicsRecord],
+    signals: Mapping[str, Mapping[str, object]],
+) -> list[TaskEconomicsRecord]:
+    """Join #304/#305 task-row evidence by task and parent artifact identity.
+
+    A suppressed publication is stale; a review routed away from the parent
+    implementer's durable result ref is misrouted. ``superseded_review`` is
+    provenance of a replacement, not a causal parent, so it is never followed.
+    """
+    cache: dict[str, tuple[str, str | None]] = {}
+
+    def classify(task_id: str, seen: frozenset[str] = frozenset()) -> tuple[str, str | None]:
+        if task_id in cache:
+            return cache[task_id]
+        if task_id in seen:
+            return ("unknown", None)
+        row = signals.get(task_id)
+        if not isinstance(row, Mapping):
+            return ("unknown", None)
+        ctx = row.get("context")
+        if not isinstance(ctx, Mapping):
+            ctx = {}
+        parent_id = ctx.get("prev_task_id")
+        if row.get("task_type") == "review":
+            if ctx.get("review_publication") == "stale":
+                answer = ("stale", task_id)
+            elif ctx.get("review_publication") == "unknown":
+                answer = ("unknown", None)
+            else:
+                parent = signals.get(parent_id) if isinstance(parent_id, str) else None
+                parent_ctx = parent.get("context") if isinstance(parent, Mapping) else None
+                if not isinstance(parent_ctx, Mapping):
+                    parent_ctx = {}
+                branch = parent_ctx.get("result_branch")
+                commit = parent_ctx.get("result_commit")
+                reviewed = ctx.get("reviewed_sha")
+                task_branch = row.get("branch")
+                if ((isinstance(branch, str) and branch and isinstance(task_branch, str)
+                     and task_branch and task_branch != branch)
+                        or (isinstance(commit, str) and commit and isinstance(reviewed, str)
+                            and reviewed and reviewed != commit)):
+                    answer = ("misrouted", task_id)
+                elif (isinstance(branch, str) and branch and isinstance(commit, str) and commit
+                      and row.get("branch") == branch and reviewed == commit):
+                    answer = ("valid", None)
+                elif (ctx.get("expected_head_sha") and
+                      ctx.get("worktree_base_sha") == ctx.get("expected_head_sha")):
+                    answer = ("valid", None)
+                else:
+                    answer = ("unknown", None)
+        elif isinstance(parent_id, str) and parent_id:
+            answer = classify(parent_id, seen | {task_id})
+        else:
+            answer = ("unknown", None)
+        cache[task_id] = answer
+        return answer
+
+    out = []
+    for record in records:
+        validity, origin = classify(record.task_id)
+        note = ((f"orchestration {validity}: inherited from {origin}" if origin != record.task_id
+                 else f"orchestration {validity}: durable task artifact signal"),)
+        out.append(replace(
+            record, orchestration_validity=validity,
+            orchestration_origin_task_id=origin,
+            orchestration_evidence_present=record.task_id in signals,
+            attribution_notes=record.attribution_notes + note if validity in ("stale", "misrouted")
+                              else record.attribution_notes,
         ))
     return out
