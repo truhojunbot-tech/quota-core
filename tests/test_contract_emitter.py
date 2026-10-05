@@ -6,9 +6,11 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.compare_contracts import differences
 from quota_core.context_economics.report_producer import (
     build_contract, main, produce_shadow_report, write_contract_atomically,
     _produce_shadow_report,
@@ -49,6 +51,7 @@ class ContractOutputTests(unittest.TestCase):
         self.assertIsInstance(contract["decisions"], list)
         self.assertEqual(contract["decision_count"], len(self.rows))
         self.assertEqual(contract["provenance"]["decision_count"], len(self.rows))
+        self.assertEqual(contract["produced_at"], contract["provenance"]["produced_at"])
         self.assertEqual({d["task_id"]: d for d in contract["decisions"]},
                          {key: value["policy_decision"] for key, value in report["decisions"].items()})
         self.assertEqual(report, produce_shadow_report([self.db]))
@@ -77,6 +80,24 @@ class ContractOutputTests(unittest.TestCase):
             if isinstance(item, dict) and item.get("task_id") == self.rows[0]["task_id"]
         )
         self.assertEqual(decision["task_id"], self.rows[0]["task_id"])
+
+    def test_default_clock_is_sampled_once_for_both_timestamps(self):
+        report, records = _produce_shadow_report([self.db])
+        instant = datetime(2026, 10, 5, 12, 34, 56, tzinfo=timezone.utc)
+        with patch("quota_core.context_economics.report_producer.datetime") as clock:
+            clock.now.return_value = instant
+            contract = build_contract(report, records, [self.db])
+        clock.now.assert_called_once_with(timezone.utc)
+        self.assertEqual(contract["produced_at"], instant.isoformat(timespec="seconds"))
+        self.assertEqual(contract["produced_at"], contract["provenance"]["produced_at"])
+
+    def test_published_contract_without_top_level_timestamp_is_equivalent(self):
+        published = {"contract_version": "1.0", "provenance": {"produced_at": "old"}}
+        candidate = {**published, "produced_at": "new"}
+        self.assertEqual(differences(published, candidate), [])
+        self.assertEqual(differences(candidate, published), [])
+        self.assertEqual(differences(published, {**candidate, "mode": "enforce"}),
+                         [("mode", "<missing>", "enforce")])
 
     def test_atomic_write_keeps_previous_contract_on_failure(self):
         path = self.root / "contract.json"
