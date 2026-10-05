@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Corrected #72 clearing correlation for events carrying a pre-clear context
+  identity. Fresh, same-provider successor joins require an advanced generation
+  and a landed send, and now record their inferred basis in attribution notes.
+
 - Added a top-level UTC `produced_at` to the reader-compatible #80 list
   contract, identical to `provenance.produced_at`. Contract equivalence permits
   this clock field to be absent from older published artifacts.

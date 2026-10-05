@@ -307,8 +307,9 @@ def attach_provider_context_clearings(
 
     Matched on ``task_id`` and context identity. A fresh dispatch may instead
     name the successor context: its clearing row names the pre-clear identity,
-    so a same-provider, forward-generation transition also joins. No timing or
-    proximity heuristic is used.
+    so a same-provider, forward-generation transition also joins when the
+    clearing send landed. That inferred join is noted in ``attribution_notes``;
+    no timing or proximity heuristic is used.
 
     ⛔This never touches ``context_policy``. The producer decides policy; this
       join only records what intervention was observed alongside it. In
@@ -346,6 +347,7 @@ def attach_provider_context_clearings(
         )
         pre_clear_identity = (
             record.context_policy == "fresh"
+            and clearing.status in ("attempted", "confirmed")
             and record.provider is not None
             and record.provider == clearing.provider
             and generation_advanced
@@ -368,5 +370,9 @@ def attach_provider_context_clearings(
             record,
             context_clear_status=clearing.status,
             context_clear_outcome=clearing.raw_outcome,
+            attribution_notes=record.attribution_notes + ((
+                "provider context clearing joined via pre-clear identity: "
+                "context identity disagrees on " + ", ".join(conflicts),
+            ) if conflicts else ()),
         ))
     return out

@@ -169,6 +169,7 @@ def test_a_clearing_joins_by_task_and_context_identity():
         [_record()], [provider_context_clearing_from_event(_cleared_event())])
     assert out.context_clear_status == "attempted"
     assert out.context_clear_outcome == "attempted"
+    assert not any("pre-clear identity" in note for note in out.attribution_notes)
 
 
 def test_fresh_dispatch_joins_clearing_of_previous_context_identity():
@@ -186,6 +187,36 @@ def test_fresh_dispatch_joins_clearing_of_previous_context_identity():
     assert out.context_clear_outcome == "attempted"
     assert out.context_policy == "fresh"
     assert context_policy_cohort(out) != "fresh"
+    assert any("pre-clear identity" in note for note in out.attribution_notes)
+
+
+def test_adjacent_generation_can_join_even_when_context_id_is_unchanged():
+    clearing = provider_context_clearing_from_event(_cleared_event(
+        context_id="same", context_generation=3, provider_session_id="old-session",
+    ))
+    [out] = attach_provider_context_clearings(
+        [_record(context_id="same", context_generation=4,
+                 provider_session_id="new-session", policy="fresh")], [clearing],
+    )
+    assert out.context_clear_status == "attempted"
+    assert context_policy_cohort(out) == "fresh+auto_clear_unconfirmed"
+    assert any("pre-clear identity" in note for note in out.attribution_notes)
+
+
+def test_failed_send_cannot_infer_a_successor_context():
+    clearing = provider_context_clearing_from_event(_cleared_event(
+        "send_failed", context_id="old", context_generation=3,
+        provider_session_id="old-session",
+    ))
+    [out] = attach_provider_context_clearings(
+        [_record(context_id="new", context_generation=4,
+                 provider_session_id="new-session", policy="fresh")], [clearing],
+    )
+    assert out.context_clear_status is None
+    assert out.context_clear_outcome is None
+    assert out.context_policy == "fresh"
+    assert context_policy_cohort(out) == "fresh"
+    assert any("clearing refused" in note for note in out.attribution_notes)
 
 
 def test_pre_clear_join_requires_fresh_policy_same_provider_and_forward_generation():

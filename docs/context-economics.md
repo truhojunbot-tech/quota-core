@@ -436,6 +436,12 @@ is merely incomplete and does not block it. Nothing is matched on timing or a
 working directory: a resume/fresh comparison whose treatment assignment was
 guessed from the same data it is measuring would be circular.
 
+That strict rule applies to context *observations*. A context *clearing* may
+name the pre-clear identity while the fresh dispatch names its successor.
+Its consumer joins an exact identity or a same-provider, advancing-generation
+pre-clear identity for an attempted/confirmed send, marking the inferred basis
+in `attribution_notes`; a failed send cannot use that inference.
+
 Three token quantities stay in three fields and are never added together:
 
 | field | what it measures |
