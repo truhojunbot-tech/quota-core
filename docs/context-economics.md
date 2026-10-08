@@ -814,6 +814,10 @@ legacy fail-safe violation cannot disappear merely because it predates the
 trusted-producer cutoff. A fact is recorded for D1/D3 only when it has
 explicit/high provenance and a non-null `risk_facts` value; partial
 declarations remain unknown and are checked by V1's fail-safe invariant.
+Positive review and recall evidence alone do not authorize session reuse
+when risk is unassessed: the policy keeps session treatment at
+`insufficient_evidence`, while the independently observed cache-productivity
+treatment and quality evidence retain their existing meaning.
 Rolling reports refresh retained artifacts that predate `risk_facts`, and D1
 and D3 disclose any still-missing artifact fields rather than classifying them
 as a declaration category.

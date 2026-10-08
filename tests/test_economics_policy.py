@@ -23,6 +23,36 @@ def _record(**fields):
 
 
 class EconomicsPolicyTests(unittest.TestCase):
+    def test_unknown_risk_with_observed_review_and_recall_keeps_session_fail_safe(self):
+        from quota_core.context_economics.acceptance import PASS, check_acceptance
+
+        record = _record(cache_read_tokens=10)
+        decision = recommend_task_policy(record, QualityEvidence(
+            independent_review_correct=True, required_context_recalled=True,
+        ))
+        self.assertTrue(decision.quality_preserving)
+        self.assertEqual(decision.risk_tier, "safety_or_live")
+        self.assertTrue(decision.human_gate_required)
+        self.assertEqual(decision.recommended_session_treatment, "insufficient_evidence")
+        # Observed cache productivity remains independent of risk classification.
+        self.assertEqual(decision.recommended_cache_treatment, "preserve")
+        self.assertEqual(decision.recommended_max_review_fix_rounds, 3)
+        self.assertIsNotNone(decision.recommended_soft_budget)
+
+        report = {"mode": "shadow", "decisions": {record.task_id: {
+            "task_id": record.task_id, "created_at": 100.25,
+            "risk_facts": {field: None for field in (
+                "safety_or_live_change", "broad_architecture_change",
+                "bounded_routine_fix", "human_gate_required",
+            )},
+            "evidence_provenance": {field: "not_recorded_by_producer" for field in (
+                "safety_or_live_change", "broad_architecture_change",
+                "bounded_routine_fix", "human_gate_required",
+            )},
+            "policy_decision": decision.to_dict(),
+        }}}
+        self.assertEqual(check_acceptance(report, since=100, rerun_bytes_equal=True)["criteria"]["V1"]["status"], PASS)
+
     def test_zero_or_negative_cache_read_is_not_a_hit(self):
         from dataclasses import replace
         from quota_core.context_economics.schema import TaskTokenTelemetry

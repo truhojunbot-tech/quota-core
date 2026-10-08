@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Kept unknown-risk tasks at `insufficient_evidence` session treatment even
+  when review and recall evidence are positive, restoring #80 V1 without
+  changing risk tier, human gate, rounds, budget, or cache treatment.
+
 - Preserved fractional Agent Crew timestamps when reconciling task outcomes,
   used file order for exact-time terminal ties, and kept measured-zero token
   fields distinct from missing values. Organic #80 report `created_at` values
