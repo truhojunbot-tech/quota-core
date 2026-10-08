@@ -23,6 +23,34 @@ def _record(**fields):
 
 
 class EconomicsPolicyTests(unittest.TestCase):
+    def test_unknown_risk_with_renewable_waste_cannot_renew_session(self):
+        from quota_core.context_economics.acceptance import PASS, check_acceptance
+
+        record = _record(cache_read_tokens=10)
+        decision = recommend_task_policy(record, QualityEvidence(
+            independent_review_correct=True, required_context_recalled=True,
+            stale_waste_tokens=5000,
+        ))
+        self.assertEqual(decision.orchestration_waste["stale_tokens"], 5000)
+        self.assertTrue(decision.quality_preserving)
+        self.assertEqual(decision.recommended_session_treatment, "insufficient_evidence")
+        self.assertEqual(decision.recommended_cache_treatment, "preserve")
+
+        risk_fields = (
+            "safety_or_live_change", "broad_architecture_change",
+            "bounded_routine_fix", "human_gate_required",
+        )
+        report = {"mode": "shadow", "decisions": {record.task_id: {
+            "created_at": 100.25,
+            "risk_facts": {field: None for field in risk_fields},
+            "evidence_provenance": {field: "not_recorded_by_producer" for field in risk_fields},
+            "policy_decision": decision.to_dict(),
+        }}}
+        self.assertEqual(
+            check_acceptance(report, since=100, rerun_bytes_equal=True)["criteria"]["V1"]["status"],
+            PASS,
+        )
+
     def test_unknown_risk_with_observed_review_and_recall_keeps_session_fail_safe(self):
         from quota_core.context_economics.acceptance import PASS, check_acceptance
 
