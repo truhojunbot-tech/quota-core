@@ -343,7 +343,7 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
         "duplicate_tokens": _nonnegative_int_or_none(evidence.duplicate_waste_tokens),
     }
     renewable = any(value is not None and value > 0 for value in waste.values())
-    cache_seen = record.task_telemetry.cache_read_tokens is not None
+    cache_seen = (_nonnegative_int_or_none(record.task_telemetry.cache_read_tokens) or 0) > 0
     confidence: Literal["high", "medium", "low"] = "high" if quality and len(record.task_telemetry.observed_components) >= 3 else "medium" if record.task_telemetry.observed_components else "low"
     rationale = ["shadow_only_no_enforcement", f"risk_tier:{tier}", "reasoning_effort_never_reduced_for_cost"]
     if cache_seen: rationale.append("cache_read_is_productive_measurement_not_waste")

@@ -23,6 +23,19 @@ def _record(**fields):
 
 
 class EconomicsPolicyTests(unittest.TestCase):
+    def test_zero_or_negative_cache_read_is_not_a_hit(self):
+        from dataclasses import replace
+        from quota_core.context_economics.schema import TaskTokenTelemetry
+        evidence = QualityEvidence(
+            safety_or_live_change=False, broad_architecture_change=False,
+            bounded_routine_fix=True, human_gate_required=False,
+            independent_review_correct=True, recall_not_applicable=True,
+        )
+        for amount in (0, -1):
+            decision = recommend_task_policy(replace(
+                _record(), task_telemetry=TaskTokenTelemetry(cache_read_tokens=amount)), evidence)
+            self.assertEqual(decision.recommended_cache_treatment, "no_cache_signal")
+
     def test_quality_veto_blocks_cost_cutting_and_keeps_unknowns_unknown(self):
         decision = recommend_task_policy(_record(uncached_input_tokens=0, cache_read_tokens=None))
         self.assertFalse(decision.quality_preserving)

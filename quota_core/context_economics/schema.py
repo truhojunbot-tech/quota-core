@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Any, Literal
 
 SCHEMA_VERSION = 1
@@ -340,7 +341,7 @@ def infer_retryable(reason: str | None) -> bool | None:
     return None
 
 
-def parse_flexible_timestamp(value: Any) -> int | None:
+def parse_flexible_timestamp(value: Any) -> float | None:
     """Parse a timestamp that may be a unix epoch (int/float/numeric string)
     or an ISO-8601 string (Agent Crew's real ``ts`` field, e.g.
     ``"2026-08-21T23:56:19.497696"`` -- naive, implicitly UTC).
@@ -348,11 +349,15 @@ def parse_flexible_timestamp(value: Any) -> int | None:
 
     if value is None or value == "":
         return None
+    if isinstance(value, bool):
+        return None
     if isinstance(value, (int, float)):
-        return int(value)
+        number = float(value)
+        return number if isfinite(number) else None
     if isinstance(value, str):
         try:
-            return int(float(value))
+            number = float(value)
+            return number if isfinite(number) else None
         except ValueError:
             pass
         text = value.strip()
@@ -364,7 +369,7 @@ def parse_flexible_timestamp(value: Any) -> int | None:
             return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        return int(parsed.timestamp())
+        return parsed.timestamp()
     return None
 
 
@@ -600,9 +605,9 @@ class RuntimeAttribution:
     previous_task_id: str | None = None
     retry_of: str | None = None
     fallback_of: str | None = None
-    started_at: int | None = None
-    completed_at: int | None = None
-    updated_at: int | None = None
+    started_at: float | None = None
+    completed_at: float | None = None
+    updated_at: float | None = None
     outcome: NormalizedOutcome | None = None
     raw_outcome: str | None = None
     failure_reason: str | None = None
@@ -640,7 +645,7 @@ class ContextLifecycleEvent:
 
     event_type: LifecycleEventType
     runtime: str
-    timestamp: int
+    timestamp: float
     schema_version: int = SCHEMA_VERSION
     project: str | None = None
     task_id: str | None = None
@@ -687,7 +692,7 @@ class ContextPackAttribution:
     degraded: bool | None = None
     degraded_reason: str | None = None
     budget: dict[str, Any] = field(default_factory=dict)
-    timestamp: int | None = None
+    timestamp: float | None = None
 
 
 @dataclass(frozen=True)
@@ -733,7 +738,7 @@ class ProviderContextObservation:
     cap_tokens: int | None = None
     capped: bool = False
     tripped_by: str | None = None
-    timestamp: int | None = None
+    timestamp: float | None = None
     #: Every event type seen for this dispatch when more than one arrived.
     #: Empty on clean data; populated only by the duplicate defence below, so a
     #: caller can tell a collapsed pair from a single clean row.
@@ -803,7 +808,7 @@ class ProviderContextClearing:
     reason: str | None = None
     status: ContextClearStatus | None = None
     raw_outcome: str | None = None
-    timestamp: int | None = None
+    timestamp: float | None = None
     #: Populated only when more than one row arrived for one dispatch, so a
     #: caller can tell a collapsed pair from a single clean row.
     duplicate_event_types: tuple[str, ...] = ()
@@ -1096,8 +1101,8 @@ class TaskEconomicsRecord:
     session_task_index: int | None = None
     retry_of: str | None = None
     fallback_of: str | None = None
-    started_at: int | None = None
-    completed_at: int | None = None
+    started_at: float | None = None
+    completed_at: float | None = None
     outcome: NormalizedOutcome | None = None
     raw_outcome: str | None = None
     failure_reason: str | None = None

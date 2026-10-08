@@ -34,6 +34,35 @@ def _passing_report() -> dict[str, object]:
 
 
 class AcceptanceCheckTests(unittest.TestCase):
+    def test_fractional_created_at_obeys_auto_and_explicit_cutoffs(self) -> None:
+        report = _passing_report()
+        for row in report["decisions"].values():
+            row["created_at"] += 0.25
+        automatic = check_acceptance(report, rerun_bytes_equal=True)
+        self.assertEqual(automatic["cutoff_created_at"], 1000.25)
+        self.assertEqual(automatic["criteria"]["S1"]["artifact_count"], 50)
+        self.assertEqual(automatic["criteria"]["S1"]["untimestamped_artifact_count"], 0)
+        self.assertEqual(automatic["criteria"]["V1"]["untimestamped_checked_count"], 0)
+        explicit = check_acceptance(report, since=1000.25, rerun_bytes_equal=True)
+        self.assertEqual(explicit["criteria"]["D3"]["status"], PASS)
+        self.assertEqual(explicit["criteria"]["C2"]["status"], PASS)
+        later = check_acceptance(report, since=1000.5, rerun_bytes_equal=True)
+        self.assertEqual(later["criteria"]["S1"]["artifact_count"], 49)
+
+    def test_cli_accepts_fractional_since_cutoff(self) -> None:
+        report = _passing_report()
+        for row in report["decisions"].values():
+            row["created_at"] += 0.25
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "report.json"
+            rerun = Path(temp) / "rerun.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+            rerun.write_bytes(path.read_bytes())
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["--report", str(path), "--rerun-report", str(rerun), "--since", "1000.25"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["criteria"]["S1"]["artifact_count"], 50)
+
     def test_all_criteria_pass_for_complete_sample(self) -> None:
         report = _passing_report()
         # Real SQLite rows identify the loader uniformly; execution diversity

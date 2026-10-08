@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Preserved fractional Agent Crew timestamps when reconciling task outcomes,
+  used file order for exact-time terminal ties, and kept measured-zero token
+  fields distinct from missing values. Organic #80 report `created_at` values
+  and watermarks now preserve fractional seconds: the report schema accepts
+  JSON numbers, and published reports/contracts need a fresh baseline before
+  comparing them with older integer-timestamp artifacts.
+
 - Added read-only #74 review-cascade validity correlation from durable task
   context: stale/misrouted review and child work stays visible as orchestration
   waste, separate from pure context-policy cohorts; missing signals stay unknown.

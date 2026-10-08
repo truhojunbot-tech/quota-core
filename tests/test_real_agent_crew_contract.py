@@ -37,17 +37,21 @@ class TimestampMismatchTests(unittest.TestCase):
     def test_parse_flexible_timestamp_accepts_real_iso_format(self):
         # Naive (no explicit timezone) -- Agent Crew's real `ts` values look like this.
         epoch = parse_flexible_timestamp("2026-08-21T23:56:19.497696")
-        self.assertIsInstance(epoch, int)
+        self.assertIsInstance(epoch, float)
         self.assertGreater(epoch, 1_700_000_000)
 
     def test_parse_flexible_timestamp_still_accepts_unix_epoch(self):
         self.assertEqual(parse_flexible_timestamp(1787356579), 1787356579)
-        self.assertEqual(parse_flexible_timestamp(1787356579.76), 1787356579)
+        self.assertEqual(parse_flexible_timestamp(1787356579.76), 1787356579.76)
+        self.assertEqual(parse_flexible_timestamp("1790145302.6040"), 1790145302.6040)
 
     def test_parse_flexible_timestamp_rejects_garbage(self):
         self.assertIsNone(parse_flexible_timestamp("not-a-timestamp"))
         self.assertIsNone(parse_flexible_timestamp(None))
         self.assertIsNone(parse_flexible_timestamp(""))
+        self.assertIsNone(parse_flexible_timestamp(True))
+        self.assertIsNone(parse_flexible_timestamp("nan"))
+        self.assertIsNone(parse_flexible_timestamp(float("inf")))
 
     def test_real_lifecycle_events_are_not_dropped(self):
         events = read_lifecycle_events_jsonl(REAL_FIXTURES / "context_events.jsonl")

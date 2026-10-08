@@ -15,12 +15,19 @@ from .schema import TokenComponents
 
 
 def _opt_int(value: Any) -> int | None:
-    if value is None:
+    """Parse numeric telemetry, truncating fractional counts toward zero."""
+    if value is None or isinstance(value, bool):
         return None
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        return int(float(value))
+    except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _first_present(usage: dict[str, Any], primary: str, fallback: str) -> Any:
+    """Prefer an observed primary value, including measured zero."""
+    value = usage.get(primary)
+    return value if value is not None else usage.get(fallback)
 
 
 def claude_token_components(usage: dict[str, Any]) -> TokenComponents:
@@ -64,9 +71,9 @@ def codex_token_components(usage: dict[str, Any]) -> TokenComponents:
     """
 
     raw_input = _opt_int(usage.get("input_tokens"))
-    cached_input = _opt_int(usage.get("cached_input_tokens") or usage.get("input_tokens_cached"))
+    cached_input = _opt_int(_first_present(usage, "cached_input_tokens", "input_tokens_cached"))
     output = _opt_int(usage.get("output_tokens"))
-    reasoning = _opt_int(usage.get("reasoning_tokens") or usage.get("output_tokens_reasoning"))
+    reasoning = _opt_int(_first_present(usage, "reasoning_tokens", "output_tokens_reasoning"))
     if raw_input is not None and cached_input is not None:
         fresh_input = max(0, raw_input - cached_input)
     else:
@@ -94,10 +101,10 @@ def gemini_token_components(usage: dict[str, Any]) -> TokenComponents:
     the component fields explicitly unknown rather than guessing a split.
     """
 
-    fresh_input = _opt_int(usage.get("prompt_token_count") or usage.get("input_tokens"))
-    output = _opt_int(usage.get("candidates_token_count") or usage.get("output_tokens"))
+    fresh_input = _opt_int(_first_present(usage, "prompt_token_count", "input_tokens"))
+    output = _opt_int(_first_present(usage, "candidates_token_count", "output_tokens"))
     cache_read = _opt_int(usage.get("cached_content_token_count"))
-    provider_total = _opt_int(usage.get("total_token_count") or usage.get("total_tokens"))
+    provider_total = _opt_int(_first_present(usage, "total_token_count", "total_tokens"))
     if provider_total is None:
         known = [v for v in (fresh_input, output) if v is not None]
         if known:
