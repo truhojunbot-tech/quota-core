@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added an optional `policy_logic_revision` source hash to organic #80 reports.
+  A missing or changed revision refreshes all source-present rolling decisions
+  after a policy-code change, while retaining IDs no longer in the source.
+
 - Kept unknown-risk tasks at `insufficient_evidence` session treatment even
   when review and recall evidence are positive, restoring #80 V1 without
   changing risk tier, human gate, rounds, budget, or cache treatment.

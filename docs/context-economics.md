@@ -757,6 +757,14 @@ A task's attribution time is not the only refresh signal: the producer also
 fingerprints structured quality evidence and refreshes an existing artifact
 when a later review verdict changes it. This keeps rolling artifacts honest
 when a review is recorded after the task it evaluates.
+The optional top-level `policy_logic_revision` is the SHA-256 of the checked-in
+`policy.py` source. If an older rolling report lacks it, or its value differs,
+the next run recomputes every decision whose task is still present in a source
+database, regardless of watermark; entries for tasks no longer in those
+sources remain retained. On a matching revision, normal incremental reuse
+continues. This revision tracks implementation changes separately from the
+versioned policy-output schema and does not make retained absent-source
+decisions claim to have been recomputed.
 
 The stable outer report schema is
 `https://quota-core.dev/contracts/organic-shadow-report/1.0`, available to

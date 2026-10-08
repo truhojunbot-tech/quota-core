@@ -51,6 +51,7 @@ REPORT_CONTRACT_SCHEMA: dict[str, object] = {
         "report_contract_id": {"const": REPORT_CONTRACT_ID},
         "mode": {"const": "shadow"},
         "policy_version": {"type": "string"},
+        "policy_logic_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "policy_contract": {
             "type": "object",
             "required": ["id", "sha256"],
@@ -90,6 +91,11 @@ def policy_contract_sha256() -> str:
         policy_contract_schema(), sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def policy_logic_revision() -> str:
+    """Hash the policy implementation so logic edits invalidate rolling decisions."""
+    return hashlib.sha256(Path(__file__).with_name("policy.py").read_bytes()).hexdigest()
 
 
 def report_contract_schema() -> dict[str, object]:
@@ -287,10 +293,14 @@ def _produce_shadow_report(
     are re-read on every run. This deliberately trades a small amount of
     read-only work for never silently missing an organic task or a later review
     verdict because its producer did not record a task creation timestamp.
+    A changed or missing policy-logic revision refreshes every source-present
+    decision, while retained IDs absent from the source remain untouched.
     """
     records = read_organic_task_records(db_paths, table)
     decisions = _existing_decisions(existing_report)
     watermark = _prior_watermark(existing_report)
+    revision = policy_logic_revision()
+    refresh_for_policy = not isinstance(existing_report, Mapping) or existing_report.get("policy_logic_revision") != revision
 
     by_source: dict[str, list[_SourcedRecord]] = {}
     evidence_by_source: dict[str, tuple[dict[str, object], dict[str, dict[str, str]]]] = {}
@@ -303,7 +313,7 @@ def _produce_shadow_report(
         for item in source_items:
             task_id = item.record.task_id
             fingerprint = _evidence_fingerprint(evidence[task_id], provenance[task_id])
-            if _is_new_since_watermark(task_id, item, decisions, watermark, fingerprint):
+            if refresh_for_policy or _is_new_since_watermark(task_id, item, decisions, watermark, fingerprint):
                 by_source.setdefault(source, []).append(item)
 
     for source, items in sorted(by_source.items()):
@@ -336,6 +346,7 @@ def _produce_shadow_report(
         "report_contract_id": REPORT_CONTRACT_ID,
         "mode": "shadow",
         "policy_version": POLICY_CONTRACT_VERSION,
+        "policy_logic_revision": revision,
         "policy_contract": {
             "id": policy_contract_schema()["$id"],
             "sha256": policy_contract_sha256(),
