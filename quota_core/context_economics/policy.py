@@ -327,6 +327,11 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     # narrower no-retrieval exemption may not bypass an unknown-risk fail-safe.
     recall_exemption_safe = evidence.recall_not_applicable is not True or not risk_unassessed
     quality = record.outcome == "success" and evidence.independent_review_correct is True and recall_ok and recall_exemption_safe
+    # Review and recall can be known while every risk fact remains unknown.
+    # In that case a human gate alone must not turn session reuse into a
+    # recommendation; keep the V1 session fail-safe without rewriting the
+    # independent cache-productivity evidence or the observed quality facts.
+    session_quality = quality and not risk_unassessed
     overrides = []
     if record.outcome != "success": overrides.append("task_outcome_not_success")
     if evidence.independent_review_correct is not True: overrides.append("independent_review_correctness_unknown_or_negative")
@@ -361,7 +366,7 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
          "outcome": record.outcome, "retry_of": record.retry_of, "fallback_of": record.fallback_of},
         tier, quality, human_gate, budget, rounds,
         "escalate_allowed" if tier in {"safety_or_live", "architecture"} else "preserve_current",
-        "renew" if quality and renewable else "preserve" if quality else "insufficient_evidence",
+        "renew" if session_quality and renewable else "preserve" if session_quality else "insufficient_evidence",
         "preserve" if quality and cache_seen else "no_cache_signal" if quality else "insufficient_evidence",
         _costs(record, pricing), waste,
         {"outcome": record.outcome, "independent_review_correct": evidence.independent_review_correct,
