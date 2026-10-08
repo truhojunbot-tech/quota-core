@@ -741,7 +741,12 @@ UTC ISO 8601, identical to `provenance.produced_at`; older published contracts
 may omit the top-level copy. Re-running with the same `--out` is a rolling upsert: the
 `decisions` object is keyed by `task_id`, the `watermark.created_at` boundary
 is inclusive for tied timestamps, and NULL timestamps are deliberately
-rechecked rather than silently skipped. `--db-list paths.json` accepts a JSON
+rechecked rather than silently skipped.
+`created_at` values in decisions and the watermark are JSON numbers and retain
+fractional seconds when the source does. A report regenerated from such a
+source may differ from a previously published integer-timestamp baseline;
+Re-baseline the #80 publish-equivalence check before using it as evidence.
+`--db-list paths.json` accepts a JSON
 array of source paths when a path list is managed outside the command line; an
 unreadable or malformed list emits a warning, as does a source that produced
 zero readable attribution rows. Existing task IDs are retained as historical

@@ -71,6 +71,36 @@ class OrganicReportProducerTests(unittest.TestCase):
         self.rows = json.loads(FIXTURE.read_text(encoding="utf-8"))
         _db(self.db_path, self.rows[:1])
 
+    def test_fractional_watermark_survives_json_round_trip_and_reuses_old_rows(self) -> None:
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE task_attribution SET created_at = ?", (100.125,))
+        conn.execute(
+            "INSERT INTO task_attribution VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("older", 99.25, "completed", "example-provider", "example-model", 1, 0, 0, 1, 0),
+        )
+        conn.commit()
+        conn.close()
+        first = produce_shadow_report([self.db_path])
+        published = json.loads(json.dumps(first))
+        self.assertEqual(published["watermark"]["created_at"], 100.125)
+        self.assertEqual(published["decisions"]["organic-known-zero"]["created_at"], 100.125)
+        self.assertEqual(report_contract_schema()["properties"]["watermark"]["properties"]["created_at"]["type"], ["number", "null"])
+
+        conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            "INSERT INTO task_attribution VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("newer", 101.5, "completed", "example-provider", "example-model", 1, 0, 0, 1, 0),
+        )
+        conn.commit()
+        conn.close()
+        from quota_core.context_economics.report_producer import shadow_comparison_report
+        with patch("quota_core.context_economics.report_producer.shadow_comparison_report", wraps=shadow_comparison_report) as emit:
+            second = produce_shadow_report([self.db_path], published)
+        self.assertEqual(emit.call_count, 1)
+        # The prior watermark is intentionally inclusive; only the older row is reused.
+        self.assertEqual([record.task_id for record in emit.call_args.args[0]], ["newer", "organic-known-zero"])
+        self.assertEqual(second["watermark"]["created_at"], 101.5)
+
     def test_report_is_keyed_by_task_id_and_explicitly_marks_missing_evidence(self) -> None:
         report = produce_shadow_report([self.db_path])
         artifact = report["decisions"]["organic-known-zero"]

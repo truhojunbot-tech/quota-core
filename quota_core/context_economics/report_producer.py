@@ -65,7 +65,7 @@ REPORT_CONTRACT_SCHEMA: dict[str, object] = {
             "type": "object",
             "required": ["created_at", "task_ids_at_created_at", "null_created_at_rechecked"],
             "properties": {
-                "created_at": {"type": ["integer", "null"]},
+                "created_at": {"type": ["number", "null"]},
                 "task_ids_at_created_at": {"type": "array", "items": {"type": "string"}},
                 "null_created_at_rechecked": {"const": True},
             },
@@ -80,7 +80,7 @@ REPORT_CONTRACT_SCHEMA: dict[str, object] = {
 @dataclass(frozen=True)
 class _SourcedRecord:
     record: TaskEconomicsRecord
-    created_at: int | None
+    created_at: float | None
     source_key: str
 
 
@@ -100,7 +100,7 @@ def report_contract_schema() -> dict[str, object]:
 
 def _readonly_created_at_by_task(
     db_path: str | Path, table: str
-) -> dict[str, int | None]:
+) -> dict[str, float | None]:
     """Read task creation watermarks without ever opening the source writable."""
     path = Path(db_path).expanduser()
     if not path.is_file() or not _SAFE_IDENTIFIER.fullmatch(table):
@@ -123,7 +123,7 @@ def _readonly_created_at_by_task(
     finally:
         conn.close()
 
-    result: dict[str, int | None] = {}
+    result: dict[str, float | None] = {}
     for row in rows:
         task_id = row["task_id"]
         if not isinstance(task_id, str) or not task_id:
@@ -242,21 +242,21 @@ def _existing_decisions(existing_report: Mapping[str, object] | None) -> dict[st
     }
 
 
-def _prior_watermark(existing_report: Mapping[str, object] | None) -> int | None:
+def _prior_watermark(existing_report: Mapping[str, object] | None) -> float | None:
     if not isinstance(existing_report, Mapping):
         return None
     watermark = existing_report.get("watermark")
     if not isinstance(watermark, Mapping):
         return None
     value = watermark.get("created_at")
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def _is_new_since_watermark(
     task_id: str,
     item: _SourcedRecord,
     decisions: Mapping[str, object],
-    watermark: int | None,
+    watermark: float | None,
     evidence_fingerprint: str,
 ) -> bool:
     """Refresh new attribution rows *or* later evidence for an existing task."""

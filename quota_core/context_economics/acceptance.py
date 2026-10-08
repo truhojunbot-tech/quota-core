@@ -36,17 +36,22 @@ def _has_trusted_producer_signal(row: Mapping[str, object]) -> bool:
     )
 
 
-def _post_cutoff(report: Mapping[str, object], since: int | None) -> tuple[list[dict[str, object]], list[dict[str, object]], int | None]:
+def _has_created_at(row: Mapping[str, object]) -> bool:
+    value = row.get("created_at")
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _post_cutoff(report: Mapping[str, object], since: float | None) -> tuple[list[dict[str, object]], list[dict[str, object]], float | None]:
     rows = [dict(value) for value in _mapping(report.get("decisions")).values() if isinstance(value, Mapping)]
     if since is None:
         observed = [
             row["created_at"]
             for row in rows
-            if isinstance(row.get("created_at"), int) and _has_trusted_producer_signal(row)
+            if _has_created_at(row) and _has_trusted_producer_signal(row)
         ]
         since = min(observed) if observed else None
-    untimestamped = [row for row in rows if not isinstance(row.get("created_at"), int)]
-    return ([row for row in rows if isinstance(row.get("created_at"), int) and row["created_at"] >= since], untimestamped, since) if since is not None else ([], untimestamped, None)
+    untimestamped = [row for row in rows if not _has_created_at(row)]
+    return ([row for row in rows if _has_created_at(row) and row["created_at"] >= since], untimestamped, since) if since is not None else ([], untimestamped, None)
 
 
 def _decision(row: Mapping[str, object]) -> Mapping[str, object]:
@@ -85,7 +90,7 @@ def _declaration_category(row: Mapping[str, object]) -> str:
 
 
 def check_acceptance(
-    report: Mapping[str, object], since: int | None = None,
+    report: Mapping[str, object], since: float | None = None,
     rerun_bytes_equal: bool | None = None,
 ) -> dict[str, object]:
     """Evaluate #80 closing criteria with ``INSUFFICIENT_DATA`` for unknowns."""
@@ -195,7 +200,7 @@ def check_acceptance(
         INSUFFICIENT_DATA if not unassessed else PASS if v1 else FAIL,
         checked_count=len(unassessed),
         scope="all_report_rows",
-        untimestamped_checked_count=sum(not isinstance(row.get("created_at"), int) for row in unassessed),
+        untimestamped_checked_count=sum(not _has_created_at(row) for row in unassessed),
     )
     safety_rows = rows + untimestamped
     regressions = [row for row in safety_rows if _mapping(_decision(row).get("evidence")).get("independent_review_correct") is False or _mapping(_decision(row).get("evidence")).get("required_context_recalled") is False]
@@ -235,7 +240,7 @@ def check_acceptance(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", required=True)
-    parser.add_argument("--since", type=int)
+    parser.add_argument("--since", type=float)
     parser.add_argument("--rerun-report", help="same-input rerun report, compared byte-for-byte")
     args = parser.parse_args(argv)
     report_path = Path(args.report)
