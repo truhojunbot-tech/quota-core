@@ -3,8 +3,12 @@
 ## Unreleased
 
 - Added an optional `policy_logic_revision` source hash to organic #80 reports.
+  It now covers both `policy.py` and `shadow_report.py` artifact assembly, so
+  either implementation changing refreshes source-present rolling decisions.
   A missing or changed revision refreshes all source-present rolling decisions
-  after a policy-code change, while retaining IDs no longer in the source.
+  while retaining IDs no longer in the source. Refresh logs count retained
+  unrefreshable rows, which may require source restoration or an authorized
+  clean rebaseline to clear a whole-report safety failure.
 
 - Kept unknown-risk tasks at `insufficient_evidence` session treatment even
   when review and recall evidence are positive, restoring #80 V1 without

@@ -86,7 +86,12 @@ class OrganicReportProducerTests(unittest.TestCase):
         from quota_core.context_economics import policy
         from quota_core.context_economics.report_producer import policy_logic_revision
 
-        expected = hashlib.sha256(Path(policy.__file__).read_bytes()).hexdigest()
+        source_dir = Path(policy.__file__).parent
+        digest = hashlib.sha256()
+        for name in ("policy.py", "shadow_report.py"):
+            digest.update(name.encode("utf-8") + b"\0")
+            digest.update((source_dir / name).read_bytes())
+        expected = digest.hexdigest()
         report = produce_shadow_report([self.db_path])
         self.assertEqual(policy_logic_revision(), expected)
         self.assertEqual(report["policy_logic_revision"], expected)
@@ -135,6 +140,29 @@ class OrganicReportProducerTests(unittest.TestCase):
         self.assertEqual(refreshed["decisions"]["retired-task"], prior["decisions"]["retired-task"])
         self.assertEqual(refreshed["decision_count"], 3)
         self.assertEqual(json.dumps(refreshed, sort_keys=True), json.dumps(produce_shadow_report([self.db_path], refreshed), sort_keys=True))
+
+    def test_revision_refresh_reports_unrefreshable_retained_v1_failure(self) -> None:
+        from quota_core.context_economics.acceptance import FAIL
+
+        prior = self._report_with_pre_watermark_row()
+        retired = json.loads(json.dumps(prior["decisions"]["organic-known-zero"]))
+        retired["task_id"] = "retired-task"
+        retired["policy_decision"]["task_id"] = "retired-task"
+        retired["policy_decision"]["recommended_session_treatment"] = "preserve"
+        prior["decisions"]["retired-task"] = retired
+        prior["decision_count"] += 1
+        prior["policy_logic_revision"] = "0" * 64
+
+        with self.assertLogs("quota_core.context_economics.report_producer", level="INFO") as logs:
+            refreshed = produce_shadow_report([self.db_path], prior)
+        self.assertEqual(refreshed["decisions"]["retired-task"], retired)
+        self.assertEqual(refreshed["decision_count"], 3)
+        self.assertEqual(check_acceptance(refreshed, since=100, rerun_bytes_equal=True)["criteria"]["V1"]["status"], FAIL)
+        self.assertTrue(any("refreshed_source_rows=2" in line and "retained_without_source=1" in line for line in logs.output))
+        with self.assertLogs("quota_core.context_economics.report_producer", level="INFO") as rerun_logs:
+            rerun = produce_shadow_report([self.db_path], refreshed)
+        self.assertEqual(json.dumps(rerun, sort_keys=True), json.dumps(refreshed, sort_keys=True))
+        self.assertTrue(any("retained_without_source=1" in line for line in rerun_logs.output))
 
     def test_fractional_watermark_survives_json_round_trip_and_reuses_old_rows(self) -> None:
         conn = sqlite3.connect(self.db_path)

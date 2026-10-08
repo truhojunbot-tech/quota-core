@@ -94,8 +94,12 @@ def policy_contract_sha256() -> str:
 
 
 def policy_logic_revision() -> str:
-    """Hash the policy implementation so logic edits invalidate rolling decisions."""
-    return hashlib.sha256(Path(__file__).with_name("policy.py").read_bytes()).hexdigest()
+    """Hash decision logic and artifact assembly to invalidate rolling decisions."""
+    digest = hashlib.sha256()
+    for name in ("policy.py", "shadow_report.py"):
+        digest.update(name.encode("utf-8") + b"\0")
+        digest.update(Path(__file__).with_name(name).read_bytes())
+    return digest.hexdigest()
 
 
 def report_contract_schema() -> dict[str, object]:
@@ -334,6 +338,15 @@ def _produce_shadow_report(
                 evidence[task_id], provenance[task_id]
             )
             decisions[task_id] = artifact
+
+    _LOGGER.info(
+        "rolling report refresh: policy_revision_mismatch=%s refreshed_source_rows=%d "
+        "retained_without_source=%d (cannot recompute without source)",
+        isinstance(existing_report, Mapping)
+        and existing_report.get("policy_logic_revision") != revision,
+        sum(len(items) for items in by_source.values()),
+        len(decisions.keys() - records.keys()),
+    )
 
     known_times = [item.created_at for item in records.values() if item.created_at is not None]
     current_watermark = max(known_times) if known_times else None
