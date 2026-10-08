@@ -695,7 +695,8 @@ def reconcile_attribution_by_task(attributions: Iterable[RuntimeAttribution]) ->
     ``task_id`` (quota-core issue #58 point 3). Reading every line as an
     independent task execution double/triple-counts the same task. This
     picks, per ``task_id``, whichever row has a terminal outcome and (among
-    ties) the latest ``updated_at``/``completed_at``/``started_at`` --
+    ties) the latest ``updated_at``/``completed_at``/``started_at``; exact
+    timestamp ties use the later row in the attribution stream --
     preserving each task_id's first-seen order in the output.
     """
 
@@ -706,7 +707,8 @@ def reconcile_attribution_by_task(attributions: Iterable[RuntimeAttribution]) ->
             order.append(a.task_id)
         groups.setdefault(a.task_id, []).append(a)
 
-    return [max(groups[task_id], key=_reconciliation_key) for task_id in order]
+    return [max(enumerate(groups[task_id]), key=lambda pair: (*_reconciliation_key(pair[1]), pair[0]))[1]
+            for task_id in order]
 
 
 def filter_by_task(attributions: Iterable[RuntimeAttribution], task_id: str) -> list[RuntimeAttribution]:

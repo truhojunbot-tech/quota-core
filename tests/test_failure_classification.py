@@ -791,6 +791,31 @@ class LateResultReconciliationTests(unittest.TestCase):
     revision -- not keep reporting the stale pre-revision verdict forever,
     and not guess a direction when no ordering signal exists either."""
 
+    def test_fractional_attribution_timestamp_prevents_false_late_timeout(self):
+        db_path = _build_tasks_db([("t1", "timed_out", None)],
+                                  status_changed_at={"t1": 1790145302.6039})
+        row = attribution_from_dict({"runtime": "agent_crew", "task_id": "t1",
+                                     "outcome": "unknown", "updated_at": 1790145302.6040})
+        self.assertEqual(row.updated_at, 1790145302.6040)
+        [result] = enrich_with_task_error_reasons([row], db_path)
+        self.assertEqual(result.outcome, "unknown")
+        self.assertNotEqual(result.extra.get("outcome_source"), "tasks_db_late_result")
+
+    def test_same_timestamp_terminal_uses_later_file_position(self):
+        from quota_core.context_economics.agent_crew_adapter import reconcile_attribution_by_task
+        rows = [attribution_from_dict({"runtime": "agent_crew", "task_id": "t1",
+                                       "outcome": outcome, "updated_at": 1790145302.604})
+                for outcome in ("failed", "completed")]
+        self.assertEqual(reconcile_attribution_by_task(rows)[0].outcome, "success")
+
+    def test_fractional_timestamp_precedes_file_position_for_terminal_rows(self):
+        from quota_core.context_economics.agent_crew_adapter import reconcile_attribution_by_task
+        rows = [attribution_from_dict({"runtime": "agent_crew", "task_id": "t1",
+                                       "outcome": "completed", "updated_at": 1790145302.604}),
+                attribution_from_dict({"runtime": "agent_crew", "task_id": "t1",
+                                       "outcome": "failed", "updated_at": 1790145302.6039})]
+        self.assertEqual(reconcile_attribution_by_task(rows)[0].outcome, "success")
+
     def test_late_completed_result_overrides_a_stale_failed_attribution(self):
         db_path = _build_tasks_db(
             [("t1", "completed", None)],
@@ -1021,4 +1046,3 @@ class LateResultReconciliationTests(unittest.TestCase):
         ]
         enriched = enrich_with_task_error_reasons(attributions, db_path)
         self.assertEqual(enriched[0].outcome, "failed")
-

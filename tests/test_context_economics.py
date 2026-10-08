@@ -40,6 +40,20 @@ FIXTURES = Path(__file__).parent / "fixtures" / "agent_crew"
 
 
 class TokenComponentsTests(unittest.TestCase):
+    def test_zero_primary_fields_do_not_fall_back_and_booleans_are_unknown(self):
+        codex = codex_token_components({"input_tokens": 10, "cached_input_tokens": 0,
+                                        "input_tokens_cached": 7, "reasoning_tokens": 0,
+                                        "output_tokens_reasoning": 5})
+        self.assertEqual(codex.cache_read, 0)
+        self.assertEqual(codex.tool_tokens, 0)
+        gemini = gemini_token_components({"prompt_token_count": 0, "input_tokens": 9,
+                                         "candidates_token_count": 0, "output_tokens": 8,
+                                         "total_token_count": 0, "total_tokens": 17})
+        self.assertEqual((gemini.fresh_input, gemini.output, gemini.provider_total), (0, 0, 0))
+        self.assertIsNone(claude_token_components({"input_tokens": True}).fresh_input)
+        self.assertEqual(claude_token_components({"input_tokens": "12.0"}).fresh_input, 12)
+        self.assertEqual(claude_token_components({"input_tokens": 1.9}).fresh_input, 1)
+
     def test_components_stay_separate_for_claude(self):
         usage = {
             "input_tokens": 100,
