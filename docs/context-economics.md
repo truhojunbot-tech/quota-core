@@ -381,11 +381,10 @@ only appearing as prose in the tester's own summary:
 
 ## Provider context window (issue #70)
 
-> ⛔ **fixture-validated / production-sample pending.** Everything below is
-> exercised against fixtures shaped from the producer's emitter as merged, not
-> against a captured deployment. No end-to-end context-economics claim may rest
-> on this path until a real organic sample exists — see the follow-up at the end
-> of this section.
+> **Organic ingest verified, comparative economics not established.** Two
+> unmodified quota-ops rows from deployed Agent Crew producer build `32c5b8f`
+> now exercise parser, identity join, and serialized task economics. They do
+> not establish a resume/fresh/reset population comparison.
 
 The producer emits one lifecycle row per dispatch describing the provider
 context window it measured:
@@ -436,7 +435,15 @@ is merely incomplete and does not block it. Nothing is matched on timing or a
 working directory: a resume/fresh comparison whose treatment assignment was
 guessed from the same data it is measuring would be circular.
 
-That strict rule applies to context *observations*. A context *clearing* may
+An organic `provider_context_capped` row exposed one narrow exception: it
+names the **pre-cap** provider session, while the same fresh task's attribution
+names the new session. The consumer joins that cap only when task ID, known
+context ID, generation, and provider match and the sole conflict is the
+provider-session ID; it preserves the task's successor identity and notes the
+inferred pre-cap basis. Ordinary observations and every other conflicting cap
+identity are still refused.
+
+The strict rule otherwise applies to context *observations*. A context *clearing* may
 name the pre-clear identity while the fresh dispatch names its successor.
 Its consumer joins an exact identity or a same-provider, advancing-generation
 pre-clear identity for an attempted/confirmed send, marking the inferred basis
@@ -454,17 +461,24 @@ Three token quantities stay in three fields and are never added together:
 `unknown` kept as its own bucket rather than folded into `fresh` — folding it
 would assert a treatment for dispatches whose treatment was never recorded.
 
-### Follow-up — do not close #70 on this
+### Organic provenance and remaining limits
 
-The producer ships its token cap disabled by default, so the observation path
-only starts writing rows once a runtime carrying it is deployed and dispatches.
-Until then this consumer is validated against fixtures only. Outstanding:
+Agent Crew build `32c5b8f` descends from producer merge `84e150e`. Two
+post-boundary quota-ops rows were captured without modification in
+`tests/fixtures/agent_crew/provider_context/organic-quota-ops-events.jsonl`
+along with their terminal attribution rows. `review-6bc835dd` joins a positive
+observation (146555 context tokens, 9148303 bytes, not capped); the final
+serialized task record preserves its task ID, context ID, generation, provider,
+provider session, and those measurements. `review-impl-909ae895-r0` joins a
+cap event (341834 tokens, 15042732 bytes, capped) to its fresh successor task
+with the pre-cap session difference explicitly noted; the serialized task
+identity remains the successor identity. The same path preserves measured
+zero separately from unknown/null in producer-shaped fixtures.
 
-1. capture at least one organic post-deployment sample and confirm the row shape
-   matches these fixtures;
-2. re-check the duplicate defence against real data — the contaminated pair is
-   hypothesised from the producer's branch structure, not yet observed;
-3. only then publish any resume/fresh/reset window comparison from this path.
+The two organic rows establish ingestion and persistence, not policy-treatment
+superiority. The malformed observed+capped duplicate defence remains pinned
+by a separate fixture; these two real rows are not such a pair. Do not draw a
+resume/fresh/reset conclusion from this sample alone.
 
 ## Review-cascade validity (quota-core#74)
 

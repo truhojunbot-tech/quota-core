@@ -1,13 +1,15 @@
 # `provider_context_observed` / `provider_context_capped` fixtures
 
-⛔**fixture-validated / production-sample pending.**
+The original fixtures are producer-shaped. `organic-quota-ops-events.jsonl`
+contains two unmodified deployed rows, and `organic-quota-ops-attribution.jsonl`
+contains their matching unmodified terminal attribution rows, captured on
+2026-10-09. The deployed producer build was `32c5b8f`, a descendant of
+`84e150e` (verified with the Agent Crew commit graph).
 
-These lines are shaped from the producer's emitter as merged, not captured from
-a deployed fleet. The producer ships the token cap disabled by default, so the
-*observation* path only begins writing rows once a runtime carrying it is
-actually deployed and dispatches. Until a real organic sample exists, nothing in
-this consumer may be used to claim end-to-end context economics — see
-`docs/context_economics.md`.
+The older `observations.jsonl` and `duplicated.jsonl` lines were shaped from
+the merged producer. The organic pair proves parse → identity join → serialized
+task economics for a real positive observation and a real cap event; it does
+not establish comparative resume/fresh/reset economics.
 
 ## What each line covers
 
@@ -20,6 +22,8 @@ this consumer may be used to claim end-to-end context economics — see
 | | `task-codex` | likewise |
 | | `task-capped` | a cap-triggered dispatch, which arrives as the *other* event |
 | `duplicated.jsonl` | `task-both` | one dispatch with **both** events — contaminated or historical data |
+| `organic-quota-ops-events.jsonl` | `review-impl-909ae895-r0` | real cap event: 341834 tokens, 15042732 bytes; pre-cap session differs from fresh task session |
+| | `review-6bc835dd` | real observed event: 146555 tokens, 9148303 bytes |
 
 ## Field notes
 

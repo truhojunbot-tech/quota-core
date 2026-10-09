@@ -250,11 +250,10 @@ def attach_provider_context_observations(
     must not be built on.
 
     ⛔A shared ``task_id`` whose context identity CONTRADICTS the record is
-      refused, not merged. Identity fields unknown on either side are not a
-      contradiction -- a record that never learned its ``context_id`` is
-      incomplete, not inconsistent -- but two different known values for the
-      same dispatch mean one of them is about something else, and attaching it
-      would put one dispatch's window onto another's economics.
+      refused, not merged. The one exception is a capped observation naming
+      the pre-cap provider session: for a fresh task with matching known
+      context ID, generation, and provider, its new session may differ. This
+      inferred join is noted; all other identity conflicts remain refusals.
 
     Records with no matching observation keep ``context_tokens=None`` and
     ``context_window_capped=None``: unknown, never a fabricated zero or
@@ -281,7 +280,20 @@ def attach_provider_context_observations(
             )
             if left is not None and right is not None and left != right
         ]
-        if conflicts:
+        pre_cap_session = (
+            conflicts == ["provider_session_id"]
+            and obs.capped
+            and record.context_policy == "fresh"
+            and record.context_id is not None
+            and record.context_id == obs.context_id
+            and record.context_generation is not None
+            and record.context_generation == obs.context_generation
+            and record.provider is not None
+            and record.provider == obs.provider
+            and record.provider_session_id is not None
+            and obs.provider_session_id is not None
+        )
+        if conflicts and not pre_cap_session:
             out.append(replace(
                 record,
                 attribution_notes=record.attribution_notes + (
@@ -295,6 +307,10 @@ def attach_provider_context_observations(
             context_tokens=obs.context_tokens,
             context_bytes=obs.context_bytes,
             context_window_capped=obs.capped,
+            attribution_notes=record.attribution_notes + (
+                ("provider context cap joined from pre-cap provider session; task carries the fresh successor session",)
+                if pre_cap_session else ()
+            ),
         ))
     return out
 
