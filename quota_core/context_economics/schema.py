@@ -1134,6 +1134,11 @@ class TaskEconomicsRecord:
     context_tokens: int | None = None
     context_bytes: int | None = None
     context_window_capped: bool | None = None
+    # A cap event measures the predecessor window that was discarded before a
+    # fresh dispatch. Keep it distinct from that dispatch's own window: using
+    # context_tokens for both would poison fresh/resume comparisons.
+    pre_cap_context_tokens: int | None = None
+    pre_cap_context_bytes: int | None = None
     # quota-core#72 -- whether a context-clearing intervention was observed for
     # this dispatch, and what the producer could honestly say about it.
     # `None` means no clearing row was joined: unknown, NOT "no intervention
@@ -1565,6 +1570,8 @@ def task_economics_to_dict(record: TaskEconomicsRecord) -> dict[str, Any]:
         "context_tokens": record.context_tokens,
         "context_bytes": record.context_bytes,
         "context_window_capped": record.context_window_capped,
+        "pre_cap_context_tokens": record.pre_cap_context_tokens,
+        "pre_cap_context_bytes": record.pre_cap_context_bytes,
         # quota-core#72: carried across the persistence boundary deliberately.
         # PR #71 joined the observation fields in memory and dropped them here,
         # so in-process tests passed and only the written artifact was wrong

@@ -304,9 +304,11 @@ def attach_provider_context_observations(
             continue
         out.append(replace(
             record,
-            context_tokens=obs.context_tokens,
-            context_bytes=obs.context_bytes,
+            context_tokens=None if obs.capped else obs.context_tokens,
+            context_bytes=None if obs.capped else obs.context_bytes,
             context_window_capped=obs.capped,
+            pre_cap_context_tokens=obs.context_tokens if obs.capped else None,
+            pre_cap_context_bytes=obs.context_bytes if obs.capped else None,
             attribution_notes=record.attribution_notes + (
                 ("provider context cap joined from pre-cap provider session; task carries the fresh successor session",)
                 if pre_cap_session else ()

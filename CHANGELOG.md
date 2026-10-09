@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Kept #70 cap measurements separate from the fresh dispatch window:
+  `pre_cap_context_tokens`/`pre_cap_context_bytes` retain the predecessor
+  values, while the dispatch window remains unknown. Window means and maxima
+  also exclude legacy capped rows that stored predecessor values in
+  `context_tokens`.
+
 - Closed #70's organic ingest gap with unmodified quota-ops observed and
   capped lifecycle/attribution fixtures. A capped pre-reset provider session
   may join its fresh successor task only when task ID, context ID, generation,

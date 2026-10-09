@@ -415,6 +415,14 @@ unknown does not appear in the numerator or the denominator.
 `context_window_capped is None` had no observation joined at all, so it is
 neither capped nor known-not-capped, and `known_count - capped_count` would
 silently count it on the not-capped side.
+Cap events measure the *discarded predecessor* window, not the new fresh
+dispatch's window. Their measured values are serialized as
+`pre_cap_context_tokens` and `pre_cap_context_bytes`; `context_tokens` and
+`context_bytes` remain null for that dispatch unless an ordinary observation
+measures it separately. `known_count`, `mean_context_tokens`, and
+`max_context_tokens` exclude capped rows, including older serialized records
+that put a pre-cap value in `context_tokens`. `capped_known_count` and
+`capped_count` still record that the cap was observed.
 
 ### Duplicate defence
 
@@ -470,9 +478,10 @@ along with their terminal attribution rows. `review-6bc835dd` joins a positive
 observation (146555 context tokens, 9148303 bytes, not capped); the final
 serialized task record preserves its task ID, context ID, generation, provider,
 provider session, and those measurements. `review-impl-909ae895-r0` joins a
-cap event (341834 tokens, 15042732 bytes, capped) to its fresh successor task
-with the pre-cap session difference explicitly noted; the serialized task
-identity remains the successor identity. The same path preserves measured
+cap event (341834 pre-cap tokens, 15042732 pre-cap bytes, capped) to its fresh
+successor task with the pre-cap session difference explicitly noted; the
+serialized task identity remains the successor identity, and its own
+`context_tokens`/`context_bytes` remain unknown. The same path preserves measured
 zero separately from unknown/null in producer-shaped fixtures.
 
 The two organic rows establish ingestion and persistence, not policy-treatment

@@ -252,6 +252,10 @@ class JoinTests(unittest.TestCase):
                 _event(event_type="provider_context_capped", conversation_id="s"))],
         )
         self.assertTrue(records[0].context_window_capped)
+        self.assertIsNone(records[0].context_tokens)
+        self.assertIsNone(records[0].context_bytes)
+        self.assertEqual(records[0].pre_cap_context_tokens, 1234)
+        self.assertEqual(records[0].pre_cap_context_bytes, 5678)
 
     def test_context_pack_tokens_are_not_touched(self):
         """Requirement 3: the Context Pack's token budget and the provider's
@@ -282,7 +286,7 @@ class OrganicEndToEndTests(unittest.TestCase):
             "review-impl-909ae895-r0", "review-6bc835dd",
         })
         expected = {
-            "review-impl-909ae895-r0": (341834, 15042732, True),
+            "review-impl-909ae895-r0": (None, None, True),
             "review-6bc835dd": (146555, 9148303, False),
         }
         for task_id, (tokens, byte_count, capped) in expected.items():
@@ -295,10 +299,18 @@ class OrganicEndToEndTests(unittest.TestCase):
                 self.assertEqual(row["context_tokens"], tokens)
                 self.assertEqual(row["context_bytes"], byte_count)
                 self.assertIs(row["context_window_capped"], capped)
+        capped_row = serialized["review-impl-909ae895-r0"]
+        self.assertEqual(capped_row["pre_cap_context_tokens"], 341834)
+        self.assertEqual(capped_row["pre_cap_context_bytes"], 15042732)
+        self.assertIsNone(serialized["review-6bc835dd"]["pre_cap_context_tokens"])
         self.assertTrue(any("pre-cap provider session" in note for note in
                             serialized["review-impl-909ae895-r0"]["attribution_notes"]))
         summary = provider_context_window_summary(joined)
-        self.assertEqual(summary["known_count"], 2)
+        self.assertEqual(summary["known_count"], 1)
+        by_policy = provider_context_by_policy(joined)
+        self.assertEqual(by_policy["fresh"]["known_count"], 0)
+        self.assertIsNone(by_policy["fresh"]["mean_context_tokens"])
+        self.assertIsNone(by_policy["fresh"]["max_context_tokens"])
 
     def test_cap_session_exception_does_not_allow_other_identity_conflicts(self):
         events = read_lifecycle_events_jsonl(FIXTURE_DIR / "organic-quota-ops-events.jsonl")
@@ -382,10 +394,15 @@ class DenominatorTests(unittest.TestCase):
         summary = provider_context_window_summary([
             _record(task_id="a", context_tokens=1, context_window_capped=False),
             _record(task_id="b", context_tokens=2, context_window_capped=True),
-            _record(task_id="c", context_tokens=3, context_window_capped=None),
+            _record(task_id="c", context_tokens=None, context_window_capped=None),
         ])
         self.assertEqual(summary["capped_count"], 1)
         self.assertEqual(summary["capped_known_count"], 2)
+        # Even an older serialized capped row with context_tokens populated
+        # measured the discarded predecessor, not the fresh dispatch window.
+        self.assertEqual(summary["known_count"], 1)
+        self.assertEqual(summary["mean_context_tokens"], 1)
+        self.assertEqual(summary["max_context_tokens"], 1)
 
 
 class PolicyStratificationTests(unittest.TestCase):

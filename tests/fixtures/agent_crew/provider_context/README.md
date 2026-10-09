@@ -22,7 +22,7 @@ not establish comparative resume/fresh/reset economics.
 | | `task-codex` | likewise |
 | | `task-capped` | a cap-triggered dispatch, which arrives as the *other* event |
 | `duplicated.jsonl` | `task-both` | one dispatch with **both** events — contaminated or historical data |
-| `organic-quota-ops-events.jsonl` | `review-impl-909ae895-r0` | real cap event: 341834 tokens, 15042732 bytes; pre-cap session differs from fresh task session |
+| `organic-quota-ops-events.jsonl` | `review-impl-909ae895-r0` | real cap event: 341834 pre-cap tokens, 15042732 pre-cap bytes; pre-cap session differs from fresh task session |
 | | `review-6bc835dd` | real observed event: 146555 tokens, 9148303 bytes |
 
 ## Field notes
@@ -33,3 +33,6 @@ not establish comparative resume/fresh/reset economics.
 - `context_tokens: null` is **unknown**; `0` is a measured empty window. Forcing
   one into the other is the single thing this consumer must never do.
 - `cap_tokens: 0` means the token cap is disabled, not that the cap is zero.
+- A capped measurement belongs to the discarded predecessor, so the joined
+  fresh task stores it in `pre_cap_context_tokens`/`pre_cap_context_bytes`;
+  its dispatch-window `context_tokens`/`context_bytes` stay unknown.
