@@ -671,7 +671,10 @@ __all__ = [
 
 def _window_summary(rows: list) -> dict[str, float | int | None]:
     """Shared body for the window aggregates below."""
-    known = [r for r in rows if r.context_tokens is not None]
+    # A capped row measures the discarded predecessor window, not the fresh
+    # dispatch window. Exclude even legacy records that populated context_tokens
+    # before pre-cap measurements had their own fields.
+    known = [r for r in rows if r.context_tokens is not None and r.context_window_capped is not True]
     values = [float(r.context_tokens) for r in known if r.context_tokens is not None]
     # `context_window_capped is None` means no observation was joined at all,
     # which is a different fact from a joined observation that was not capped.
