@@ -398,8 +398,10 @@ A2 `retrieve_ranked` swap (and the optional EVAL path must match frozen SHA
 M6 requires ranked retrieval latency receipts; M7 requires rejoinable served
 item receipts; M8 requires an independently approved review plus a matured
 72-hour no-reopen/revert/follow-up-fix/test-failure window. The current
-sources do not establish the latter two, so their values are *unknown*, never
-fabricated zero or success. The module formats a table for an hourly caller;
+sources do not establish the latter two. Definition-version-1 does not yet
+measure M7 or M8, so their `source`, `n`, and `value` are null, with a
+`not_measured:` reason; null is not an observed zero or success. The module
+formats a table for an hourly caller;
 installing it into a private bot's scheduler/report is a separate deployment
 step, not performed by quota-core's read-only CLI.
 

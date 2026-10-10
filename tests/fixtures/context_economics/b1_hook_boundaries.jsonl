@@ -1,0 +1,5 @@
+{"bot":"alpha","ts":101,"mode":"ranked","bytes_emitted":8801,"trimmed_bytes":1,"standing_trimmed":2,"latency_ms":10}
+{"bot":"alpha","ts":102,"mode":"ranked","bytes_emitted":8900,"trimmed_bytes":100,"latency_ms":20}
+{"bot":"alpha","ts":103,"mode":"ranked","bytes_emitted":8901,"trimmed_bytes":3,"standing_trimmed":4,"latency_ms":30}
+{"bot":"alpha","ts":104,"mode":"ranked","bytes_emitted":true,"trimmed_bytes":true,"standing_trimmed":5,"latency_ms":true}
+{"bot":"alpha","ts":200,"mode":"ranked","bytes_emitted":99999,"trimmed_bytes":999,"standing_trimmed":999,"latency_ms":999}

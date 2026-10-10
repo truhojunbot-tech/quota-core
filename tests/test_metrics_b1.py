@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -88,3 +90,75 @@ class B1MetricsTests(unittest.TestCase):
         m3c = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M3c")
         self.assertIsNone(m3c["value"])
         self.assertIn("not_all", m3c["reason"])
+
+    def test_hook_boundaries_pairing_percentile_and_boolean_rejection(self):
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"])
+        metrics = {row["metric"]: row for row in rows if row["bot"] == "alpha"}
+        self.assertEqual(metrics["M4"]["n"], 3)
+        self.assertEqual(metrics["M4"]["value"],
+                         {"max_bytes": 8901, "over_8900_count": 1})
+        self.assertEqual(metrics["M5"]["n"], 2)
+        self.assertEqual(metrics["M5"]["value"],
+                         {"trimmed_bytes_total": 4, "standing_trimmed_total": 6})
+        self.assertEqual(metrics["M6"]["n"], 3)
+        self.assertEqual(metrics["M6"]["value"], 30)
+
+    def test_zero_and_boolean_receipts_do_not_enter_m1_denominator(self):
+        conn = sqlite3.connect(self.crew_root / "alpha" / "tasks.db")
+        conn.executemany("INSERT INTO tokenomics_shadow_receipts VALUES (?, ?, ?)", [
+            ("zero", json.dumps({"uncached_input_tokens": 0, "cache_write_tokens": 0,
+                                  "cache_read_tokens": 0}), 1791586802.0),
+            ("bool", json.dumps({"uncached_input_tokens": True, "cache_write_tokens": 0,
+                                  "cache_read_tokens": 0}), 1791586803.0),
+        ])
+        conn.commit()
+        conn.close()
+        rows = compute_metrics(1791580000, 1791594000, self.crew_root,
+                               FIXTURES / "b1_hook_events.jsonl")
+        m1 = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M1")
+        self.assertEqual((m1["n"], m1["value"]), (1, 0.8))
+
+    def test_eval_path_missing_and_wrong_sha_are_distinct(self):
+        absent = Path(self.tmp.name) / "absent-eval.json"
+        wrong = Path(self.tmp.name) / "wrong-eval.json"
+        wrong.write_text("not the frozen evaluation set")
+        for path, reason in ((absent, "frozen_eval_set_missing"),
+                             (wrong, "frozen_eval_set_sha256_mismatch")):
+            with self.subTest(reason=reason):
+                rows = compute_metrics(100, 200, self.crew_root,
+                                       FIXTURES / "b1_hook_boundaries.jsonl",
+                                       bots=["alpha"], eval_path=path)
+                for metric in ("M3a", "M3b"):
+                    row = next(row for row in rows if row["bot"] == "alpha"
+                               and row["metric"] == metric)
+                    self.assertEqual(row["source"], str(path))
+                    self.assertEqual(row["reason"], reason)
+
+    def test_naive_timestamp_is_utc_even_under_non_utc_local_timezone(self):
+        if not hasattr(time, "tzset"):
+            self.skipTest("requires time.tzset")
+        previous = os.environ.get("TZ")
+        try:
+            os.environ["TZ"] = "Asia/Seoul"
+            time.tzset()
+            self.assertEqual(_time("2026-10-09T00:00:00"),
+                             _time("2026-10-09T00:00:00Z"))
+        finally:
+            if previous is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous
+            time.tzset()
+
+    def test_unimplemented_axes_do_not_claim_a_measured_zero_or_source(self):
+        for hook in (FIXTURES / "b1_hook_boundaries.jsonl",
+                     Path(self.tmp.name) / "absent-hooks.jsonl"):
+            rows = compute_metrics(100, 200, self.crew_root, hook, bots=["alpha"])
+            for metric in ("M7", "M8"):
+                row = next(row for row in rows if row["bot"] == "alpha"
+                           and row["metric"] == metric)
+                self.assertIsNone(row["value"])
+                self.assertIsNone(row["n"])
+                self.assertIsNone(row["source"])
+                self.assertTrue(row["reason"].startswith("not_measured:"))

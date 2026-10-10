@@ -45,7 +45,7 @@ def _nonnegative(value: object) -> float | None:
     return number if math.isfinite(number) and number >= 0 else None
 
 
-def _row(bot: str, metric: str, source: str, n: int, value: object,
+def _row(bot: str, metric: str, source: str | None, n: int | None, value: object,
          reason: str | None = None) -> dict[str, object]:
     result: dict[str, object] = {"bot": bot, "metric": metric,
                                  "def_version": DEF_VERSION, "source": source,
@@ -198,10 +198,10 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
         result.append(_row(bot, "M6", hook_source, len(latencies),
                            _percentile95(latencies) if latencies else None,
                            "no_retrieve_ranked_latency_receipts_in_window"))
-        result.append(_row(bot, "M7", hook_source, 0, None,
-                           "no_rejoinable_served_item_receipts_in_window"))
-        result.append(_row(bot, "M8", db_source + ":tasks", 0, None,
-                           "review_outcome_lineage_and_72h_followup_evidence_not_available"))
+        result.append(_row(bot, "M7", None, None, None,
+                           "not_measured:served_item_join_not_implemented"))
+        result.append(_row(bot, "M8", None, None, None,
+                           "not_measured:review_followup_window_not_implemented"))
     return result
 
 
