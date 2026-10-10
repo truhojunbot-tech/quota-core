@@ -3,17 +3,39 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import importlib
 import os
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from contextlib import contextmanager
+from unittest.mock import patch
 
+from quota_core.context_economics import metrics_b1
 from quota_core.context_economics.metrics_b1 import compute_metrics, format_table, _time
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "context_economics"
+
+
+@contextmanager
+def isolated_agent_crew_modules():
+    """Exercise imports from a fake checkout without leaking into other tests."""
+    saved = {name: module for name, module in sys.modules.items()
+             if name == "agent_crew" or name.startswith("agent_crew.")}
+    for name in saved:
+        del sys.modules[name]
+    try:
+        yield
+    finally:
+        for name in list(sys.modules):
+            if name == "agent_crew" or name.startswith("agent_crew."):
+                del sys.modules[name]
+        sys.modules.update(saved)
 
 
 class B1MetricsTests(unittest.TestCase):
@@ -162,3 +184,150 @@ class B1MetricsTests(unittest.TestCase):
                 self.assertIsNone(row["n"])
                 self.assertIsNone(row["source"])
                 self.assertTrue(row["reason"].startswith("not_measured:"))
+
+    def test_frozen_eval_replay_scores_head_and_first_five_middle_only(self):
+        cases = {
+            "owner_cases": [{"project": "alpha", "query": f"owner {i}",
+                             "expected": [f"owner-key-{i}", "other-expected-key"]
+                             if i == 0 else [f"owner-key-{i}"]} for i in range(17)],
+            "task_cases": [{"project": "alpha", "query": f"task {i}",
+                            "expected": [{"ref": f"PR #{i}"}]} for i in range(24)],
+        }
+        class FakeStorage:
+            def __init__(self):
+                self.calls = []
+
+            def retrieve_ranked(self, scope, query, role, k, byte_budget):
+                self.calls.append((scope.fleet, scope.project, role, k, byte_budget))
+                if query == "owner 0":
+                    return {"head": [{"key": "owner-key-0"}], "middle": []}
+                if query == "owner 1":
+                    return {"head": [], "middle": [{"key": f"distractor-{i}"}
+                                                    for i in range(5)]
+                            + [{"key": "owner-key-1"}]}
+                if query == "task 0":
+                    return {"head": [], "middle": [{"key": "x", "value": {"text": "PR #0"}}]}
+                if query == "task 1":
+                    return {"head": [], "middle": [{"key": "x", "value": {"text": "PR #999"}}]}
+                return {"head": [], "middle": []}
+
+        storage = FakeStorage()
+        class Scope:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        scores = metrics_b1._score_eval_cases(cases, storage, Scope)
+        self.assertEqual(scores, {"M3a": (1, 17), "M3b": (1, 24)})
+        self.assertEqual(len(storage.calls), 41)
+        self.assertTrue(all(call == ("fleet", "alpha", "implementer", 20, 16000)
+                            for call in storage.calls))
+
+    def test_replay_guards_and_fake_storage_flow_through_metric_rows(self):
+        eval_path = Path(self.tmp.name) / "eval.json"
+        payload = {"owner_cases": [{"project": "alpha", "query": "owner",
+                                    "expected": ["key-a"]}],
+                   "task_cases": [{"project": "alpha", "query": "task",
+                                   "expected": [{"ref": "issue #42"}]}]}
+        eval_path.write_text(json.dumps(payload))
+        frozen_sha = hashlib.sha256(eval_path.read_bytes()).hexdigest()
+        memory_db = Path(self.tmp.name) / "memory.db"
+        with patch.object(metrics_b1, "EVAL_SHA256", frozen_sha):
+            rows = compute_metrics(100, 200, self.crew_root,
+                                   FIXTURES / "b1_hook_boundaries.jsonl",
+                                   bots=["alpha"], eval_path=eval_path,
+                                   memory_db=memory_db)
+            m3a = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M3a")
+            self.assertIsNone(m3a["value"])
+            self.assertIsNone(m3a["n"])
+            self.assertIn(str(memory_db), m3a["reason"])
+            memory_db.touch()
+            with patch.dict(os.environ, {"LEMMALOG_AGENT_CREW_SRC": str(Path(self.tmp.name) / "missing-src")}):
+                rows = compute_metrics(100, 200, self.crew_root,
+                                       FIXTURES / "b1_hook_boundaries.jsonl",
+                                       bots=["alpha"], eval_path=eval_path,
+                                       memory_db=memory_db)
+            m3a = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M3a")
+            self.assertIsNone(m3a["value"])
+            self.assertIn("LEMMALOG_AGENT_CREW_SRC", m3a["reason"])
+            with patch.object(metrics_b1, "_replay_frozen_eval", return_value={"M3a": (1, 1), "M3b": (0, 1)}) as replay:
+                rows = compute_metrics(100, 200, self.crew_root,
+                                       FIXTURES / "b1_hook_boundaries.jsonl",
+                                       bots=["alpha"], eval_path=eval_path,
+                                       memory_db=memory_db)
+            self.assertEqual(replay.call_count, 1)
+            by_metric = {row["metric"]: row for row in rows if row["bot"] == "alpha"}
+            self.assertEqual((by_metric["M3a"]["value"], by_metric["M3a"]["n"]), (1.0, 1))
+            self.assertEqual((by_metric["M3b"]["value"], by_metric["M3b"]["n"]), (0.0, 1))
+
+    def test_replay_reads_source_ro_and_storage_writes_only_to_snapshot(self):
+        source = Path(self.tmp.name) / "memory-source.db"
+        with sqlite3.connect(source) as db:
+            db.execute("CREATE TABLE source_only (id INTEGER)")
+            db.execute("INSERT INTO source_only VALUES (1)")
+        before_bytes, before_mtime = source.read_bytes(), source.stat().st_mtime_ns
+        package = Path(self.tmp.name) / "fake-crew" / "agent_crew"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "memory_runtime.py").write_text(
+            "class MemoryScope:\n"
+            "    def __init__(self, **fields): self.__dict__.update(fields)\n")
+        (package / "memory_hybrid.py").write_text(
+            "import sqlite3\n"
+            "observed_path = None\n"
+            "snapshot_write_seen = False\n"
+            "class HybridMemoryStorage:\n"
+            "    def __init__(self, path):\n"
+            "        global observed_path, snapshot_write_seen\n"
+            "        observed_path = path\n"
+            "        with sqlite3.connect(path) as db:\n"
+            "            db.execute('CREATE TABLE snapshot_only (id INTEGER)')\n"
+            "            db.execute('INSERT INTO snapshot_only VALUES (1)')\n"
+            "            snapshot_write_seen = db.execute('SELECT count(*) FROM snapshot_only').fetchone()[0] == 1\n"
+            "    def retrieve_ranked(self, scope, query, role, k, byte_budget):\n"
+            "        return {'head': [], 'middle': []}\n")
+        real_connect = sqlite3.connect
+        observed_ro = []
+
+        def checked_connect(database, *args, **kwargs):
+            if str(database).startswith(source.resolve().as_uri()):
+                observed_ro.append((str(database), kwargs.get("uri")))
+                self.assertIn("?mode=ro", str(database))
+                self.assertTrue(kwargs.get("uri"))
+            return real_connect(database, *args, **kwargs)
+
+        cases = {"owner_cases": [{"project": "alpha", "query": "owner",
+                                   "expected": ["key"]}], "task_cases": []}
+        with isolated_agent_crew_modules(), patch.dict(os.environ, {
+                "LEMMALOG_AGENT_CREW_SRC": str(package.parent)}), patch.object(
+                metrics_b1.sqlite3, "connect", side_effect=checked_connect):
+            self.assertEqual(metrics_b1._replay_frozen_eval(cases, source),
+                             {"M3a": (0, 1), "M3b": (0, 0)})
+            hybrid = sys.modules["agent_crew.memory_hybrid"]
+            self.assertNotEqual(Path(hybrid.observed_path), source)
+            self.assertTrue(hybrid.snapshot_write_seen)
+        self.assertEqual(len(observed_ro), 1)
+        self.assertEqual(source.read_bytes(), before_bytes)
+        self.assertEqual(source.stat().st_mtime_ns, before_mtime)
+        with sqlite3.connect(source) as db:
+            self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE name='snapshot_only'").fetchone(), None)
+
+    def test_cached_agent_crew_module_from_other_checkout_is_refused(self):
+        source = Path(self.tmp.name) / "memory-source.db"
+        source.touch()
+        first = Path(self.tmp.name) / "first" / "agent_crew"
+        second = Path(self.tmp.name) / "second" / "agent_crew"
+        for package in (first, second):
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("")
+            (package / "memory_hybrid.py").write_text("class HybridMemoryStorage: pass\n")
+            (package / "memory_runtime.py").write_text("class MemoryScope: pass\n")
+        with isolated_agent_crew_modules():
+            sys.path.insert(0, str(first.parent))
+            try:
+                importlib.import_module("agent_crew.memory_hybrid")
+            finally:
+                sys.path.remove(str(first.parent))
+            with patch.dict(os.environ, {"LEMMALOG_AGENT_CREW_SRC": str(second.parent)}):
+                with self.assertRaisesRegex(ImportError, "agent_crew_src_mismatch"):
+                    metrics_b1._replay_frozen_eval({"owner_cases": [], "task_cases": []}, source)
+            self.assertFalse("agent_crew.memory_runtime" in sys.modules)

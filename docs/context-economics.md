@@ -392,9 +392,17 @@ token components needed for its ratio.
 
 M1 aggregates complete crew receipt token components; M2/M4/M5 use hook rows
 excluding `headless_oneshot`; M3c requires a pack receipt with middle-kind
-counts for *every* task in the window. M3a/M3b remain unavailable before the
-A2 `retrieve_ranked` swap (and the optional EVAL path must match frozen SHA
-`0bdb218d0c8e6ba3da8202c19201fee52a9605664ebe3ea4fb1d5de92de4ac61`).
+counts for *every* task in the window. M3a/M3b replay the frozen EVAL set
+when `--eval-path` matches SHA
+`0bdb218d0c8e6ba3da8202c19201fee52a9605664ebe3ea4fb1d5de92de4ac61`.
+Set `LEMMALOG_AGENT_CREW_SRC` to the Agent Crew source root; the ADR-001 DB
+defaults to `~/.agent_crew/memory/adr001_memory.db` and can be overridden by
+`--memory-db`. Replay snapshots the DB read-only before invoking
+`retrieve_ranked`, whose local indexes and embeddings may write to the snapshot.
+M3a counts owner cases with an expected key in head or middle[:5] out of 17;
+M3b counts task cases with expected reference tokens there out of 24. These
+frozen-set scores are repeated in each bot row, not recalculated per bot or
+time window; absent EVAL, source code or DB yields a reasoned null.
 M6 requires ranked retrieval latency receipts; M7 requires rejoinable served
 item receipts; M8 requires an independently approved review plus a matured
 72-hour no-reopen/revert/follow-up-fix/test-failure window. The current

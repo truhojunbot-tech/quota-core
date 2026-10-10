@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib
 import json
 import math
+import os
+import re
 import sqlite3
+import sys
+import tempfile
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime, timezone
@@ -94,9 +99,68 @@ def _percentile95(values: list[float]) -> float:
     return values[max(0, math.ceil(len(values) * 0.95) - 1)]
 
 
+def _score_eval_cases(eval_set: Mapping[str, object], storage: object,
+                      scope_factory: object) -> dict[str, tuple[int, int]]:
+    """Count frozen EVAL hits in the rendered head plus first five middle rows."""
+    scores = {}
+    for metric, group in (("M3a", "owner_cases"), ("M3b", "task_cases")):
+        cases = eval_set[group]
+        if not isinstance(cases, list):
+            raise ValueError(f"frozen_eval_set_invalid:{group}")
+        hits = 0
+        for case in cases:
+            if not isinstance(case, dict):
+                raise ValueError(f"frozen_eval_set_invalid:{group}")
+            scope = scope_factory(fleet="fleet", project=case["project"])
+            response = storage.retrieve_ranked(scope, case["query"], "implementer", 20, 16000)
+            served = response["head"] + response["middle"][:5]
+            if metric == "M3a":
+                keys = {row.get("key") for row in served if isinstance(row, dict)}
+                hits += any(key in keys for key in case["expected"])
+            else:
+                text = " ".join(json.dumps(row, sort_keys=True, ensure_ascii=False)
+                                for row in served if isinstance(row, dict)).casefold()
+                tokens = set(re.findall(r"[a-z0-9]+", text))
+                hits += any(isinstance(item, dict) and isinstance(item.get("ref"), str)
+                            and (wanted := re.findall(r"[a-z0-9]+", item["ref"].casefold()))
+                            and all(token in tokens for token in wanted)
+                            for item in case["expected"])
+        scores[metric] = (hits, len(cases))
+    return scores
+
+
+def _replay_frozen_eval(eval_set: Mapping[str, object], memory_db: Path) -> dict[str, tuple[int, int]]:
+    """Replay on a snapshot: HybridMemoryStorage may migrate or embed its DB."""
+    if not memory_db.is_file():
+        raise FileNotFoundError(f"memory_db_unavailable:{memory_db}")
+    raw_src = os.environ.get("LEMMALOG_AGENT_CREW_SRC")
+    if not raw_src:
+        raise ImportError("agent_crew_src_unavailable:LEMMALOG_AGENT_CREW_SRC")
+    src = Path(raw_src).expanduser()
+    package_root = src / "src" if (src / "src" / "agent_crew" / "memory_hybrid.py").is_file() else src
+    if not (package_root / "agent_crew" / "memory_hybrid.py").is_file():
+        raise ImportError(f"agent_crew_src_unavailable:LEMMALOG_AGENT_CREW_SRC={src}")
+    sys.path.insert(0, str(package_root))
+    try:
+        hybrid = importlib.import_module("agent_crew.memory_hybrid")
+        if Path(hybrid.__file__).resolve() != (package_root / "agent_crew" / "memory_hybrid.py").resolve():
+            raise ImportError(f"agent_crew_src_mismatch:LEMMALOG_AGENT_CREW_SRC={src}")
+        runtime = importlib.import_module("agent_crew.memory_runtime")
+    finally:
+        sys.path.remove(str(package_root))
+    with tempfile.TemporaryDirectory(prefix="quota-core-m3-replay-") as tmp:
+        snapshot = Path(tmp) / "adr001_memory.db"
+        with closing(sqlite3.connect(f"{memory_db.resolve().as_uri()}?mode=ro", uri=True)) as source:
+            with closing(sqlite3.connect(snapshot)) as target:
+                source.backup(target)
+        storage = hybrid.HybridMemoryStorage(str(snapshot))
+        return _score_eval_cases(eval_set, storage, runtime.MemoryScope)
+
+
 def compute_metrics(since: float, until: float, crew_root: str | Path,
                     hook_log: str | Path, *, bots: list[str] | None = None,
-                    eval_path: str | Path | None = None) -> list[dict[str, object]]:
+                    eval_path: str | Path | None = None,
+                    memory_db: str | Path | None = None) -> list[dict[str, object]]:
     """Compute one source-attributed row per B1.3 metric per bot.
 
     The window is half-open [since, until). A missing producer or pre-A2
@@ -115,6 +179,25 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
     bot_names = set(bots or []) | set(hook_rows)
     if root.is_dir():
         bot_names.update(path.name for path in root.iterdir() if (path / "tasks.db").is_file())
+    eval_source = str(eval_path) if eval_path else "frozen_eval_set:" + EVAL_SHA256
+    eval_reason = "frozen_eval_set_missing:--eval-path"
+    eval_scores = None
+    if eval_path is not None:
+        path = Path(eval_path).expanduser()
+        if not path.is_file():
+            eval_reason = "frozen_eval_set_missing"
+        else:
+            contents = path.read_bytes()
+            if hashlib.sha256(contents).hexdigest() != EVAL_SHA256:
+                eval_reason = "frozen_eval_set_sha256_mismatch"
+            else:
+                try:
+                    eval_set = json.loads(contents)
+                    db_path = Path(memory_db).expanduser() if memory_db is not None else Path.home() / ".agent_crew/memory/adr001_memory.db"
+                    eval_scores = _replay_frozen_eval(eval_set, db_path)
+                    eval_source = f"{path};{db_path}"
+                except (OSError, ImportError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
+                    eval_reason = str(exc) or type(exc).__name__
     result: list[dict[str, object]] = []
     for bot in sorted(bot_names):
         db = root / bot / "tasks.db"
@@ -146,16 +229,11 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
         result.append(_row(bot, "M2", hook_source, sum(bool(x.get("head_hash")) for x in hooks),
                            len(heads) if heads else None,
                            "no_head_hash_in_window"))
-        eval_source = str(eval_path) if eval_path else "frozen_eval_set:" + EVAL_SHA256
-        eval_reason = "A2_retrieve_ranked_not_available_for_frozen_eval_replay"
-        if eval_path is not None:
-            path = Path(eval_path).expanduser()
-            if not path.is_file():
-                eval_reason = "frozen_eval_set_missing"
-            elif hashlib.sha256(path.read_bytes()).hexdigest() != EVAL_SHA256:
-                eval_reason = "frozen_eval_set_sha256_mismatch"
         for metric in ("M3a", "M3b"):
-            result.append(_row(bot, metric, eval_source, 0, None, eval_reason))
+            score = eval_scores.get(metric) if eval_scores is not None else None
+            result.append(_row(bot, metric, eval_source, score[1] if score else None,
+                               score[0] / score[1] if score and score[1] else None,
+                               eval_reason))
 
         packs = []
         if events_file.is_file():
@@ -222,13 +300,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--crew-root", type=Path, default=Path.home() / ".agent_crew")
     parser.add_argument("--hook-log", type=Path, required=True)
     parser.add_argument("--eval-path", type=Path)
+    parser.add_argument("--memory-db", type=Path,
+                        help="ADR-001 memory DB to snapshot read-only for frozen EVAL replay")
     parser.add_argument("--table", action="store_true")
     args = parser.parse_args(argv)
     since, until = _time(args.since), _time(args.until)
     if since is None or until is None:
         parser.error("--since and --until must be epochs or ISO-8601 timestamps")
     rows = compute_metrics(since, until, args.crew_root, args.hook_log,
-                           eval_path=args.eval_path)
+                           eval_path=args.eval_path, memory_db=args.memory_db)
     print(format_table(rows) if args.table else json.dumps(rows, sort_keys=True))
     return 0
 
