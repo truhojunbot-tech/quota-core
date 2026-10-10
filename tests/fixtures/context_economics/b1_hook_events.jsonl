@@ -1,0 +1,3 @@
+{"ts":"2026-10-09T23:00:00+00:00","bot":"alpha","identity_source":"cwd","head_hash":"one","bytes_emitted":8000,"trimmed_bytes":5,"standing_trimmed":0,"mode":"ranked","latency_ms":100,"middle_bytes_by_kind":{"lineage":42}}
+{"ts":"2026-10-09T23:30:00+00:00","bot":"alpha","identity_source":"headless_oneshot","head_hash":"ignored","bytes_emitted":99999,"trimmed_bytes":8,"standing_trimmed":1}
+{"ts":"2026-10-09T23:45:00+00:00","bot":"alpha","identity_source":"cwd","head_hash":"one","bytes_emitted":8800,"trimmed_bytes":0,"standing_trimmed":0,"mode":"fallback"}

@@ -379,6 +379,32 @@ only appearing as prose in the tester's own summary:
   row where the five keys are absent from the JSON entirely (not `null`) --
   both must parse identically to `None`.
 
+## B1.3 hourly measurement table (issue #99)
+
+`python -m quota_core.context_economics.metrics_b1 --since ISO8601 --until ISO8601
+--crew-root CREW_DIR --hook-log HOOK_JSONL --table` prints the version-1
+M1–M8 table for a half-open UTC window; omit `--table` for machine-readable
+JSON rows. The CLI only reads supplied sources (SQLite uses `mode=ro`). Every
+row includes bot, metric, `def_version`, source, known sample count `n`, value,
+and a reason when value is null. The session-cache M1 axis is separately
+null with a reason because deployed Quota pace caches do not contain the three
+token components needed for its ratio.
+
+M1 aggregates complete crew receipt token components; M2/M4/M5 use hook rows
+excluding `headless_oneshot`; M3c requires a pack receipt with middle-kind
+counts for *every* task in the window. M3a/M3b remain unavailable before the
+A2 `retrieve_ranked` swap (and the optional EVAL path must match frozen SHA
+`0bdb218d0c8e6ba3da8202c19201fee52a9605664ebe3ea4fb1d5de92de4ac61`).
+M6 requires ranked retrieval latency receipts; M7 requires rejoinable served
+item receipts; M8 requires an independently approved review plus a matured
+72-hour no-reopen/revert/follow-up-fix/test-failure window. The current
+sources do not establish the latter two. Definition-version-1 does not yet
+measure M7 or M8, so their `source`, `n`, and `value` are null, with a
+`not_measured:` reason; null is not an observed zero or success. The module
+formats a table for an hourly caller;
+installing it into a private bot's scheduler/report is a separate deployment
+step, not performed by quota-core's read-only CLI.
+
 ## Provider context window (issue #70)
 
 > **Organic ingest verified, comparative economics not established.** Two
