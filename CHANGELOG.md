@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replayed SHA-pinned B1.3 M3a/M3b EVAL cases through Agent Crew
+  `retrieve_ranked` on a read-only snapshot of the ADR-001 memory DB, replacing
+  the pre-A2 placeholder where sources are available.
+
 - Added read-only B1.3 definition-version-1 M1–M8 source-attributed JSON rows
   and an hourly table CLI. Missing retrieval, served-item, and matured-review
   evidence is null with an explicit reason, not a fabricated zero.

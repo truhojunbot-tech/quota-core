@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from quota_core.context_economics import metrics_b1
 from quota_core.context_economics.metrics_b1 import compute_metrics, format_table, _time
 
 
@@ -162,3 +165,74 @@ class B1MetricsTests(unittest.TestCase):
                 self.assertIsNone(row["n"])
                 self.assertIsNone(row["source"])
                 self.assertTrue(row["reason"].startswith("not_measured:"))
+
+    def test_frozen_eval_replay_scores_head_and_first_five_middle_only(self):
+        cases = {
+            "owner_cases": [{"project": "alpha", "query": f"owner {i}",
+                             "expected": [f"owner-key-{i}"]} for i in range(17)],
+            "task_cases": [{"project": "alpha", "query": f"task {i}",
+                            "expected": [{"ref": f"PR #{i}"}]} for i in range(24)],
+        }
+        class FakeStorage:
+            def __init__(self):
+                self.calls = []
+
+            def retrieve_ranked(self, scope, query, role, k, byte_budget):
+                self.calls.append((scope.fleet, scope.project, role, k, byte_budget))
+                if query == "owner 0":
+                    return {"head": [{"key": "owner-key-0"}], "middle": []}
+                if query == "owner 1":
+                    return {"head": [], "middle": [{"key": f"distractor-{i}"}
+                                                    for i in range(5)]
+                            + [{"key": "owner-key-1"}]}
+                if query == "task 0":
+                    return {"head": [], "middle": [{"key": "x", "value": {"text": "PR #0"}}]}
+                return {"head": [], "middle": []}
+
+        storage = FakeStorage()
+        class Scope:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+        scores = metrics_b1._score_eval_cases(cases, storage, Scope)
+        self.assertEqual(scores, {"M3a": (1, 17), "M3b": (1, 24)})
+        self.assertEqual(len(storage.calls), 41)
+        self.assertTrue(all(call == ("fleet", "alpha", "implementer", 20, 16000)
+                            for call in storage.calls))
+
+    def test_replay_guards_and_fake_storage_flow_through_metric_rows(self):
+        eval_path = Path(self.tmp.name) / "eval.json"
+        payload = {"owner_cases": [{"project": "alpha", "query": "owner",
+                                    "expected": ["key-a"]}],
+                   "task_cases": [{"project": "alpha", "query": "task",
+                                   "expected": [{"ref": "issue #42"}]}]}
+        eval_path.write_text(json.dumps(payload))
+        frozen_sha = hashlib.sha256(eval_path.read_bytes()).hexdigest()
+        memory_db = Path(self.tmp.name) / "memory.db"
+        with patch.object(metrics_b1, "EVAL_SHA256", frozen_sha):
+            rows = compute_metrics(100, 200, self.crew_root,
+                                   FIXTURES / "b1_hook_boundaries.jsonl",
+                                   bots=["alpha"], eval_path=eval_path,
+                                   memory_db=memory_db)
+            m3a = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M3a")
+            self.assertIsNone(m3a["value"])
+            self.assertIsNone(m3a["n"])
+            self.assertIn(str(memory_db), m3a["reason"])
+            memory_db.touch()
+            with patch.dict(os.environ, {"LEMMALOG_AGENT_CREW_SRC": str(Path(self.tmp.name) / "missing-src")}):
+                rows = compute_metrics(100, 200, self.crew_root,
+                                       FIXTURES / "b1_hook_boundaries.jsonl",
+                                       bots=["alpha"], eval_path=eval_path,
+                                       memory_db=memory_db)
+            m3a = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M3a")
+            self.assertIsNone(m3a["value"])
+            self.assertIn("LEMMALOG_AGENT_CREW_SRC", m3a["reason"])
+            with patch.object(metrics_b1, "_replay_frozen_eval", return_value={"M3a": (1, 1), "M3b": (0, 1)}) as replay:
+                rows = compute_metrics(100, 200, self.crew_root,
+                                       FIXTURES / "b1_hook_boundaries.jsonl",
+                                       bots=["alpha"], eval_path=eval_path,
+                                       memory_db=memory_db)
+            self.assertEqual(replay.call_count, 1)
+            by_metric = {row["metric"]: row for row in rows if row["bot"] == "alpha"}
+            self.assertEqual((by_metric["M3a"]["value"], by_metric["M3a"]["n"]), (1.0, 1))
+            self.assertEqual((by_metric["M3b"]["value"], by_metric["M3b"]["n"]), (0.0, 1))
