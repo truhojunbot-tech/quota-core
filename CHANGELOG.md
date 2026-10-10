@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added read-only B1.3 definition-version-1 M1–M8 source-attributed JSON rows
+  and an hourly table CLI. Missing retrieval, served-item, and matured-review
+  evidence is null with an explicit reason, not a fabricated zero.
+
 - Kept #70 cap measurements separate from the fresh dispatch window:
   `pre_cap_context_tokens`/`pre_cap_context_bytes` retain the predecessor
   values, while the dispatch window remains unknown. Window means and maxima
