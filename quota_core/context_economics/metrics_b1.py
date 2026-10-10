@@ -143,9 +143,9 @@ def _replay_frozen_eval(eval_set: Mapping[str, object], memory_db: Path) -> dict
     sys.path.insert(0, str(package_root))
     try:
         hybrid = importlib.import_module("agent_crew.memory_hybrid")
-        runtime = importlib.import_module("agent_crew.memory_runtime")
         if Path(hybrid.__file__).resolve() != (package_root / "agent_crew" / "memory_hybrid.py").resolve():
             raise ImportError(f"agent_crew_src_mismatch:LEMMALOG_AGENT_CREW_SRC={src}")
+        runtime = importlib.import_module("agent_crew.memory_runtime")
     finally:
         sys.path.remove(str(package_root))
     with tempfile.TemporaryDirectory(prefix="quota-core-m3-replay-") as tmp:
