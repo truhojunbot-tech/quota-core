@@ -1151,10 +1151,9 @@ class SessionReportContractTests(unittest.TestCase):
         self.assertEqual(report["totals"]["cache_hit_pct"], 42.9)
         self.assertEqual(report["by_project"][0]["name"], "demo-project")
         self.assertEqual(report["by_model"][0]["name"], "claude-sonnet-4-6")
-        self.assertEqual(report["by_subagent"][0]["name"], "Explore")
+        self.assertEqual(report["by_subagent"], [])
         self.assertEqual(report["by_skill"][0]["name"], "systematic-debugging")
         self.assertEqual(report["by_slash_command"][0]["name"], "/investigate")
-        self.assertEqual(report["by_subagent"][0]["avg_tokens_per_call"], 100)
         self.assertEqual(report["by_day"][0]["date"], "2026-05-07")
         self.assertEqual(report["by_day"][0]["sessions"], 1)
         self.assertEqual(report["hourly_bursts"][0]["name"], "05-07 00:00Z")
@@ -1164,6 +1163,42 @@ class SessionReportContractTests(unittest.TestCase):
         self.assertIn("/investigate why cache", report["expensive_prompts"][0]["prompt_preview"])
         self.assertEqual(report["expensive_prompts"][0]["context"][0]["here"], True)
         self.assertEqual(report["reconciliation"]["quota_scanner_total_tokens"], 120)
+
+    def test_subagent_usage_excludes_parent_calls_after_agent_tool(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            project_dir = Path(temp_dir) / "demo-project"
+            subagents_dir = project_dir / "session" / "subagents"
+            subagents_dir.mkdir(parents=True)
+
+            def call(number, tokens, *, sidechain=False):
+                return {
+                    "timestamp": f"2026-05-07T00:00:0{number}Z",
+                    "requestId": f"req-{number}",
+                    "isSidechain": sidechain,
+                    "message": {"model": "claude-sonnet-4-6", "usage": {
+                        "input_tokens": tokens, "output_tokens": 0,
+                        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+                    }},
+                }
+
+            parent_rows = [
+                call(1, 100),
+                {"timestamp": "2026-05-07T00:00:02Z", "message": {
+                    "role": "assistant", "content": [{"type": "tool_use", "name": "Agent", "input": {"subagent_type": "Explore"}}],
+                }},
+                call(3, 200),
+                call(4, 300),
+                {**call(6, 10, sidechain=True), "agentType": "Explore"},
+            ]
+            (project_dir / "session.jsonl").write_text("\n".join(json.dumps(row) for row in parent_rows) + "\n")
+            (subagents_dir / "agent-abc.jsonl").write_text(json.dumps(call(5, 40)) + "\n")
+            (subagents_dir / "agent-abc.meta.json").write_text(json.dumps({"agentType": "Explore"}))
+
+            report = analyze_claude_sessions([temp_dir], since="24h", now=1778169600)
+
+        self.assertEqual(report["totals"]["total_tokens"], 650)
+        self.assertEqual([(row["name"], row["total_tokens"], row["api_calls"]) for row in report["by_subagent"]],
+                         [("Explore", 50, 2)])
 
     def test_claude_session_parser_aggregates_prompt_diagnostics(self):
         with tempfile.TemporaryDirectory() as temp_dir:
