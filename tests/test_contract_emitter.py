@@ -6,6 +6,8 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -13,7 +15,7 @@ from unittest.mock import patch
 from scripts.compare_contracts import differences
 from quota_core.context_economics.report_producer import (
     build_contract, main, produce_shadow_report, write_contract_atomically,
-    _produce_shadow_report,
+    _produce_shadow_report, compare_contract_to_source,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures/economics_policy/organic-report-rows.json"
@@ -36,6 +38,8 @@ class ContractOutputTests(unittest.TestCase):
             (:task_id, :created_at, :outcome, :provider, :model,
              :uncached_input_tokens, :cache_read_tokens, :cache_write_tokens,
              :output_tokens, :reasoning_tokens)""", self.rows)
+        conn.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, receipt_id TEXT)")
+        conn.execute("INSERT INTO tasks VALUES (?, ?)", (self.rows[0]["task_id"], "receipt-123"))
         conn.commit()
         conn.close()
 
@@ -52,6 +56,10 @@ class ContractOutputTests(unittest.TestCase):
         self.assertEqual(contract["decision_count"], len(self.rows))
         self.assertEqual(contract["provenance"]["decision_count"], len(self.rows))
         self.assertEqual(contract["produced_at"], contract["provenance"]["produced_at"])
+        self.assertEqual(contract["provenance"]["producer"], "quota_core.context_economics.report_producer")
+        self.assertEqual(contract["provenance"]["build_sha"], contract["provenance"]["producer_commit"])
+        self.assertEqual(contract["provenance"]["source_receipt_ids"], {self.rows[0]["task_id"]: "receipt-123"})
+        self.assertEqual(contract["provenance"]["snapshot_at"], contract["produced_at"])
         self.assertEqual({d["task_id"]: d for d in contract["decisions"]},
                          {key: value["policy_decision"] for key, value in report["decisions"].items()})
         self.assertEqual(report, produce_shadow_report([self.db]))
@@ -116,6 +124,34 @@ class ContractOutputTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             main(["--db", str(self.db), "--out", str(path), "--contract-out", str(path)])
         self.assertFalse(path.exists())
+
+    def test_parity_reports_both_id_directions_and_field_differences(self):
+        report, records = _produce_shadow_report([self.db])
+        contract = build_contract(report, records, [self.db], produced_at="2026-10-11T00:00:00+00:00")
+        self.assertEqual(compare_contract_to_source(contract, [self.db])["mismatch_count"], 0)
+        modified = json.loads(json.dumps(contract))
+        missing = modified["decisions"].pop()
+        modified["decisions"][0]["recommended_max_review_fix_rounds"] = 999
+        modified["decisions"].append({"task_id": "extra-task"})
+        parity = compare_contract_to_source(modified, [self.db])
+        self.assertEqual(parity["missing_task_ids"], [missing["task_id"]])
+        self.assertEqual(parity["extra_task_ids"], ["extra-task"])
+        self.assertEqual(parity["field_diff_count"], 1)
+        self.assertEqual(parity["mismatch_count"], 3)
+
+    def test_parity_cli_reads_contract_without_writing_and_honors_cutoff(self):
+        report, records = _produce_shadow_report([self.db])
+        contract = build_contract(report, records, [self.db])
+        path = self.root / "contract.json"
+        write_contract_atomically(path, contract)
+        original = path.read_bytes()
+        output = StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(main(["--db", str(self.db), "--parity-check", str(path),
+                                   "--at", "2100-01-01T00:00:00+00:00"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["mismatch_count"], 0)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertFalse((self.root / "report.json").exists())
 
 
 if __name__ == "__main__":
