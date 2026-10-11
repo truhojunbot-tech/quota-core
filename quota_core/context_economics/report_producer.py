@@ -83,6 +83,7 @@ class _SourcedRecord:
     record: TaskEconomicsRecord
     created_at: float | None
     source_key: str
+    receipt_id: str | None = None
 
 
 def policy_contract_sha256() -> str:
@@ -147,6 +148,28 @@ def _readonly_created_at_by_task(
     return result
 
 
+def _readonly_receipts_by_task(db_path: str | Path) -> dict[str, str]:
+    """Read optional dispatch receipt identities from the same source DB."""
+    path = Path(db_path).expanduser()
+    if not path.is_file():
+        return {}
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return {}
+    try:
+        columns = {row[1] for row in conn.execute('PRAGMA table_info("tasks")')}
+        if not {"task_id", "receipt_id"} <= columns:
+            return {}
+        return {task_id: receipt_id for task_id, receipt_id in conn.execute(
+            'SELECT task_id, receipt_id FROM "tasks" WHERE receipt_id IS NOT NULL'
+        ) if isinstance(task_id, str) and isinstance(receipt_id, str) and receipt_id}
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+
+
 def read_organic_task_records(
     db_paths: Iterable[str | Path], table: str = "task_attribution"
 ) -> dict[str, _SourcedRecord]:
@@ -162,12 +185,14 @@ def read_organic_task_records(
     unique_paths = sorted({str(Path(path).expanduser()) for path in db_paths})
     for path in unique_paths:
         created = _readonly_created_at_by_task(path, table)
+        receipts = _readonly_receipts_by_task(path)
         source_records = read_task_attribution_sqlite(path, table)
         _LOGGER.info("read %d attribution record(s) from %s", len(source_records), path)
         if not source_records:
             _LOGGER.warning("no readable attribution records from %s", path)
         for record in source_records:
-            candidate = _SourcedRecord(record, created.get(record.task_id), path)
+            candidate = _SourcedRecord(record, created.get(record.task_id), path,
+                                       receipts.get(record.task_id))
             existing = selected.get(record.task_id)
             candidate_key = (
                 candidate.created_at is not None,
@@ -442,17 +467,71 @@ def build_contract(
     contract = {"contract_version": POLICY_CONTRACT_VERSION, "mode": "shadow",
                 "decision_count": len(decisions), "decisions": decisions}
     timestamp = produced_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    build_sha = producer_commit()
     contract["provenance"] = {
         "report_contract_id": REPORT_CONTRACT_ID,
         "policy_contract": {"id": policy_contract_schema()["$id"],
                             "sha256": policy_contract_sha256()},
-        "producer_commit": producer_commit(),
+        "producer_commit": build_sha,
+        "producer": "quota_core.context_economics.report_producer",
+        "build_sha": build_sha,
+        "source_receipt_ids": {task_id: records[task_id].receipt_id for task_id in sorted(records)
+                               if records[task_id].receipt_id is not None},
+        "snapshot_at": timestamp,
         "produced_at": timestamp,
         "source_dbs": _source_provenance(records, db_paths),
         "decision_count": len(decisions),
     }
     contract["produced_at"] = timestamp
     return contract
+
+
+def compare_contract_to_source(
+    contract: Mapping[str, object], db_paths: Iterable[str | Path],
+    snapshot_at: str | None = None, table: str = "task_attribution",
+) -> dict[str, object]:
+    """Compare reader-visible decisions with a fresh read of the supplied DBs.
+
+    ``snapshot_at`` bounds task creation, not historical evidence updates. For
+    exact historical parity callers must supply DB snapshots captured then.
+    """
+    cutoff = parse_flexible_timestamp(snapshot_at) if snapshot_at else None
+    if snapshot_at and cutoff is None:
+        raise ValueError("snapshot_at must be a valid timestamp")
+    report, records = _produce_shadow_report(db_paths, table=table)
+    if cutoff is not None:
+        records = {task_id: item for task_id, item in records.items()
+                   if item.created_at is None or item.created_at <= cutoff}
+    expected = {item["task_id"]: item for item in build_contract(report, records, db_paths)["decisions"]}
+    supplied = contract.get("decisions")
+    if not isinstance(supplied, list):
+        raise ValueError("contract decisions must be a list")
+    actual: dict[str, Mapping[str, object]] = {}
+    for item in supplied:
+        if not isinstance(item, Mapping) or not isinstance(item.get("task_id"), str):
+            raise ValueError("each contract decision needs a task_id")
+        task_id = item["task_id"]
+        if task_id in actual:
+            raise ValueError(f"duplicate contract task_id: {task_id}")
+        actual[task_id] = item
+    missing = sorted(expected.keys() - actual.keys())
+    extra = sorted(actual.keys() - expected.keys())
+    field_diffs = []
+    for task_id in sorted(expected.keys() & actual.keys()):
+        for field in sorted(expected[task_id].keys() | actual[task_id].keys()):
+            before = actual[task_id].get(field, "<missing>")
+            after = expected[task_id].get(field, "<missing>")
+            if before != after:
+                field_diffs.append({"task_id": task_id, "field": field,
+                                    "contract": before, "reference": after})
+    return {"snapshot_at": snapshot_at, "contract_count": len(actual),
+            "reference_count": len(expected), "missing_task_ids": missing,
+            "extra_task_ids": extra, "missing_count": len(missing),
+            "extra_count": len(extra), "field_diffs": field_diffs,
+            "field_diff_count": len(field_diffs),
+            "changed_task_count": len({diff["task_id"] for diff in field_diffs}),
+            "mismatch_count": len(missing) + len(extra) + len(field_diffs),
+            "historical_evidence_reconstructed": False}
 
 
 def write_contract_atomically(path: str | Path, contract: Mapping[str, object]) -> str:
@@ -517,13 +596,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--db", action="append", default=[], help="read-only SQLite attribution DB (repeatable)")
     parser.add_argument("--db-list", help="JSON list of SQLite attribution DB paths")
     parser.add_argument("--table", default="task_attribution")
-    parser.add_argument("--out", required=True, help="report JSON; prior output is the rolling state")
+    parser.add_argument("--out", help="report JSON; prior output is the rolling state")
     parser.add_argument("--contract-out", help="also write the reader-compatible list contract")
+    parser.add_argument("--parity-check", help="compare this contract with fresh decisions from source DBs")
+    parser.add_argument("--at", help="UTC snapshot time; exact historical parity requires DB copies from then")
     parser.add_argument("--lookup-task", help="also print a COVERED/NOT_COVERED lookup result")
     args = parser.parse_args(argv)
     db_paths = _db_paths_from_args(args.db, args.db_list)
     if not db_paths:
         parser.error("at least one --db or --db-list entry is required")
+    if args.parity_check:
+        if not all(Path(path).expanduser().is_file() for path in db_paths):
+            parser.error("all parity source DBs must exist")
+        contract = json.loads(Path(args.parity_check).read_text(encoding="utf-8"))
+        print(json.dumps(compare_contract_to_source(contract, db_paths, args.at, args.table), sort_keys=True))
+        return 0
+    if args.at:
+        parser.error("--at requires --parity-check")
+    if not args.out:
+        parser.error("--out is required unless --parity-check is used")
     out = Path(args.out)
     if args.contract_out and Path(args.contract_out).resolve() == out.resolve():
         parser.error("--contract-out must differ from --out")

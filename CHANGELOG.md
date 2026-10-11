@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Made #80 publish-equivalence comparison backward-compatible with the new
+  build/clock provenance, and pinned parity cutoff and malformed-input paths.
+
+- Added producer/build/receipt/snapshot provenance to the #80 reader contract
+  and a read-only, same-DB-snapshot parity CLI that reports missing, extra,
+  and changed decisions in both directions.
+
 - Replayed SHA-pinned B1.3 M3a/M3b EVAL cases through Agent Crew
   `retrieve_ranked` on a read-only snapshot of the ADR-001 memory DB, replacing
   the pre-A2 placeholder where sources are available.

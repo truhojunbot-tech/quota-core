@@ -795,7 +795,25 @@ The module opens every source SQLite database using `mode=ro`; it writes only
 the paths explicitly passed as `--out` and optional `--contract-out`.
 The optional reader-compatible list contract has top-level `produced_at` in
 UTC ISO 8601, identical to `provenance.produced_at`; older published contracts
-may omit the top-level copy. Re-running with the same `--out` is a rolling upsert: the
+may omit the top-level copy. The
+contract provenance also names the producer, its build SHA, the source task
+receipt IDs available in the source `tasks` tables, and `snapshot_at`. The
+receipt-ID map omits tasks without a recorded receipt. `snapshot_at` records
+when the contract was built; it is not evidence that a live database can be
+rewound to that instant.
+
+`--parity-check contract.json --at <UTC-ISO8601>` compares a reader contract
+to freshly computed decisions from the supplied read-only DBs, reporting task
+IDs missing in either direction and per-field differences without writing an
+output file. The timestamp bounds task creation; NULL creation timestamps
+remain in scope. For exact historical same-snapshot parity, pass SQLite
+snapshots captured at that instant: current live DBs cannot reconstruct later
+changes to an older task's evidence.
+The publish-equivalence comparator ignores build SHA and snapshot clock drift;
+it tolerates missing producer and receipt-ID provenance in older contracts but
+compares receipt IDs when both contracts provide them.
+
+Re-running with the same `--out` is a rolling upsert: the
 `decisions` object is keyed by `task_id`, the `watermark.created_at` boundary
 is inclusive for tied timestamps, and NULL timestamps are deliberately
 rechecked rather than silently skipped.
