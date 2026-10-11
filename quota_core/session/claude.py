@@ -180,6 +180,7 @@ class ClaudeSessionScanner:
             return
         project = self.project_normalizer(project_from_path(root, transcript))
         session_label = transcript_label(root, transcript, project)
+        transcript_subagent_type = subagent_type_from_transcript(transcript)
         context = PromptContext()
         try:
             handle = transcript.open(errors="replace")
@@ -213,7 +214,10 @@ class ClaudeSessionScanner:
                     continue
                 self.seen_api_keys.add(key)
                 model = extract_model(record)
-                self._add_usage(project, session_label, model, usage, runtime_classification(record), context, timestamp)
+                subagent_type = transcript_subagent_type
+                if subagent_type is None and record.get("isSidechain"):
+                    subagent_type = record.get("agentType") or "unknown"
+                self._add_usage(project, session_label, model, usage, runtime_classification(record), context, timestamp, subagent_type)
 
     def _in_window(self, timestamp: int | None) -> bool:
         selected = self.query.window
@@ -251,7 +255,7 @@ class ClaudeSessionScanner:
             text=prompt or context.text,
             slash_command=slash_command,
             skill=tool_context.get("skill") or context.skill,
-            subagent_type=tool_context.get("subagent_type") or context.subagent_type,
+            subagent_type=tool_context.get("subagent_type"),
             timestamp=timestamp or context.timestamp,
             session_label=prompt_session,
             prompt_index=prompt_index,
@@ -298,6 +302,7 @@ class ClaudeSessionScanner:
         runtime_class: str,
         context: PromptContext,
         timestamp: int | None,
+        subagent_type: str | None,
     ) -> None:
         self.totals.add(usage, model)
         self.by_project[project].add(usage, model)
@@ -306,8 +311,8 @@ class ClaudeSessionScanner:
             self.by_hour[hour_bucket(timestamp)].add(usage, model)
         model_key = model or "unknown"
         self.by_model[model_key].add(usage, model_key)
-        if context.subagent_type:
-            self.by_subagent[context.subagent_type].add(usage, model)
+        if subagent_type:
+            self.by_subagent[subagent_type].add(usage, model)
         if context.skill:
             self.by_skill[context.skill].add(usage, model)
         if context.slash_command:
@@ -444,6 +449,18 @@ class ClaudeSessionScanner:
             self.warnings.append(f"skipped {self.malformed_json_records} malformed json records")
 
 
+def subagent_type_from_transcript(transcript: Path) -> str | None:
+    if transcript.parent.name != "subagents" or not transcript.name.startswith("agent-"):
+        return None
+    metadata_path = transcript.with_suffix(".meta.json")
+    try:
+        metadata = json.loads(metadata_path.read_text())
+    except (OSError, ValueError):
+        return "unknown"
+    agent_type = metadata.get("agentType") if isinstance(metadata, dict) else None
+    return agent_type if isinstance(agent_type, str) and agent_type else "unknown"
+
+
 def extract_usage(record: dict[str, Any]) -> Usage | None:
     raw = nested_dict(record, "message", "usage") or record.get("usage")
     if not isinstance(raw, dict):
@@ -483,7 +500,7 @@ def update_context(context: PromptContext, record: dict[str, Any], timestamp: in
         text=prompt or context.text,
         slash_command=slash_command,
         skill=tool_context.get("skill") or context.skill,
-        subagent_type=tool_context.get("subagent_type") or context.subagent_type,
+        subagent_type=tool_context.get("subagent_type"),
         timestamp=timestamp or context.timestamp,
     )
 
