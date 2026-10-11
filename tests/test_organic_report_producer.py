@@ -20,6 +20,9 @@ from quota_core.context_economics import (
 )
 from quota_core.context_economics.acceptance import PASS, check_acceptance
 from quota_core.context_economics.report_producer import main
+from quota_core.context_economics.report_producer import (
+    _produce_shadow_report, build_contract, compare_contract_to_source,
+)
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "economics_policy" / "organic-report-rows.json"
@@ -311,6 +314,27 @@ class OrganicReportProducerTests(unittest.TestCase):
             first["decisions"]["organic-known-zero"]["evidence_fingerprint"],
             artifact["evidence_fingerprint"],
         )
+
+    def test_late_record_outcome_and_tokens_refresh_pre_watermark_decision(self) -> None:
+        first = self._report_with_pre_watermark_row()
+        original = first["decisions"]["organic-known-zero"]
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("UPDATE task_attribution SET outcome=?, uncached_input_tokens=?, "
+                     "output_tokens=? WHERE task_id=?",
+                     ("failed", 37, 19, "organic-known-zero"))
+        conn.commit()
+        conn.close()
+
+        second, records = _produce_shadow_report([self.db_path], first)
+        refreshed = second["decisions"]["organic-known-zero"]
+        self.assertNotEqual(refreshed, original)
+        self.assertNotEqual(refreshed["policy_decision"], original["policy_decision"])
+        self.assertEqual(refreshed["policy_decision"]["evidence"]["outcome"], "failed")
+        self.assertEqual(refreshed["policy_decision"]["evidence"]["token_observations"]["uncached_input_tokens"], 37)
+        self.assertEqual(refreshed["policy_decision"]["evidence"]["token_observations"]["output_tokens"], 19)
+        self.assertEqual(second["decisions"]["later-task"], first["decisions"]["later-task"])
+        contract = build_contract(second, records, [self.db_path])
+        self.assertEqual(compare_contract_to_source(contract, [self.db_path])["mismatch_count"], 0)
 
     def test_lookup_never_silently_misses(self) -> None:
         report = produce_shadow_report([self.db_path])

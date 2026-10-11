@@ -264,6 +264,11 @@ def _evidence_fingerprint(evidence: object, provenance: Mapping[str, str]) -> st
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _record_fingerprint(record: TaskEconomicsRecord) -> str:
+    """Fingerprint all source record inputs consumed by the shadow decision."""
+    return _canonical_sha256(asdict(record))
+
+
 def _existing_decisions(existing_report: Mapping[str, object] | None) -> dict[str, dict[str, object]]:
     if not isinstance(existing_report, Mapping):
         return {}
@@ -293,8 +298,9 @@ def _is_new_since_watermark(
     decisions: Mapping[str, object],
     watermark: float | None,
     evidence_fingerprint: str,
+    record_fingerprint: str,
 ) -> bool:
-    """Refresh new attribution rows *or* later evidence for an existing task."""
+    """Refresh new rows and any changed decision input for an existing task."""
     if task_id not in decisions:
         return True
     existing = decisions[task_id]
@@ -302,6 +308,7 @@ def _is_new_since_watermark(
         not isinstance(existing, Mapping)
         or not isinstance(existing.get("risk_facts"), Mapping)
         or existing.get("evidence_fingerprint") != evidence_fingerprint
+        or existing.get("record_fingerprint") != record_fingerprint
     ):
         return True
     if item.created_at is None or watermark is None:
@@ -317,7 +324,7 @@ def _produce_shadow_report(
     """Build an idempotent rolling, recommendation-only report keyed by ID.
 
     The producer upserts new records, records at the prior watermark or later,
-    and existing records whose derived evidence changed. The inclusive
+    and existing records whose source inputs or derived evidence changed. The inclusive
     comparison makes tied timestamps safe, while rows with an unknown timestamp
     are re-read on every run. This deliberately trades a small amount of
     read-only work for never silently missing an organic task or a later review
@@ -342,7 +349,10 @@ def _produce_shadow_report(
         for item in source_items:
             task_id = item.record.task_id
             fingerprint = _evidence_fingerprint(evidence[task_id], provenance[task_id])
-            if refresh_for_policy or _is_new_since_watermark(task_id, item, decisions, watermark, fingerprint):
+            record_fingerprint = _record_fingerprint(item.record)
+            if refresh_for_policy or _is_new_since_watermark(
+                task_id, item, decisions, watermark, fingerprint, record_fingerprint
+            ):
                 by_source.setdefault(source, []).append(item)
 
     for source, items in sorted(by_source.items()):
@@ -362,6 +372,7 @@ def _produce_shadow_report(
             artifact["evidence_fingerprint"] = _evidence_fingerprint(
                 evidence[task_id], provenance[task_id]
             )
+            artifact["record_fingerprint"] = _record_fingerprint(records[task_id].record)
             decisions[task_id] = artifact
 
     _LOGGER.info(

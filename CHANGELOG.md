@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Refresh rolling #80 decisions when source task record inputs change after
+  creation, not only when derived evidence changes; legacy reports refresh
+  once to acquire the record fingerprint.
+
 - Made #80 publish-equivalence comparison backward-compatible with the new
   build/clock provenance, and pinned parity cutoff and malformed-input paths.
 
