@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Made #80 publish-equivalence comparison backward-compatible with the new
+  build/clock provenance, and pinned parity cutoff and malformed-input paths.
+
 - Added producer/build/receipt/snapshot provenance to the #80 reader contract
   and a read-only, same-DB-snapshot parity CLI that reports missing, extra,
   and changed decisions in both directions.

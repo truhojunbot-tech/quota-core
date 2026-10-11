@@ -809,6 +809,9 @@ output file. The timestamp bounds task creation; NULL creation timestamps
 remain in scope. For exact historical same-snapshot parity, pass SQLite
 snapshots captured at that instant: current live DBs cannot reconstruct later
 changes to an older task's evidence.
+The publish-equivalence comparator ignores build SHA and snapshot clock drift;
+it tolerates missing producer and receipt-ID provenance in older contracts but
+compares receipt IDs when both contracts provide them.
 
 Re-running with the same `--out` is a rolling upsert: the
 `decisions` object is keyed by `task_id`, the `watermark.created_at` boundary

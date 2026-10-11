@@ -8,10 +8,17 @@ from pathlib import Path
 # Only build identity and clock fields may vary across equivalent producers.
 ALLOWED_PATHS = {
     "provenance.producer_commit",
+    "provenance.build_sha",
     "provenance.produced_at",
+    "provenance.snapshot_at",
     "produced_at",
     "generated_at",
 }
+
+# Pre-#80 contracts did not publish these additive provenance fields. Compare
+# their values when both contracts have them, but do not treat absence in a
+# legacy artifact as a policy-decision difference.
+LEGACY_OPTIONAL_PATHS = {"provenance.producer", "provenance.source_receipt_ids"}
 
 
 def differences(expected, actual, path=""):
@@ -26,6 +33,8 @@ def differences(expected, actual, path=""):
             if child in ALLOWED_PATHS:
                 continue
             if key not in expected or key not in actual:
+                if child in LEGACY_OPTIONAL_PATHS:
+                    continue
                 result.append((child, expected.get(key, "<missing>"), actual.get(key, "<missing>")))
             else:
                 result.extend(differences(expected[key], actual[key], child))

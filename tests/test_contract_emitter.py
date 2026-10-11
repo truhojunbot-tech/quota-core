@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from scripts.compare_contracts import differences
 from quota_core.context_economics.report_producer import (
     build_contract, main, produce_shadow_report, write_contract_atomically,
     _produce_shadow_report, compare_contract_to_source,
+    _readonly_receipts_by_task,
 )
 
 FIXTURE = Path(__file__).parent / "fixtures/economics_policy/organic-report-rows.json"
@@ -107,6 +109,21 @@ class ContractOutputTests(unittest.TestCase):
         self.assertEqual(differences(published, {**candidate, "mode": "enforce"}),
                          [("mode", "<missing>", "enforce")])
 
+    def test_comparator_ignores_new_build_clock_fields_but_not_receipts(self):
+        report, records = _produce_shadow_report([self.db])
+        with patch.dict(os.environ, {"QUOTA_CORE_PRODUCER_COMMIT": "old"}):
+            older = build_contract(report, records, [self.db], produced_at="2026-10-01T00:00:00+00:00")
+        with patch.dict(os.environ, {"QUOTA_CORE_PRODUCER_COMMIT": "new"}):
+            newer = build_contract(report, records, [self.db], produced_at="2026-10-02T00:00:00+00:00")
+        self.assertEqual(differences(older, newer), [])
+        legacy = json.loads(json.dumps(older))
+        for field in ("producer", "build_sha", "snapshot_at", "source_receipt_ids"):
+            legacy["provenance"].pop(field)
+        self.assertEqual(differences(legacy, newer), [])
+        changed = json.loads(json.dumps(newer))
+        changed["provenance"]["source_receipt_ids"][self.rows[0]["task_id"]] = "different"
+        self.assertNotEqual(differences(older, changed), [])
+
     def test_atomic_write_keeps_previous_contract_on_failure(self):
         path = self.root / "contract.json"
         write_contract_atomically(path, {"decisions": []})
@@ -139,7 +156,7 @@ class ContractOutputTests(unittest.TestCase):
         self.assertEqual(parity["field_diff_count"], 1)
         self.assertEqual(parity["mismatch_count"], 3)
 
-    def test_parity_cli_reads_contract_without_writing_and_honors_cutoff(self):
+    def test_parity_cli_reads_contract_without_writing(self):
         report, records = _produce_shadow_report([self.db])
         contract = build_contract(report, records, [self.db])
         path = self.root / "contract.json"
@@ -152,6 +169,50 @@ class ContractOutputTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["mismatch_count"], 0)
         self.assertEqual(path.read_bytes(), original)
         self.assertFalse((self.root / "report.json").exists())
+
+    def test_parity_cutoff_excludes_later_row_but_keeps_unknown_time(self):
+        report, records = _produce_shadow_report([self.db])
+        contract = build_contract(report, records, [self.db])
+        parity = compare_contract_to_source(contract, [self.db], snapshot_at="1970-01-01T00:00:50+00:00")
+        self.assertEqual(parity["reference_count"], 1)
+        self.assertEqual(parity["extra_task_ids"], ["organic-known-zero"])
+        self.assertNotIn("organic-null-created-at", parity["extra_task_ids"])
+
+    def test_parity_rejects_malformed_inputs(self):
+        report, records = _produce_shadow_report([self.db])
+        contract = build_contract(report, records, [self.db])
+        with self.assertRaisesRegex(ValueError, "snapshot_at"):
+            compare_contract_to_source(contract, [self.db], "not-a-time")
+        with self.assertRaisesRegex(ValueError, "must be a list"):
+            compare_contract_to_source({"decisions": {}}, [self.db])
+        for bad, message in (([{"value": 1}], "needs a task_id"),
+                             ([{"task_id": "dup"}, {"task_id": "dup"}], "duplicate")):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                compare_contract_to_source({"decisions": bad}, [self.db])
+
+    def test_parity_cli_rejects_missing_required_arguments_and_source(self):
+        path = self.root / "contract.json"
+        path.write_text('{"decisions": []}', encoding="utf-8")
+        for args in (("--db", str(self.db), "--at", "2026-10-11T00:00:00Z"),
+                     ("--db", str(self.db)),
+                     ("--db", str(self.root / "absent.db"), "--parity-check", str(path))):
+            with self.subTest(args=args), self.assertRaises(SystemExit):
+                main(list(args))
+
+    def test_optional_receipts_skip_missing_table_column_and_values(self):
+        conn = sqlite3.connect(self.db)
+        conn.execute("DELETE FROM tasks")
+        conn.executemany("INSERT INTO tasks VALUES (?, ?)",
+                         (("null", None), ("empty", ""), ("known", "receipt-known")))
+        conn.commit()
+        self.assertEqual(_readonly_receipts_by_task(self.db), {"known": "receipt-known"})
+        conn.execute("DROP TABLE tasks")
+        conn.commit()
+        self.assertEqual(_readonly_receipts_by_task(self.db), {})
+        conn.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY)")
+        conn.commit()
+        self.assertEqual(_readonly_receipts_by_task(self.db), {})
+        conn.close()
 
 
 if __name__ == "__main__":
