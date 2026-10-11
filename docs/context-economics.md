@@ -386,9 +386,12 @@ only appearing as prose in the tester's own summary:
 M1–M8 table for a half-open UTC window; omit `--table` for machine-readable
 JSON rows. The CLI only reads supplied sources (SQLite uses `mode=ro`). Every
 row includes bot, metric, `def_version`, source, known sample count `n`, value,
-and a reason when value is null. The session-cache M1 axis is separately
-null with a reason because deployed Quota pace caches do not contain the three
-token components needed for its ratio.
+and a reason when value is null. The session-cache M1 axis now joins Claude
+transcript usage to transcript compact boundaries or Quota RENEW/compact
+events by project and the proved two-hour request window. Duplicate streaming
+request IDs count once; ambiguous or incomplete joins remain unknown with a
+specific `bot_session_reason` and `bot_session_join_coverage`. The CLI accepts
+`--transcript-root` and `--lifecycle-log` overrides for reproducible snapshots.
 
 M1 aggregates complete crew receipt token components; M2/M4/M5 use hook rows
 excluding `headless_oneshot`; M3c requires a pack receipt with middle-kind
@@ -403,12 +406,18 @@ M3a counts owner cases with an expected key in head or middle[:5] out of 17;
 M3b counts task cases with expected reference tokens there out of 24. These
 frozen-set scores are repeated in each bot row, not recalculated per bot or
 time window; absent EVAL, source code or DB yields a reasoned null.
-M6 requires ranked retrieval latency receipts; M7 requires rejoinable served
-item receipts; M8 requires an independently approved review plus a matured
-72-hour no-reopen/revert/follow-up-fix/test-failure window. The current
-sources do not establish the latter two. Definition-version-1 does not yet
-measure M7 or M8, so their `source`, `n`, and `value` are null, with a
-`not_measured:` reason; null is not an observed zero or success. The module
+M6 requires ranked retrieval latency receipts. M7 reads only non-shadow
+`context_pack_built` receipts with a complete selected-item ID list, then
+joins each ID to the read-only ADR-001 memory DB for superseded, cross-project
+and ratified secret-pattern checks. `shadow_memory_retrieval` is explicitly
+excluded: it is telemetry, not prompt content. An incomplete served-ID list
+keeps M7 unknown and reports join coverage. M8 joins matured independent
+review approvals to the organic task, CEA receipt, shadow recommendation,
+actual action and 72-hour follow-up. A linked fix or failed test is a known
+negative; otherwise GitHub PR history and a local revert log must be readable
+before absence is called a known positive. Where no complete join exists,
+M8 emits `n=0`, `value=0.0` and a reason; that zero is not a passing quality
+measurement. The module
 formats a table for an hourly caller;
 installing it into a private bot's scheduler/report is a separate deployment
 step, not performed by quota-core's read-only CLI.

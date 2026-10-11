@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added read-only B1.3 joins for per-generation Claude cache usage, non-shadow
+  served-item identities, and matured review follow-ups. Missing or ambiguous
+  links carry explicit reasons; shadow retrieval is never counted as served.
+
 - Replayed SHA-pinned B1.3 M3a/M3b EVAL cases through Agent Crew
   `retrieve_ranked` on a read-only snapshot of the ADR-001 memory DB, replacing
   the pre-A2 placeholder where sources are available.
