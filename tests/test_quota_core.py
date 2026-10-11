@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import time
+import tomllib
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -45,6 +49,26 @@ PRIVATE_IMPORT_ROOTS = {
 
 
 class ConfigTests(unittest.TestCase):
+    def test_config_import_uses_tomli_when_tomllib_is_unavailable(self):
+        stub = types.ModuleType("tomli")
+        loads = unittest.mock.Mock(wraps=tomllib.loads)
+        stub.loads = loads
+        module_name = "quota_core._config_tomli_fallback_test"
+        spec = importlib.util.spec_from_file_location(
+            module_name, REPO_ROOT / "quota_core" / "config.py"
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"tomllib": None, "tomli": stub, module_name: module}):
+            spec.loader.exec_module(module)
+            with tempfile.TemporaryDirectory() as temp_dir:
+                path = Path(temp_dir) / "config.toml"
+                path.write_text("[dashboard]\nport = 9876\n", encoding="utf-8")
+                self.assertEqual(module.load_config(path).dashboard.port, 9876)
+        self.assertIs(module.tomllib, stub)
+        loads.assert_called_once_with("[dashboard]\nport = 9876\n")
+
     def test_write_and_load_default_config(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.toml"
