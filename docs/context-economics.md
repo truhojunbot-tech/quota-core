@@ -816,7 +816,12 @@ compares receipt IDs when both contracts provide them.
 Re-running with the same `--out` is a rolling upsert: the
 `decisions` object is keyed by `task_id`, the `watermark.created_at` boundary
 is inclusive for tied timestamps, and NULL timestamps are deliberately
-rechecked rather than silently skipped.
+rechecked rather than silently skipped. Each decision stores a
+`record_fingerprint` of its source task economics record alongside the derived
+evidence fingerprint. A changed outcome, token measurement, or other source
+decision input refreshes an older task even when its creation time is below
+the watermark. Older reports without this fingerprint refresh source-present
+decisions once; unchanged subsequent runs remain incremental.
 `created_at` values in decisions and the watermark are JSON numbers and retain
 fractional seconds when the source does. A report regenerated from such a
 source may differ from a previously published integer-timestamp baseline;
