@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- For agent_crew#342, added optional `quality_evidence_state` to the shadow
+  policy decision: `preserving`, `not_preserving` for observed negative quality
+  facts, or `unknown` for missing evidence. Recall overrides retain the legacy
+  string and add a specific unknown/negative reason; safety decisions remain
+  unchanged.
+
 - Refresh rolling #80 decisions when source task record inputs change after
   creation, not only when derived evidence changes; legacy reports refresh
   once to acquire the record fingerprint.

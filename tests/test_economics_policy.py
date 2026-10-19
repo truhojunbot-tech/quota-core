@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import unittest
 from pathlib import Path
 
@@ -23,6 +24,79 @@ def _record(**fields):
 
 
 class EconomicsPolicyTests(unittest.TestCase):
+    def test_quality_evidence_state_distinguishes_unknown_from_observed_negative(self):
+        known_risk = dict(
+            safety_or_live_change=False, broad_architecture_change=False,
+            bounded_routine_fix=True, human_gate_required=False,
+            independent_review_correct=True,
+        )
+        cases = (
+            ("unknown_recall", QualityEvidence(**known_risk), "unknown", False,
+             "required_context_recall_unknown", "required_context_recall_negative"),
+            ("negative_recall", QualityEvidence(**known_risk, required_context_recalled=False),
+             "not_preserving", False, "required_context_recall_negative", "required_context_recall_unknown"),
+            ("positive_recall", QualityEvidence(**known_risk, required_context_recalled=True),
+             "preserving", True, None, None),
+            ("failed_review_unknown_recall", QualityEvidence(**{**known_risk, "independent_review_correct": False}),
+             "not_preserving", False, "required_context_recall_unknown", "required_context_recall_negative"),
+            ("blocked_exemption", QualityEvidence(independent_review_correct=True, recall_not_applicable=True),
+             "unknown", False, None, None),
+        )
+        for name, evidence, expected_state, expected_quality, specific, forbidden in cases:
+            with self.subTest(name=name):
+                decision = recommend_task_policy(_record(), evidence)
+                self.assertEqual(decision.quality_preserving, expected_quality)
+                self.assertEqual(decision.quality_evidence_state, expected_state)
+                self.assertEqual(decision.to_dict()["quality_evidence_state"], expected_state)
+                if specific:
+                    self.assertIn("required_context_recall_unknown_or_negative", decision.override_reasons)
+                    self.assertIn(specific, decision.override_reasons)
+                if forbidden:
+                    self.assertNotIn(forbidden, decision.override_reasons)
+        failed_outcome = recommend_task_policy(
+            _record(outcome="failed"), QualityEvidence(**known_risk, required_context_recalled=True)
+        )
+        self.assertEqual(failed_outcome.quality_evidence_state, "not_preserving")
+
+    def test_additive_quality_state_preserves_legacy_fixture_decisions(self):
+        known_risk = dict(safety_or_live_change=False, broad_architecture_change=False,
+                          bounded_routine_fix=True, human_gate_required=False,
+                          independent_review_correct=True)
+        cases = {
+            "unknown_recall": (recommend_task_policy(_record(), QualityEvidence(**known_risk)),
+                               "09b568f76c6331e0adb44e899cb12eefaba2f310ff5e70631e64728d1eded796"),
+            "negative_recall": (recommend_task_policy(_record(), QualityEvidence(**known_risk, required_context_recalled=False)),
+                                "8802ee5847c9baaa895fabc7e8b7242d1aa94ab12374f8dc247e87365267552d"),
+            "positive_recall": (recommend_task_policy(_record(), QualityEvidence(**known_risk, required_context_recalled=True)),
+                                "cc9c4495c44dc9397b499d5099ec016a024cb71f02bf9d3084d36190bad4260e"),
+            "failed_review_unknown_recall": (recommend_task_policy(_record(), QualityEvidence(**{**known_risk, "independent_review_correct": False})),
+                                             "bc9bdc6cf9a82fba4705261801052ba1b524eff61a1a5bb43760726a43927fb0"),
+            "blocked_exemption": (recommend_task_policy(_record(), QualityEvidence(independent_review_correct=True, recall_not_applicable=True)),
+                                  "16232f59d3054604a67f0d73b0a5e62a3e79626a920426e0caf8b29ae9a2a390"),
+        }
+        fixture_hashes = {
+            "organic-implement-redacted": "640c62f4b0a9df00ab40cf1d014d38f7b095454760e8a4d93b3cdab710561e57",
+            "organic-review-redacted": "58ed229fcc0a57da0668d5fc816de484262f78eab2539bfd707d3c2d0e85c223",
+        }
+        for record in correlate_task_economics(read_attribution_jsonl(FIXTURE), []):
+            cases[record.task_id] = (recommend_task_policy(record), fixture_hashes[record.task_id])
+        legacy_keys = set(policy_contract_schema()["required"])
+        for name, (decision, expected_digest) in cases.items():
+            with self.subTest(name=name):
+                actual = decision.to_dict()
+                self.assertEqual(set(actual) - {"quality_evidence_state"}, legacy_keys)
+                legacy = {key: value for key, value in actual.items() if key != "quality_evidence_state"}
+                legacy["override_reasons"] = [value for value in legacy["override_reasons"]
+                                              if value not in {"required_context_recall_unknown", "required_context_recall_negative"}]
+                encoded = json.dumps(legacy, sort_keys=True, separators=(",", ":")).encode()
+                self.assertEqual(hashlib.sha256(encoded).hexdigest(), expected_digest)
+
+    def test_quality_evidence_state_is_optional_in_schema_for_old_decisions(self):
+        schema = policy_contract_schema()
+        self.assertEqual(schema["properties"]["quality_evidence_state"]["enum"],
+                         ["preserving", "not_preserving", "unknown"])
+        self.assertNotIn("quality_evidence_state", schema["required"])
+
     def test_unknown_risk_with_renewable_waste_cannot_renew_session(self):
         from quota_core.context_economics.acceptance import PASS, check_acceptance
 
