@@ -57,6 +57,21 @@ class EconomicsPolicyTests(unittest.TestCase):
             _record(outcome="failed"), QualityEvidence(**known_risk, required_context_recalled=True)
         )
         self.assertEqual(failed_outcome.quality_evidence_state, "not_preserving")
+        for outcome in (None, "unknown"):
+            with self.subTest(outcome=outcome):
+                incomplete = recommend_task_policy(
+                    _record(outcome=outcome),
+                    QualityEvidence(**known_risk, required_context_recalled=True),
+                )
+                self.assertFalse(incomplete.quality_preserving)
+                self.assertEqual(incomplete.quality_evidence_state, "unknown")
+                self.assertIn("task_outcome_not_success", incomplete.override_reasons)
+                recall_failure = recommend_task_policy(
+                    _record(outcome=outcome),
+                    QualityEvidence(**known_risk, required_context_recalled=False),
+                )
+                self.assertEqual(recall_failure.quality_evidence_state, "not_preserving")
+                self.assertIn("required_context_recall_negative", recall_failure.override_reasons)
 
     def test_additive_quality_state_preserves_legacy_fixture_decisions(self):
         known_risk = dict(safety_or_live_change=False, broad_architecture_change=False,

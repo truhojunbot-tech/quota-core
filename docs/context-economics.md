@@ -45,7 +45,9 @@ confidence, evidence and override reasons.
 agent_crew#342: `preserving` follows `quality_preserving: true`,
 `not_preserving` identifies an observed negative outcome, review, or recall
 fact, and `unknown` identifies an unmet quality condition without an observed
-negative. A null recall keeps `quality_preserving: false` and the legacy
+negative. A null or `unknown` outcome remains `unknown` unless another quality
+fact is observed false; only a `failed` outcome is an observed negative. A null
+recall keeps `quality_preserving: false` and the legacy
 `required_context_recall_unknown_or_negative` override, with the additional
 specific `required_context_recall_unknown` reason; observed false adds
 `required_context_recall_negative`. Older reports may omit the field.

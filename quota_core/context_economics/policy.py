@@ -335,7 +335,7 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     quality_evidence_state: QualityEvidenceState = (
         "preserving" if quality else
         "not_preserving" if (
-            record.outcome != "success"
+            record.outcome == "failed"
             or evidence.independent_review_correct is False
             or evidence.required_context_recalled is False
         ) else "unknown"
