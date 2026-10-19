@@ -41,6 +41,17 @@ escalation is more scrutiny rather than a cost-saving action. Recommendations in
 review/fix envelope, provider tier, session/cache treatment, provenance,
 confidence, evidence and override reasons.
 
+`quality_evidence_state` is an optional additive decision field for
+agent_crew#342: `preserving` follows `quality_preserving: true`,
+`not_preserving` identifies an observed negative outcome, review, or recall
+fact, and `unknown` identifies an unmet quality condition without an observed
+negative. A null or `unknown` outcome remains `unknown` unless another quality
+fact is observed false; only a `failed` outcome is an observed negative. A null
+recall keeps `quality_preserving: false` and the legacy
+`required_context_recall_unknown_or_negative` override, with the additional
+specific `required_context_recall_unknown` reason; observed false adds
+`required_context_recall_negative`. Older reports may omit the field.
+
 ## SQLite shadow report (partial issue #80 slice)
 
 `read_task_attribution_sqlite(path)` is a read-only (`mode=ro`) adapter for a

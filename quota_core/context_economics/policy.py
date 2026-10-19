@@ -15,6 +15,7 @@ RiskTier = Literal["safety_or_live", "architecture", "routine", "review_or_test"
 ProviderTier = Literal["preserve_current", "escalate_allowed"]
 SessionTreatment = Literal["preserve", "renew", "insufficient_evidence"]
 CacheTreatment = Literal["preserve", "no_cache_signal", "insufficient_evidence"]
+QualityEvidenceState = Literal["preserving", "not_preserving", "unknown"]
 
 # This intentionally describes the serialized output, rather than Python
 # dataclass internals, so consumers in another runtime can pin a contract.
@@ -66,6 +67,7 @@ POLICY_CONTRACT_SCHEMA: dict[str, object] = {
         },
         "risk_tier": {"enum": ["safety_or_live", "architecture", "routine", "review_or_test", "research"]},
         "quality_preserving": {"type": "boolean"},
+        "quality_evidence_state": {"enum": ["preserving", "not_preserving", "unknown"]},
         "human_gate_required": {"type": "boolean"},
         "recommended_soft_budget": {
             "oneOf": [
@@ -207,6 +209,7 @@ class PolicyDecision:
     current_behavior: dict[str, object]
     risk_tier: RiskTier
     quality_preserving: bool
+    quality_evidence_state: QualityEvidenceState
     human_gate_required: bool
     recommended_soft_budget: SoftBudgetEnvelope | None
     recommended_max_review_fix_rounds: int
@@ -225,7 +228,9 @@ class PolicyDecision:
             "contract_version": self.contract_version, "mode": self.mode, "task_id": self.task_id,
             "provenance": dict(self.provenance), "risk_tier": self.risk_tier,
             "current_behavior": dict(self.current_behavior),
-            "quality_preserving": self.quality_preserving, "human_gate_required": self.human_gate_required,
+            "quality_preserving": self.quality_preserving,
+            "quality_evidence_state": self.quality_evidence_state,
+            "human_gate_required": self.human_gate_required,
             "recommended_soft_budget": None if self.recommended_soft_budget is None else self.recommended_soft_budget.to_dict(),
             "recommended_max_review_fix_rounds": self.recommended_max_review_fix_rounds,
             "recommended_provider_tier": self.recommended_provider_tier,
@@ -327,6 +332,14 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     # narrower no-retrieval exemption may not bypass an unknown-risk fail-safe.
     recall_exemption_safe = evidence.recall_not_applicable is not True or not risk_unassessed
     quality = record.outcome == "success" and evidence.independent_review_correct is True and recall_ok and recall_exemption_safe
+    quality_evidence_state: QualityEvidenceState = (
+        "preserving" if quality else
+        "not_preserving" if (
+            record.outcome == "failed"
+            or evidence.independent_review_correct is False
+            or evidence.required_context_recalled is False
+        ) else "unknown"
+    )
     # Review and recall can be known while every risk fact remains unknown.
     # In that case a human gate alone must not turn session reuse into a
     # recommendation; keep the V1 session fail-safe without rewriting the
@@ -335,7 +348,13 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     overrides = []
     if record.outcome != "success": overrides.append("task_outcome_not_success")
     if evidence.independent_review_correct is not True: overrides.append("independent_review_correctness_unknown_or_negative")
-    if not recall_ok: overrides.append("required_context_recall_unknown_or_negative")
+    if not recall_ok:
+        overrides.append("required_context_recall_unknown_or_negative")
+        overrides.append(
+            "required_context_recall_negative"
+            if evidence.required_context_recalled is False
+            else "required_context_recall_unknown"
+        )
     if evidence.human_gate_required is True: overrides.append("human_gate_required")
     if risk_unassessed: overrides.append("risk_assessment_unknown_requires_human_gate")
     multiplier = {"safety_or_live": 1.5, "architecture": 1.4, "routine": 1.2, "review_or_test": 1.25, "research": 1.3}[tier]
@@ -364,7 +383,7 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
          "session": record.provider_session_id, "context_id": record.context_id,
          "context_generation": record.context_generation, "context_policy": record.context_policy,
          "outcome": record.outcome, "retry_of": record.retry_of, "fallback_of": record.fallback_of},
-        tier, quality, human_gate, budget, rounds,
+        tier, quality, quality_evidence_state, human_gate, budget, rounds,
         "escalate_allowed" if tier in {"safety_or_live", "architecture"} else "preserve_current",
         "renew" if session_quality and renewable else "preserve" if session_quality else "insufficient_evidence",
         "preserve" if quality and cache_seen else "no_cache_signal" if quality else "insufficient_evidence",
