@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -64,7 +65,8 @@ class B1MetricsTests(unittest.TestCase):
         self.assertEqual(by_metric["M1"]["value"], 0.8)
         self.assertEqual(by_metric["M1"]["n"], 1)
         self.assertIsNone(by_metric["M1"]["bot_session_value"])
-        self.assertIn("lacks", by_metric["M1"]["bot_session_reason"])
+        self.assertEqual(by_metric["M1"]["bot_session_reason"],
+                         "bot_session_sources_not_supplied")
         self.assertEqual(by_metric["M2"]["value"], 1)
         self.assertEqual(by_metric["M2"]["n"], 2)
         self.assertEqual(by_metric["M4"]["value"]["max_bytes"], 8800)
@@ -82,9 +84,14 @@ class B1MetricsTests(unittest.TestCase):
         rows = compute_metrics(1791580000, 1791594000, self.crew_root,
                                FIXTURES / "b1_hook_events.jsonl")
         by_metric = {row["metric"]: row for row in rows if row["bot"] == "alpha"}
-        for metric in ("M3a", "M3b", "M3c", "M7", "M8"):
+        for metric in ("M3a", "M3b", "M3c"):
             self.assertIsNone(by_metric[metric]["value"])
             self.assertTrue(by_metric[metric]["reason"])
+        self.assertEqual(by_metric["M7"]["n"], 0)
+        self.assertIsNone(by_metric["M7"]["value"])
+        self.assertTrue(by_metric["M7"]["reason"])
+        self.assertIsNone(by_metric["M8"]["value"])
+        self.assertTrue(by_metric["M8"]["reason"])
 
     def test_time_offsets_are_preserved_and_m3c_needs_all_tasks(self):
         self.assertEqual(_time("2026-10-09T09:00:00+09:00"),
@@ -141,6 +148,208 @@ class B1MetricsTests(unittest.TestCase):
         m1 = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M1")
         self.assertEqual((m1["n"], m1["value"]), (1, 0.8))
 
+    def test_served_item_join_uses_memory_rows_and_detects_violations(self):
+        memory_db = Path(self.tmp.name) / "memory.db"
+        with sqlite3.connect(memory_db) as conn:
+            conn.execute("CREATE TABLE adr001_memory (layer TEXT, key TEXT, value TEXT, scope TEXT, "
+                         "version INTEGER, created REAL, superseded_by TEXT, invalidated_at REAL)")
+            conn.execute("INSERT INTO adr001_memory VALUES (?,?,?,?,?,?,?,?)",
+                         ("episodic", "served-1", "safe text", '{"project":"alpha"}', 1, 100, None, None))
+            conn.execute("INSERT INTO adr001_memory VALUES (?,?,?,?,?,?,?,?)",
+                         ("episodic", "served-2", "sk-ant-ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+                          '{"project":"other"}', 1, 100, "newer", None))
+        events = self.crew_root / "alpha" / "context_events.jsonl"
+        events.write_text(json.dumps({"event_type": "context_pack_built", "ts": 150,
+                                      "project": "alpha", "result_ids": ["served-1", "served-2"],
+                                      "selected_count": 2, "shadow": False,
+                                      "superseded": [False, True], "dropped_cross_project": 0}) + "\n")
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"],
+                               memory_db=memory_db)
+        m7 = next(row for row in rows if row["metric"] == "M7")
+        self.assertEqual(m7["n"], 2)
+        self.assertEqual(m7["value"], {"superseded": 1, "cross_project": 1,
+                                       "secret_matches": 1, "total": 3})
+
+    def test_malformed_and_incomplete_served_ids_are_unknown_not_fatal(self):
+        memory_db = Path(self.tmp.name) / "memory.db"
+        with sqlite3.connect(memory_db) as conn:
+            conn.execute("CREATE TABLE adr001_memory (key TEXT, value TEXT, scope TEXT, "
+                         "superseded_by TEXT, invalidated_at REAL)")
+            conn.execute("INSERT INTO adr001_memory VALUES (?,?,?,?,?)",
+                         ("served-1", "safe text", '{"project":"alpha"}', None, None))
+        events = self.crew_root / "alpha" / "context_events.jsonl"
+        events.write_text("\n".join(json.dumps({"event_type": "context_pack_built",
+            "ts": 150, "project": "alpha", "result_ids": ids,
+            "selected_count": count, "shadow": False}) for ids, count in
+            ((5, 1), (["served-1"], 2))) + "\n")
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"],
+                               memory_db=memory_db)
+        m7 = next(row for row in rows if row["metric"] == "M7")
+        self.assertIsNone(m7["value"])
+        self.assertEqual(m7["n"], 0)
+        self.assertEqual(m7["join_coverage"], 0.0)
+        self.assertEqual(m7["reason"], "unresolved_served_item_receipts:2")
+
+    def test_shadow_retrieval_is_not_counted_as_served(self):
+        events = self.crew_root / "alpha" / "context_events.jsonl"
+        events.write_text(json.dumps({"event_type": "shadow_memory_retrieval", "ts": 150,
+                                      "project": "alpha", "result_ids": ["sensitive"],
+                                      "superseded": [True]}) + "\n")
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"])
+        m7 = next(row for row in rows if row["metric"] == "M7")
+        self.assertEqual(m7["n"], 0)
+        self.assertIsNone(m7["value"])
+        self.assertEqual(m7["reason"], "no_nonshadow_served_item_receipts_in_window")
+
+    def test_m1_generation_join_uses_renewal_project_and_time_window(self):
+        projects = Path(self.tmp.name) / "transcripts"
+        folder = projects / "-home-truhojun-alfred-instances-alpha"
+        folder.mkdir(parents=True)
+        transcript = folder / "session-1.jsonl"
+        transcript.write_text("\n".join(json.dumps({"type": "assistant", "timestamp": ts,
+            "message": {"id": request_id, "usage": {"input_tokens": 10,
+            "cache_creation_input_tokens": 10, "cache_read_input_tokens": cached,
+            "output_tokens": 0}}}) for ts, request_id, cached in [
+                ("1970-01-01T00:02:20Z", "before", 0),
+                ("1970-01-01T00:02:40Z", "after", 80),
+                ("1970-01-01T00:02:41Z", "after", 80)]) + "\n")
+        lifecycle = Path(self.tmp.name) / "compact.jsonl"
+        lifecycle.write_text(json.dumps({"runtime": "alfred_watchdog", "event_type": "success",
+            "action": "RENEW", "session": "alpha", "project": "alpha",
+            "timestamp": "1970-01-01T00:02:30Z"}) + "\n")
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"],
+                               transcript_root=projects, lifecycle_log=lifecycle)
+        m1 = next(row for row in rows if row["metric"] == "M1")
+        self.assertEqual(m1["bot_session_value"], 0.8)
+        self.assertEqual(m1["bot_session_n"], 1)
+
+    def test_m1_uses_transcript_compact_boundary_without_lifecycle_success(self):
+        projects = Path(self.tmp.name) / "transcripts"
+        folder = projects / "-home-truhojun-alfred-instances-alpha"
+        folder.mkdir(parents=True)
+        (folder / "session-2.jsonl").write_text("\n".join([
+            json.dumps({"subtype": "compact_boundary", "timestamp": "1970-01-01T00:02:30Z",
+                        "compactMetadata": {"trigger": "auto"}}),
+            json.dumps({"type": "assistant", "timestamp": "1970-01-01T00:02:40Z",
+                        "message": {"id": "request-1", "usage": {"input_tokens": 10,
+                        "cache_creation_input_tokens": 10, "cache_read_input_tokens": 80}}}),
+        ]) + "\n")
+        lifecycle = Path(self.tmp.name) / "empty.jsonl"
+        lifecycle.touch()
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"],
+                               transcript_root=projects, lifecycle_log=lifecycle)
+        m1 = next(row for row in rows if row["metric"] == "M1")
+        self.assertEqual((m1["bot_session_n"], m1["bot_session_value"]), (1, 0.8))
+
+    def test_m1_identical_post_renew_offsets_remain_ambiguous(self):
+        projects = Path(self.tmp.name) / "transcripts"
+        folder = projects / "-home-truhojun-alfred-instances-alpha"
+        folder.mkdir(parents=True)
+        for index in (1, 2):
+            (folder / f"session-{index}.jsonl").write_text(json.dumps({
+                "type": "assistant", "timestamp": "1970-01-01T00:02:40Z",
+                "message": {"id": f"request-{index}", "usage": {
+                    "input_tokens": 10, "cache_creation_input_tokens": 10,
+                    "cache_read_input_tokens": 80}}}) + "\n")
+        lifecycle = Path(self.tmp.name) / "compact.jsonl"
+        lifecycle.write_text(json.dumps({"runtime": "alfred_watchdog",
+            "event_type": "success", "action": "RENEW", "project": "alpha",
+            "timestamp": "1970-01-01T00:02:30Z"}) + "\n")
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"],
+                               transcript_root=projects, lifecycle_log=lifecycle)
+        m1 = next(row for row in rows if row["metric"] == "M1")
+        self.assertIsNone(m1["bot_session_value"])
+        self.assertEqual(m1["bot_session_n"], 0)
+        self.assertEqual(m1["bot_session_join_coverage"], 0.0)
+        self.assertEqual(m1["bot_session_reason"],
+                         "no_unambiguous_positive_transcript_generation_join")
+
+    def test_review_followup_join_flags_observed_fix_after_approval(self):
+        db = self.crew_root / "alpha" / "tasks.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("ALTER TABLE tokenomics_shadow_receipts ADD COLUMN shadow_recommendation_json TEXT")
+            conn.execute("ALTER TABLE tokenomics_shadow_receipts ADD COLUMN actual_execution_json TEXT")
+            conn.execute("ALTER TABLE tokenomics_shadow_receipts ADD COLUMN outcome TEXT")
+            conn.execute("ALTER TABLE tasks ADD COLUMN task_type TEXT")
+            conn.execute("ALTER TABLE tasks ADD COLUMN context TEXT")
+            conn.execute("ALTER TABLE tasks ADD COLUMN verdict TEXT")
+            conn.execute("ALTER TABLE tasks ADD COLUMN result_posted_at REAL")
+            conn.execute("ALTER TABLE tasks ADD COLUMN receipt_id TEXT")
+            conn.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?)",
+                         ("impl-1", 110, "implement", json.dumps({"issue_number": 42}), None, None,
+                          "cea-1"))
+            conn.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?)",
+                         ("review-1", 120, "review", json.dumps({"prev_task_id": "impl-1"}),
+                          "approve", 125, None))
+            conn.execute("INSERT INTO tasks VALUES (?,?,?,?,?,?,?)",
+                         ("fix-1", 130, "implement", json.dumps({"prev_task_id": "review-1"}),
+                          None, None, "cea-2"))
+            conn.executemany("INSERT INTO tokenomics_shadow_receipts "
+                             "(task_id, economics_json, created_at, shadow_recommendation_json, "
+                             "actual_execution_json, outcome) VALUES (?,?,?,?,?,?)", [
+                (task_id, None, at, '{"recommended_max_review_fix_rounds":2}',
+                 '{"cascade":"baseline"}', "completed")
+                for task_id, at in (("impl-1", 110), ("fix-1", 130))])
+        rows = compute_metrics(125 + 72 * 3600, 200 + 72 * 3600, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"])
+        m8 = next(row for row in rows if row["metric"] == "M8")
+        self.assertEqual((m8["n"], m8["value"]), (1, 0.0))
+
+    def test_review_followup_positive_unknown_and_empty_are_distinct(self):
+        db = self.crew_root / "alpha" / "tasks.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("ALTER TABLE tokenomics_shadow_receipts ADD COLUMN shadow_recommendation_json TEXT")
+            conn.execute("ALTER TABLE tokenomics_shadow_receipts ADD COLUMN actual_execution_json TEXT")
+            for column, kind in (("task_type", "TEXT"), ("context", "TEXT"),
+                                 ("verdict", "TEXT"), ("result_posted_at", "REAL"),
+                                 ("receipt_id", "TEXT"), ("pr_number", "INTEGER")):
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {kind}")
+            conn.execute("INSERT INTO tasks (task_id,created_at,task_type,context,receipt_id,pr_number) "
+                         "VALUES (?,?,?,?,?,?)",
+                         ("impl-1", 110, "implement", '{"issue_number":42}', "cea-1", 7))
+            conn.execute("INSERT INTO tasks (task_id,created_at,task_type,context,verdict,result_posted_at) "
+                         "VALUES (?,?,?,?,?,?)",
+                         ("review-1", 120, "review", '{"prev_task_id":"impl-1"}', "approve", 125))
+            conn.execute("INSERT INTO tokenomics_shadow_receipts "
+                         "(task_id,created_at,shadow_recommendation_json,actual_execution_json) "
+                         "VALUES (?,?,?,?)",
+                         ("impl-1", 110, '{"recommended_max_review_fix_rounds":2}',
+                          '{"cascade":"baseline"}'))
+        with patch.object(metrics_b1, "_github_followup", return_value=False):
+            m8 = metrics_b1._review_followup_metric("alpha", db, 125 + 72 * 3600,
+                                                     200 + 72 * 3600)
+        self.assertEqual((m8["n"], m8["value"], m8["unknown"]), (1, 1.0, 0))
+        with patch.object(metrics_b1, "_github_followup", return_value=None):
+            m8 = metrics_b1._review_followup_metric("alpha", db, 125 + 72 * 3600,
+                                                     200 + 72 * 3600)
+        self.assertEqual((m8["n"], m8["unknown"]), (0, 1))
+        self.assertIsNone(m8["value"])
+        self.assertEqual(m8["reason"], "no_complete_matured_review_followup_join_in_window")
+        missing = metrics_b1._review_followup_metric("alpha", db.parent / "absent.db", 100, 200)
+        self.assertEqual((missing["n"], missing["value"], missing["reason"]),
+                         (0, None, "no_tasks_db"))
+
+    def test_github_pr_listing_is_memoized_per_repo(self):
+        cache = {}
+        def respond(args, **_kwargs):
+            if args[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(args, 0, "[]", "")
+            return subprocess.CompletedProcess(args, 0, "[]", "")
+        with patch.object(metrics_b1.subprocess, "run", side_effect=respond) as run:
+            for pr_number in (7, 8, 9):
+                self.assertIsNone(metrics_b1._github_followup(
+                    "alpha", 42, pr_number, 100, 200, cache=cache, search_from=100))
+        listings = [call for call in run.call_args_list
+                    if call.args[0][:3] == ["gh", "pr", "list"]]
+        self.assertEqual(len(listings), 1)
+        self.assertIn("--search", listings[0].args[0])
+
     def test_eval_path_missing_and_wrong_sha_are_distinct(self):
         absent = Path(self.tmp.name) / "absent-eval.json"
         wrong = Path(self.tmp.name) / "wrong-eval.json"
@@ -173,17 +382,21 @@ class B1MetricsTests(unittest.TestCase):
                 os.environ["TZ"] = previous
             time.tzset()
 
-    def test_unimplemented_axes_do_not_claim_a_measured_zero_or_source(self):
+    def test_missing_join_sources_have_specific_reasons(self):
         for hook in (FIXTURES / "b1_hook_boundaries.jsonl",
                      Path(self.tmp.name) / "absent-hooks.jsonl"):
             rows = compute_metrics(100, 200, self.crew_root, hook, bots=["alpha"])
             for metric in ("M7", "M8"):
                 row = next(row for row in rows if row["bot"] == "alpha"
                            and row["metric"] == metric)
-                self.assertIsNone(row["value"])
-                self.assertIsNone(row["n"])
-                self.assertIsNone(row["source"])
-                self.assertTrue(row["reason"].startswith("not_measured:"))
+                if metric == "M7":
+                    self.assertEqual(row["n"], 0)
+                    self.assertIsNone(row["value"])
+                    self.assertIn("no_nonshadow_served_item_receipts", row["reason"])
+                else:
+                    self.assertEqual((row["n"], row["value"]), (None, None))
+                    self.assertEqual(row["reason"],
+                                     "review_followup_columns_unavailable")
 
     def test_frozen_eval_replay_scores_head_and_first_five_middle_only(self):
         cases = {

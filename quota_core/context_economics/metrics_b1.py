@@ -14,6 +14,7 @@ import math
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from collections import defaultdict
@@ -27,6 +28,160 @@ from .agent_crew_adapter import _iter_jsonl, read_lifecycle_events_jsonl
 DEF_VERSION = 1
 EVAL_SHA256 = "0bdb218d0c8e6ba3da8202c19201fee52a9605664ebe3ea4fb1d5de92de4ac61"
 METRICS = ("M1", "M2", "M3a", "M3b", "M3c", "M4", "M5", "M6", "M7", "M8")
+_SECRET_PATTERNS = re.compile(
+    r"gh" r"p_[A-Za-z0-9]{36}(?![A-Za-z0-9])|github_pat_[A-Za-z0-9_]{22,}"
+    r"|sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}"
+    r"|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}"
+    r"|AKIA[0-9A-Z]{16}(?![0-9A-Z])"
+    r"|(?<![0-9])\d{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"
+    r"|-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----"
+    r"(?:[\s\S]*?-----END (?:[A-Z0-9]+ )?PRIVATE KEY-----)?"
+)
+
+
+def _redact_secrets(value: str) -> str:
+    """Match Alfred's ratified redact_secrets token shapes without importing its runtime."""
+    return _SECRET_PATTERNS.sub("[REDACTED]", value)
+
+
+def _transcript_project(path: Path) -> str:
+    """Port the project-directory mapping proved by quota-ops renewal_measure."""
+    raw = path.parent.name
+    if raw == "-home-truhojun-alfred":
+        return "alfred"
+    crew = re.search(r"--agent-crew-worktrees-([^-]+(?:-[^-]+)*)-(?:claude|codex|gemini)$", raw)
+    if crew:
+        return crew.group(1).replace("_", "-")
+    for prefix in ("-home-truhojun-alfred-instances-", "-home-truhojun-work-", "-work-"):
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):]
+            break
+    return "quota-ops" if raw == "Quota" else raw.replace("_", "-")
+
+
+def _transcript_requests(path: Path, since: float, until: float) -> tuple[
+        list[tuple[float, str, float, float, float]], list[float]]:
+    seen: set[str] = set()
+    requests = []
+    boundaries = []
+    try:
+        with path.open("rb") as stream:
+            for line in stream:
+                if b'"usage"' not in line and b'"compactMetadata"' not in line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if row.get("subtype") == "compact_boundary" and "compactMetadata" in row:
+                    at = _time(row.get("timestamp"))
+                    if at is not None and since <= at < until:
+                        boundaries.append(at)
+                if row.get("type") != "assistant" or not isinstance(row.get("message"), dict):
+                    continue
+                usage = row["message"].get("usage")
+                if not isinstance(usage, dict):
+                    continue
+                at = _time(row.get("timestamp"))
+                identity = row["message"].get("id") or row.get("uuid")
+                if at is None or not since - 7200 <= at < until + 7200 or not isinstance(identity, str) or identity in seen:
+                    continue
+                parts = [_nonnegative(usage.get(key)) for key in
+                         ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")]
+                if any(part is None for part in parts):
+                    continue
+                seen.add(identity)
+                requests.append((at, identity, *parts))
+    except OSError:
+        return [], []
+    return sorted(requests), sorted(set(boundaries))
+
+
+def _lifecycle_transitions(lifecycle_log: Path, since: float,
+                           until: float) -> dict[str, list[float]]:
+    by_project: dict[str, list[float]] = defaultdict(list)
+    for path in (Path(str(lifecycle_log) + ".1"), lifecycle_log):
+        try:
+            stream = path.open("rb")
+        except OSError:
+            continue
+        with stream:
+            for line in stream:
+                if b'"success"' not in line or not (b'"RENEW"' in line or b'"compact"' in line):
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                at = _time(event.get("timestamp"))
+                if at is None or not since <= at < until:
+                    continue
+                if ((event.get("runtime") == "alfred_watchdog" and event.get("event_type") == "success"
+                     and event.get("action") == "RENEW") or
+                    (event.get("runtime") == "quota_ops_proactive_compact" and event.get("event_type") == "success"
+                     and event.get("action") == "compact")):
+                    project = str(event.get("project") or "").replace("_", "-")
+                    by_project[project].append(at)
+    return by_project
+
+
+def _session_cache(bot: str, since: float, until: float, transcript_root: Path,
+                   transitions: list[float]) -> tuple[float | None, int, str, int, int]:
+    """Use renewal_measure's project/time join; ambiguous matches remain unknown."""
+    if not transcript_root.is_dir():
+        return None, 0, f"transcript_root_unavailable:{transcript_root}", 0, len(transitions)
+    candidates = []
+    for path in transcript_root.glob("*/*.jsonl"):
+        try:
+            if path.stat().st_mtime < since - 7200:
+                continue
+        except OSError:
+            continue
+        if _transcript_project(path) == bot.replace("_", "-"):
+            requests, boundaries = _transcript_requests(path, since, until)
+            if requests or boundaries:
+                candidates.append((path, requests, boundaries))
+    cached = total = 0.0
+    joined = 0
+    transcript_boundaries = [(at, path, requests) for path, requests, boundaries in candidates
+                             for at in boundaries]
+    all_transition_times = sorted(set(transitions + [at for at, _, _ in transcript_boundaries]))
+    if not all_transition_times:
+        return None, 0, "no_context_transition_in_window", 0, 0
+    for at, path, requests in transcript_boundaries:
+        next_transition = min((stamp for stamp in all_transition_times if stamp > at), default=until)
+        selected = [row for row in requests if at < row[0] < min(next_transition, until)]
+        amount = sum(sum(row[2:5]) for row in selected)
+        if amount <= 0:
+            continue
+        cached += sum(row[4] for row in selected)
+        total += amount
+        joined += 1
+    for at in sorted(set(transitions)):
+        if any(abs(at - boundary) <= 120 for boundary, _, _ in transcript_boundaries):
+            continue
+        matches = []
+        for path, requests, _ in candidates:
+            following = [row for row in requests if at < row[0] <= at + 7200]
+            if following:
+                matches.append((following[0][0] - at, path, following))
+        if not matches:
+            continue
+        matches.sort(key=lambda item: item[0])
+        if len(matches) > 1 and matches[0][0] == matches[1][0]:
+            continue
+        _, _, following = matches[0]
+        next_transition = min((stamp for stamp in all_transition_times if stamp > at), default=until)
+        selected = [row for row in following if row[0] < min(next_transition, until)]
+        amount = sum(sum(row[2:5]) for row in selected)
+        if amount <= 0:
+            continue
+        cached += sum(row[4] for row in selected)
+        total += amount
+        joined += 1
+    return (cached / total if total else None, joined,
+            "no_unambiguous_positive_transcript_generation_join" if not joined else "",
+            joined, len(all_transition_times))
 
 
 def _time(value: object) -> float | None:
@@ -92,6 +247,212 @@ def _task_ids(db_path: Path, since: float, until: float) -> set[str] | None:
     except sqlite3.Error:
         return None
     return {row[0] for row in rows if isinstance(row[0], str)}
+
+
+def _served_item_metric(bot: str, events_file: Path, memory_db: Path,
+                        since: float, until: float) -> dict[str, object]:
+    events = [event for event in _iter_jsonl(events_file)
+              if event.get("event_type") == "context_pack_built" and event.get("shadow") is not True
+              and (at := _time(event.get("ts"))) is not None and since <= at < until]
+    if not events:
+        result = _row(bot, "M7", str(events_file) if events_file.is_file() else None,
+                      0, None, "no_nonshadow_served_item_receipts_in_window")
+        result["join_coverage"] = None
+        return result
+    if not memory_db.is_file():
+        return _row(bot, "M7", None, None, None, f"memory_db_unavailable:{memory_db}")
+    counts = {"superseded": 0, "cross_project": 0, "secret_matches": 0, "total": 0}
+    joined = missing = 0
+    try:
+        with closing(sqlite3.connect(f"{memory_db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            wanted = {key for event in events
+                      for key in (event.get("result_ids") if isinstance(event.get("result_ids"), list) else [])
+                      if isinstance(key, str)}
+            memory_rows: dict[str, list[tuple[object, ...]]] = defaultdict(list)
+            # The primary key begins with layer, not key. One read-only scan is
+            # far cheaper than a full table scan per served item.
+            for key, value, scope, superseded_by, invalidated_at in conn.execute(
+                    "SELECT key, value, scope, superseded_by, invalidated_at FROM adr001_memory"):
+                if key in wanted:
+                    memory_rows[key].append((value, scope, superseded_by, invalidated_at))
+            for event in events:
+                ids = event.get("result_ids")
+                selected_count = event.get("selected_count")
+                if not isinstance(ids, list) or not isinstance(selected_count, int) or \
+                        isinstance(selected_count, bool) or selected_count != len(ids):
+                    missing += 1
+                    continue
+                flags = event.get("superseded")
+                for index, key in enumerate(ids):
+                    if not isinstance(key, str):
+                        missing += 1
+                        continue
+                    matches = memory_rows.get(key, [])
+                    if len(matches) != 1:
+                        missing += 1
+                        continue
+                    value, raw_scope, superseded_by, invalidated_at = matches[0]
+                    try:
+                        scope = json.loads(raw_scope) if raw_scope else {}
+                    except ValueError:
+                        scope = {}
+                    if not isinstance(scope, dict) or not isinstance(value, str):
+                        missing += 1
+                        continue
+                    joined += 1
+                    counts["superseded"] += bool(superseded_by or invalidated_at or
+                        (isinstance(flags, list) and index < len(flags) and flags[index] is True))
+                    project = scope.get("project")
+                    counts["cross_project"] += bool(project and project not in (bot, event.get("project")))
+                    counts["secret_matches"] += _redact_secrets(value) != value
+    except sqlite3.Error as exc:
+        return _row(bot, "M7", None, None, None, f"served_item_db_error:{type(exc).__name__}")
+    counts["total"] = sum(counts.values())
+    if missing:
+        result = _row(bot, "M7", f"{events_file};{memory_db}:adr001_memory", joined,
+                      None, f"unresolved_served_item_receipts:{missing}")
+        result["known_violation_counts"] = counts
+        result["join_coverage"] = joined / (joined + missing)
+        return result
+    result = _row(bot, "M7", f"{events_file};{memory_db}:adr001_memory", joined, counts)
+    result["join_coverage"] = 1.0
+    return result
+
+
+def _json_object(value: object) -> dict[str, object]:
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _github_followup(bot: str, issue: object, pr_number: object,
+                     approved_at: float, end: float, *,
+                     cache: dict[str, list[object] | None] | None = None,
+                     search_from: float | None = None) -> bool | None:
+    """Read-only corroboration: PR history, same-issue fixes, and local revert log.
+
+    ``None`` is deliberate when one of these sources cannot be checked. It is
+    never promoted to an observed clean 72-hour window.
+    """
+    if not isinstance(issue, int) or isinstance(issue, bool) or not isinstance(pr_number, int):
+        return None
+    repo = f"truhojunbot-tech/{bot}"
+    if cache is None:
+        cache = {}
+    try:
+        if repo not in cache:
+            floor = datetime.fromtimestamp(search_from or approved_at, timezone.utc).date()
+            listing = subprocess.run(
+                ["gh", "pr", "list", "-R", repo, "--state", "all", "--limit", "1000",
+                 "--search", f"created:>={floor.isoformat()}",
+                 "--json", "number,title,body,createdAt"], capture_output=True, text=True,
+                timeout=20, check=False)
+            if listing.returncode:
+                cache[repo] = None
+            else:
+                prs = json.loads(listing.stdout)
+                # A capped listing cannot prove that no matching follow-up exists.
+                cache[repo] = prs if isinstance(prs, list) and len(prs) < 1000 else None
+        prs = cache[repo]
+        if prs is None:
+            return None
+        for item in prs:
+            at = _time(item.get("createdAt"))
+            if at is None or not approved_at < at <= end or item.get("number") == pr_number:
+                continue
+            body = str(item.get("title") or "") + " " + str(item.get("body") or "")
+            if re.search(rf"(?<!\d)#{issue}(?!\d)", body) and re.search(r"\bfix|follow.?up|revert\b", body, re.I):
+                return True
+        events = subprocess.run(
+            ["gh", "api", f"repos/{repo}/issues/{pr_number}/events", "--paginate"],
+            capture_output=True, text=True, timeout=20, check=False)
+        if events.returncode:
+            return None
+        history = json.loads(events.stdout)
+        if any(event.get("event") == "reopened" and
+               (at := _time(event.get("created_at"))) is not None and approved_at < at <= end
+               for event in history if isinstance(event, dict)):
+            return True
+        repo_path = Path.home() / "alfred" / "projects" / bot
+        if not (repo_path / ".git").exists():
+            return None
+        log = subprocess.run(
+            ["git", "-C", str(repo_path), "log", "--all", "--format=%s%n%b",
+             f"--since={datetime.fromtimestamp(approved_at, timezone.utc).isoformat()}",
+             f"--until={datetime.fromtimestamp(end, timezone.utc).isoformat()}",
+             "--grep=Revert", "-i"], capture_output=True, text=True, timeout=20, check=False)
+        if log.returncode:
+            return None
+        return bool(re.search(rf"(?<!\d)#{pr_number}(?!\d)", log.stdout))
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def _review_followup_metric(bot: str, db: Path, since: float, until: float) -> dict[str, object]:
+    if not db.is_file():
+        return _row(bot, "M8", None, 0, None, "no_tasks_db")
+    try:
+        with closing(sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            task_columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+            receipt_columns = {row[1] for row in conn.execute("PRAGMA table_info(tokenomics_shadow_receipts)")}
+            needed_tasks = {"task_id", "task_type", "context", "verdict", "result_posted_at", "created_at", "receipt_id"}
+            needed_receipts = {"task_id", "shadow_recommendation_json", "actual_execution_json"}
+            if not needed_tasks <= task_columns or not needed_receipts <= receipt_columns:
+                return _row(bot, "M8", str(db), None, None, "review_followup_columns_unavailable")
+            tasks = {row["task_id"]: dict(row) for row in conn.execute("SELECT * FROM tasks")}
+            receipts = {row["task_id"]: dict(row) for row in
+                        conn.execute("SELECT * FROM tokenomics_shadow_receipts")}
+    except sqlite3.Error as exc:
+        return _row(bot, "M8", str(db), None, None, f"review_followup_db_error:{type(exc).__name__}")
+    known = correct = eligible = unknown = 0
+    github_cache: dict[str, list[object] | None] = {}
+    for review in tasks.values():
+        approved_at = _time(review.get("result_posted_at"))
+        if review.get("task_type") != "review" or review.get("verdict") != "approve" or \
+                approved_at is None or not since - 72 * 3600 <= approved_at < until - 72 * 3600:
+            continue
+        eligible += 1
+        parent_id = _json_object(review.get("context")).get("prev_task_id")
+        root = tasks.get(parent_id) if isinstance(parent_id, str) else None
+        root_receipt = receipts.get(parent_id) if isinstance(parent_id, str) else None
+        if not root or not root.get("receipt_id") or not root_receipt or \
+                not _json_object(root_receipt.get("shadow_recommendation_json")) \
+                or not _json_object(root_receipt.get("actual_execution_json")):
+            unknown += 1
+            continue
+        end = approved_at + 72 * 3600
+        followups = [task for task in tasks.values()
+                     if _json_object(task.get("context")).get("prev_task_id") in
+                        (parent_id, review.get("task_id"))
+                     and (task.get("task_type") == "implement" or
+                          (task.get("task_type") == "test" and
+                           (task.get("status") in ("failed", "needs_human") or
+                            task.get("verdict") in ("fail", "failed"))))
+                     and (at := _time(task.get("created_at"))) is not None
+                     and approved_at < at <= end]
+        if followups:
+            # A linked fix or attributable test failure is a definitive negative
+            # even if external PR history is unavailable.
+            known += 1
+            continue
+        root_context = _json_object(root.get("context"))
+        external = _github_followup(bot, root_context.get("issue_number"),
+                                    root.get("pr_number"), approved_at, end,
+                                    cache=github_cache, search_from=since - 72 * 3600)
+        if external is None:
+            unknown += 1
+            continue
+        known += 1
+        correct += not external
+    result = _row(bot, "M8", str(db) + ":tasks,tokenomics_shadow_receipts", known,
+                  correct / known if known else None,
+                  "no_complete_matured_review_followup_join_in_window")
+    result["eligible"] = eligible
+    result["unknown"] = unknown
+    return result
 
 
 def _percentile95(values: list[float]) -> float:
@@ -160,7 +521,9 @@ def _replay_frozen_eval(eval_set: Mapping[str, object], memory_db: Path) -> dict
 def compute_metrics(since: float, until: float, crew_root: str | Path,
                     hook_log: str | Path, *, bots: list[str] | None = None,
                     eval_path: str | Path | None = None,
-                    memory_db: str | Path | None = None) -> list[dict[str, object]]:
+                    memory_db: str | Path | None = None,
+                    transcript_root: str | Path | None = None,
+                    lifecycle_log: str | Path | None = None) -> list[dict[str, object]]:
     """Compute one source-attributed row per B1.3 metric per bot.
 
     The window is half-open [since, until). A missing producer or pre-A2
@@ -169,6 +532,11 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
     if until <= since:
         raise ValueError("until must be greater than since")
     root, hook_path = Path(crew_root).expanduser(), Path(hook_log).expanduser()
+    transcript_path = Path(transcript_root).expanduser() if transcript_root else None
+    lifecycle_path = Path(lifecycle_log).expanduser() if lifecycle_log else None
+    lifecycle_by_project = (_lifecycle_transitions(lifecycle_path, since, until)
+                            if lifecycle_path is not None else {})
+    memory_path = Path(memory_db).expanduser() if memory_db else Path.home() / ".agent_crew/memory/adr001_memory.db"
     hook_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in _iter_jsonl(hook_path):
         bot = event.get("bot")
@@ -176,8 +544,8 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
         if (isinstance(bot, str) and bot and at is not None and since <= at < until
                 and event.get("identity_source") != "headless_oneshot"):
             hook_rows[bot].append(event)
-    bot_names = set(bots or []) | set(hook_rows)
-    if root.is_dir():
+    bot_names = set(bots) if bots is not None else set(hook_rows)
+    if bots is None and root.is_dir():
         bot_names.update(path.name for path in root.iterdir() if (path / "tasks.db").is_file())
     eval_source = str(eval_path) if eval_path else "frozen_eval_set:" + EVAL_SHA256
     eval_reason = "frozen_eval_set_missing:--eval-path"
@@ -193,9 +561,8 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
             else:
                 try:
                     eval_set = json.loads(contents)
-                    db_path = Path(memory_db).expanduser() if memory_db is not None else Path.home() / ".agent_crew/memory/adr001_memory.db"
-                    eval_scores = _replay_frozen_eval(eval_set, db_path)
-                    eval_source = f"{path};{db_path}"
+                    eval_scores = _replay_frozen_eval(eval_set, memory_path)
+                    eval_source = f"{path};{memory_path}"
                 except (OSError, ImportError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
                     eval_reason = str(exc) or type(exc).__name__
     result: list[dict[str, object]] = []
@@ -217,11 +584,17 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
         m1 = _row(bot, "M1", db_source + ":tokenomics_shadow_receipts", len(known),
                   cache_read / total if total else None,
                   "no_complete_positive_economics_receipts_in_window")
-        # Quota's currently deployed quota_cache.json files record pace and
-        # limits, not per-session cache-read/write/input token components.
-        # Leave this sibling axis unknown until a real usage cache supplies it.
-        m1["bot_session_value"] = None
-        m1["bot_session_reason"] = "quota_usage_cache_lacks_session_token_components"
+        session_value, session_n, session_reason, joined, transitions = (
+            _session_cache(bot, since, until, transcript_path,
+                           lifecycle_by_project.get(bot.replace("_", "-"), []))
+            if transcript_path is not None and lifecycle_path is not None else
+            (None, 0, "bot_session_sources_not_supplied", 0, 0))
+        m1["bot_session_value"] = session_value
+        m1["bot_session_n"] = session_n
+        m1["bot_session_transition_count"] = transitions
+        m1["bot_session_join_coverage"] = joined / transitions if transitions else None
+        if session_value is None:
+            m1["bot_session_reason"] = session_reason
         result.append(m1)
 
         heads = {x["head_hash"] for x in hooks if isinstance(x.get("head_hash"), str)
@@ -276,10 +649,8 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
         result.append(_row(bot, "M6", hook_source, len(latencies),
                            _percentile95(latencies) if latencies else None,
                            "no_retrieve_ranked_latency_receipts_in_window"))
-        result.append(_row(bot, "M7", None, None, None,
-                           "not_measured:served_item_join_not_implemented"))
-        result.append(_row(bot, "M8", None, None, None,
-                           "not_measured:review_followup_window_not_implemented"))
+        result.append(_served_item_metric(bot, events_file, memory_path, since, until))
+        result.append(_review_followup_metric(bot, db, since, until))
     return result
 
 
@@ -299,16 +670,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--until", required=True)
     parser.add_argument("--crew-root", type=Path, default=Path.home() / ".agent_crew")
     parser.add_argument("--hook-log", type=Path, required=True)
+    parser.add_argument("--bot", action="append", dest="bots",
+                        help="limit output to a named bot (repeatable)")
     parser.add_argument("--eval-path", type=Path)
     parser.add_argument("--memory-db", type=Path,
                         help="ADR-001 memory DB to snapshot read-only for frozen EVAL replay")
+    parser.add_argument("--transcript-root", type=Path, default=Path.home() / ".claude/projects",
+                        help="Claude transcript project directory for bot-session M1")
+    parser.add_argument("--lifecycle-log", type=Path,
+                        default=Path.home() / "alfred/quota/logs/compact_lifecycle_events.jsonl",
+                        help="Quota compact/RENEW lifecycle JSONL for bot-session M1")
     parser.add_argument("--table", action="store_true")
     args = parser.parse_args(argv)
     since, until = _time(args.since), _time(args.until)
     if since is None or until is None:
         parser.error("--since and --until must be epochs or ISO-8601 timestamps")
     rows = compute_metrics(since, until, args.crew_root, args.hook_log,
-                           eval_path=args.eval_path, memory_db=args.memory_db)
+                           bots=args.bots,
+                           eval_path=args.eval_path, memory_db=args.memory_db,
+                           transcript_root=args.transcript_root,
+                           lifecycle_log=args.lifecycle_log)
     print(format_table(rows) if args.table else json.dumps(rows, sort_keys=True))
     return 0
 

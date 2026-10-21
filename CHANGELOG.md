@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added read-only B1.3 joins for per-generation Claude cache usage, non-shadow
+  served-item identities, and matured review follow-ups. Missing or ambiguous
+  links carry explicit reasons; shadow retrieval is never counted as served.
+
 - For agent_crew#342, added optional `quality_evidence_state` to the shadow
   policy decision: `preserving`, `not_preserving` for observed negative quality
   facts, or `unknown` for missing evidence. Recall overrides retain the legacy
