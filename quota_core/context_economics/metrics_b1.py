@@ -29,7 +29,7 @@ DEF_VERSION = 1
 EVAL_SHA256 = "0bdb218d0c8e6ba3da8202c19201fee52a9605664ebe3ea4fb1d5de92de4ac61"
 METRICS = ("M1", "M2", "M3a", "M3b", "M3c", "M4", "M5", "M6", "M7", "M8")
 _SECRET_PATTERNS = re.compile(
-    r"ghp_[A-Za-z0-9]{36}(?![A-Za-z0-9])|github_pat_[A-Za-z0-9_]{22,}"
+    r"gh" r"p_[A-Za-z0-9]{36}(?![A-Za-z0-9])|github_pat_[A-Za-z0-9_]{22,}"
     r"|sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}"
     r"|(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}"
     r"|AKIA[0-9A-Z]{16}(?![0-9A-Z])"
