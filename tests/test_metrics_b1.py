@@ -7,6 +7,7 @@ import hashlib
 import importlib
 import os
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -170,6 +171,27 @@ class B1MetricsTests(unittest.TestCase):
         self.assertEqual(m7["value"], {"superseded": 1, "cross_project": 1,
                                        "secret_matches": 1, "total": 3})
 
+    def test_malformed_and_incomplete_served_ids_are_unknown_not_fatal(self):
+        memory_db = Path(self.tmp.name) / "memory.db"
+        with sqlite3.connect(memory_db) as conn:
+            conn.execute("CREATE TABLE adr001_memory (key TEXT, value TEXT, scope TEXT, "
+                         "superseded_by TEXT, invalidated_at REAL)")
+            conn.execute("INSERT INTO adr001_memory VALUES (?,?,?,?,?)",
+                         ("served-1", "safe text", '{"project":"alpha"}', None, None))
+        events = self.crew_root / "alpha" / "context_events.jsonl"
+        events.write_text("\n".join(json.dumps({"event_type": "context_pack_built",
+            "ts": 150, "project": "alpha", "result_ids": ids,
+            "selected_count": count, "shadow": False}) for ids, count in
+            ((5, 1), (["served-1"], 2))) + "\n")
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"],
+                               memory_db=memory_db)
+        m7 = next(row for row in rows if row["metric"] == "M7")
+        self.assertIsNone(m7["value"])
+        self.assertEqual(m7["n"], 0)
+        self.assertEqual(m7["join_coverage"], 0.0)
+        self.assertEqual(m7["reason"], "unresolved_served_item_receipts:2")
+
     def test_shadow_retrieval_is_not_counted_as_served(self):
         events = self.crew_root / "alpha" / "context_events.jsonl"
         events.write_text(json.dumps({"event_type": "shadow_memory_retrieval", "ts": 150,
@@ -224,6 +246,30 @@ class B1MetricsTests(unittest.TestCase):
         m1 = next(row for row in rows if row["metric"] == "M1")
         self.assertEqual((m1["bot_session_n"], m1["bot_session_value"]), (1, 0.8))
 
+    def test_m1_identical_post_renew_offsets_remain_ambiguous(self):
+        projects = Path(self.tmp.name) / "transcripts"
+        folder = projects / "-home-truhojun-alfred-instances-alpha"
+        folder.mkdir(parents=True)
+        for index in (1, 2):
+            (folder / f"session-{index}.jsonl").write_text(json.dumps({
+                "type": "assistant", "timestamp": "1970-01-01T00:02:40Z",
+                "message": {"id": f"request-{index}", "usage": {
+                    "input_tokens": 10, "cache_creation_input_tokens": 10,
+                    "cache_read_input_tokens": 80}}}) + "\n")
+        lifecycle = Path(self.tmp.name) / "compact.jsonl"
+        lifecycle.write_text(json.dumps({"runtime": "alfred_watchdog",
+            "event_type": "success", "action": "RENEW", "project": "alpha",
+            "timestamp": "1970-01-01T00:02:30Z"}) + "\n")
+        rows = compute_metrics(100, 200, self.crew_root,
+                               FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"],
+                               transcript_root=projects, lifecycle_log=lifecycle)
+        m1 = next(row for row in rows if row["metric"] == "M1")
+        self.assertIsNone(m1["bot_session_value"])
+        self.assertEqual(m1["bot_session_n"], 0)
+        self.assertEqual(m1["bot_session_join_coverage"], 0.0)
+        self.assertEqual(m1["bot_session_reason"],
+                         "no_unambiguous_positive_transcript_generation_join")
+
     def test_review_followup_join_flags_observed_fix_after_approval(self):
         db = self.crew_root / "alpha" / "tasks.db"
         with sqlite3.connect(db) as conn:
@@ -254,6 +300,55 @@ class B1MetricsTests(unittest.TestCase):
                                FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"])
         m8 = next(row for row in rows if row["metric"] == "M8")
         self.assertEqual((m8["n"], m8["value"]), (1, 0.0))
+
+    def test_review_followup_positive_unknown_and_empty_are_distinct(self):
+        db = self.crew_root / "alpha" / "tasks.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("ALTER TABLE tokenomics_shadow_receipts ADD COLUMN shadow_recommendation_json TEXT")
+            conn.execute("ALTER TABLE tokenomics_shadow_receipts ADD COLUMN actual_execution_json TEXT")
+            for column, kind in (("task_type", "TEXT"), ("context", "TEXT"),
+                                 ("verdict", "TEXT"), ("result_posted_at", "REAL"),
+                                 ("receipt_id", "TEXT"), ("pr_number", "INTEGER")):
+                conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {kind}")
+            conn.execute("INSERT INTO tasks (task_id,created_at,task_type,context,receipt_id,pr_number) "
+                         "VALUES (?,?,?,?,?,?)",
+                         ("impl-1", 110, "implement", '{"issue_number":42}', "cea-1", 7))
+            conn.execute("INSERT INTO tasks (task_id,created_at,task_type,context,verdict,result_posted_at) "
+                         "VALUES (?,?,?,?,?,?)",
+                         ("review-1", 120, "review", '{"prev_task_id":"impl-1"}', "approve", 125))
+            conn.execute("INSERT INTO tokenomics_shadow_receipts "
+                         "(task_id,created_at,shadow_recommendation_json,actual_execution_json) "
+                         "VALUES (?,?,?,?)",
+                         ("impl-1", 110, '{"recommended_max_review_fix_rounds":2}',
+                          '{"cascade":"baseline"}'))
+        with patch.object(metrics_b1, "_github_followup", return_value=False):
+            m8 = metrics_b1._review_followup_metric("alpha", db, 125 + 72 * 3600,
+                                                     200 + 72 * 3600)
+        self.assertEqual((m8["n"], m8["value"], m8["unknown"]), (1, 1.0, 0))
+        with patch.object(metrics_b1, "_github_followup", return_value=None):
+            m8 = metrics_b1._review_followup_metric("alpha", db, 125 + 72 * 3600,
+                                                     200 + 72 * 3600)
+        self.assertEqual((m8["n"], m8["unknown"]), (0, 1))
+        self.assertIsNone(m8["value"])
+        self.assertEqual(m8["reason"], "no_complete_matured_review_followup_join_in_window")
+        missing = metrics_b1._review_followup_metric("alpha", db.parent / "absent.db", 100, 200)
+        self.assertEqual((missing["n"], missing["value"], missing["reason"]),
+                         (0, None, "no_tasks_db"))
+
+    def test_github_pr_listing_is_memoized_per_repo(self):
+        cache = {}
+        def respond(args, **_kwargs):
+            if args[:3] == ["gh", "pr", "list"]:
+                return subprocess.CompletedProcess(args, 0, "[]", "")
+            return subprocess.CompletedProcess(args, 0, "[]", "")
+        with patch.object(metrics_b1.subprocess, "run", side_effect=respond) as run:
+            for pr_number in (7, 8, 9):
+                self.assertIsNone(metrics_b1._github_followup(
+                    "alpha", 42, pr_number, 100, 200, cache=cache, search_from=100))
+        listings = [call for call in run.call_args_list
+                    if call.args[0][:3] == ["gh", "pr", "list"]]
+        self.assertEqual(len(listings), 1)
+        self.assertIn("--search", listings[0].args[0])
 
     def test_eval_path_missing_and_wrong_sha_are_distinct(self):
         absent = Path(self.tmp.name) / "absent-eval.json"

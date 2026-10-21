@@ -427,8 +427,8 @@ review approvals to the organic task, CEA receipt, shadow recommendation,
 actual action and 72-hour follow-up. A linked fix or failed test is a known
 negative; otherwise GitHub PR history and a local revert log must be readable
 before absence is called a known positive. Where no complete join exists,
-M8 emits `n=0`, `value=0.0` and a reason; that zero is not a passing quality
-measurement. The module
+M8 emits `n=0`, `value=null` and a reason when no complete join exists; it
+never reports an unperformed measurement as an observed zero. The module
 formats a table for an hourly caller;
 installing it into a private bot's scheduler/report is a separate deployment
 step, not performed by quota-core's read-only CLI.

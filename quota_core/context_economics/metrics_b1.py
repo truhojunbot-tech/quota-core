@@ -265,7 +265,8 @@ def _served_item_metric(bot: str, events_file: Path, memory_db: Path,
     joined = missing = 0
     try:
         with closing(sqlite3.connect(f"{memory_db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
-            wanted = {key for event in events for key in (event.get("result_ids") or [])
+            wanted = {key for event in events
+                      for key in (event.get("result_ids") if isinstance(event.get("result_ids"), list) else [])
                       if isinstance(key, str)}
             memory_rows: dict[str, list[tuple[object, ...]]] = defaultdict(list)
             # The primary key begins with layer, not key. One read-only scan is
@@ -327,7 +328,9 @@ def _json_object(value: object) -> dict[str, object]:
 
 
 def _github_followup(bot: str, issue: object, pr_number: object,
-                     approved_at: float, end: float) -> bool | None:
+                     approved_at: float, end: float, *,
+                     cache: dict[str, list[object] | None] | None = None,
+                     search_from: float | None = None) -> bool | None:
     """Read-only corroboration: PR history, same-issue fixes, and local revert log.
 
     ``None`` is deliberate when one of these sources cannot be checked. It is
@@ -336,16 +339,24 @@ def _github_followup(bot: str, issue: object, pr_number: object,
     if not isinstance(issue, int) or isinstance(issue, bool) or not isinstance(pr_number, int):
         return None
     repo = f"truhojunbot-tech/{bot}"
+    if cache is None:
+        cache = {}
     try:
-        listing = subprocess.run(
-            ["gh", "pr", "list", "-R", repo, "--state", "all", "--limit", "1000",
-             "--json", "number,title,body,createdAt"], capture_output=True, text=True,
-            timeout=20, check=False)
-        if listing.returncode:
-            return None
-        prs = json.loads(listing.stdout)
-        if not isinstance(prs, list) or len(prs) >= 1000:
-            # A capped listing cannot prove that no matching follow-up exists.
+        if repo not in cache:
+            floor = datetime.fromtimestamp(search_from or approved_at, timezone.utc).date()
+            listing = subprocess.run(
+                ["gh", "pr", "list", "-R", repo, "--state", "all", "--limit", "1000",
+                 "--search", f"created:>={floor.isoformat()}",
+                 "--json", "number,title,body,createdAt"], capture_output=True, text=True,
+                timeout=20, check=False)
+            if listing.returncode:
+                cache[repo] = None
+            else:
+                prs = json.loads(listing.stdout)
+                # A capped listing cannot prove that no matching follow-up exists.
+                cache[repo] = prs if isinstance(prs, list) and len(prs) < 1000 else None
+        prs = cache[repo]
+        if prs is None:
             return None
         for item in prs:
             at = _time(item.get("createdAt"))
@@ -381,7 +392,7 @@ def _github_followup(bot: str, issue: object, pr_number: object,
 
 def _review_followup_metric(bot: str, db: Path, since: float, until: float) -> dict[str, object]:
     if not db.is_file():
-        return _row(bot, "M8", None, 0, 0.0, "no_tasks_db") | {"reason": "no_tasks_db"}
+        return _row(bot, "M8", None, 0, None, "no_tasks_db")
     try:
         with closing(sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
@@ -397,6 +408,7 @@ def _review_followup_metric(bot: str, db: Path, since: float, until: float) -> d
     except sqlite3.Error as exc:
         return _row(bot, "M8", str(db), None, None, f"review_followup_db_error:{type(exc).__name__}")
     known = correct = eligible = unknown = 0
+    github_cache: dict[str, list[object] | None] = {}
     for review in tasks.values():
         approved_at = _time(review.get("result_posted_at"))
         if review.get("task_type") != "review" or review.get("verdict") != "approve" or \
@@ -428,18 +440,18 @@ def _review_followup_metric(bot: str, db: Path, since: float, until: float) -> d
             continue
         root_context = _json_object(root.get("context"))
         external = _github_followup(bot, root_context.get("issue_number"),
-                                    root.get("pr_number"), approved_at, end)
+                                    root.get("pr_number"), approved_at, end,
+                                    cache=github_cache, search_from=since - 72 * 3600)
         if external is None:
             unknown += 1
             continue
         known += 1
         correct += not external
     result = _row(bot, "M8", str(db) + ":tasks,tokenomics_shadow_receipts", known,
-                  correct / known if known else 0.0)
+                  correct / known if known else None,
+                  "no_complete_matured_review_followup_join_in_window")
     result["eligible"] = eligible
     result["unknown"] = unknown
-    if not known:
-        result["reason"] = "no_complete_matured_review_followup_join_in_window"
     return result
 
 
