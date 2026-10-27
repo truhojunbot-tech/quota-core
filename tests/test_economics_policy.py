@@ -90,8 +90,8 @@ class EconomicsPolicyTests(unittest.TestCase):
                                   "16232f59d3054604a67f0d73b0a5e62a3e79626a920426e0caf8b29ae9a2a390"),
         }
         fixture_hashes = {
-            "organic-implement-redacted": "640c62f4b0a9df00ab40cf1d014d38f7b095454760e8a4d93b3cdab710561e57",
-            "organic-review-redacted": "58ed229fcc0a57da0668d5fc816de484262f78eab2539bfd707d3c2d0e85c223",
+            "sample-implement": "db7425c7cbd45f9995367c8a452fd3b6231b5aa864b8c8512a41569099c3abc5",
+            "sample-review": "b7e96c5d1e699edf219bbdb46562093dafe8aee033f8a6e99552a88960e2410d",
         }
         for record in correlate_task_economics(read_attribution_jsonl(FIXTURE), []):
             cases[record.task_id] = (recommend_task_policy(record), fixture_hashes[record.task_id])
@@ -301,9 +301,9 @@ class EconomicsPolicyTests(unittest.TestCase):
         ))
         self.assertEqual(decision.recommended_max_review_fix_rounds, 3)
 
-    def test_redacted_organic_post_334_samples_produce_one_shadow_artifact_each(self):
+    def test_synthetic_samples_produce_one_shadow_artifact_each(self):
         records = correlate_task_economics(read_attribution_jsonl(FIXTURE), [])
         report = shadow_policy_report(records)
         self.assertEqual(report["decision_count"], 2)
-        self.assertEqual(report["decisions"][0]["recommended_soft_budget"]["cache_read_tokens"], 61009536)
+        self.assertEqual(report["decisions"][0]["recommended_soft_budget"]["cache_read_tokens"], 60900)
         self.assertIsNone(report["decisions"][1]["recommended_soft_budget"]["reasoning_tokens"])

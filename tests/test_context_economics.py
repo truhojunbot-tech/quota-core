@@ -205,7 +205,7 @@ class CorrelateTests(unittest.TestCase):
                 provider="codex",
                 tokens=TokenComponents(provider_total=42),
                 provider_session_id=None,
-                project="alpha-engine",
+                project="sample-project",
                 started_at=1787001950,
                 completed_at=1787001955,
             )

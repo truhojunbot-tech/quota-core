@@ -12,7 +12,7 @@ exists to preserve rather than reinterpret:
     *different* event. Observed and capped are the two arms of one branch, so
     summing them as two samples double-counts a single dispatch.
 
-The original fixtures below are producer-shaped. The organic quota-ops fixture
+The original fixtures below are producer-shaped. The synthetic paired fixture
 added for #70 item 7 contains unmodified deployed lifecycle and attribution
 rows; it proves ingestion and persistence, not a population-level policy result.
 """
@@ -270,10 +270,10 @@ class OrganicEndToEndTests(unittest.TestCase):
     """Unmodified quota-ops producer rows from deployed Agent Crew 32c5b8f+."""
 
     def test_real_observed_and_capped_rows_survive_parse_join_and_serialization(self):
-        events = read_lifecycle_events_jsonl(FIXTURE_DIR / "organic-quota-ops-events.jsonl")
+        events = read_lifecycle_events_jsonl(FIXTURE_DIR / "synthetic-events.jsonl")
         observations = provider_context_observations_from_events(events)
         attributions = reconcile_attribution_by_task(read_attribution_jsonl(
-            FIXTURE_DIR / "organic-quota-ops-attribution.jsonl"))
+            FIXTURE_DIR / "synthetic-attribution.jsonl"))
         records = correlate_task_economics(attributions, [])
         before = {record.task_id: record for record in records}
         joined = attach_provider_context_observations(records, observations)
@@ -283,11 +283,11 @@ class OrganicEndToEndTests(unittest.TestCase):
         }
         self.assertEqual(len(observations), 2)
         self.assertEqual(set(serialized), {
-            "review-impl-909ae895-r0", "review-6bc835dd",
+            "review-cap-sample", "review-observed-sample",
         })
         expected = {
-            "review-impl-909ae895-r0": (None, None, True),
-            "review-6bc835dd": (146555, 9148303, False),
+            "review-cap-sample": (None, None, True),
+            "review-observed-sample": (1465, 9148, False),
         }
         for task_id, (tokens, byte_count, capped) in expected.items():
             with self.subTest(task_id=task_id):
@@ -299,12 +299,12 @@ class OrganicEndToEndTests(unittest.TestCase):
                 self.assertEqual(row["context_tokens"], tokens)
                 self.assertEqual(row["context_bytes"], byte_count)
                 self.assertIs(row["context_window_capped"], capped)
-        capped_row = serialized["review-impl-909ae895-r0"]
-        self.assertEqual(capped_row["pre_cap_context_tokens"], 341834)
-        self.assertEqual(capped_row["pre_cap_context_bytes"], 15042732)
-        self.assertIsNone(serialized["review-6bc835dd"]["pre_cap_context_tokens"])
+        capped_row = serialized["review-cap-sample"]
+        self.assertEqual(capped_row["pre_cap_context_tokens"], 3418)
+        self.assertEqual(capped_row["pre_cap_context_bytes"], 15040)
+        self.assertIsNone(serialized["review-observed-sample"]["pre_cap_context_tokens"])
         self.assertTrue(any("pre-cap provider session" in note for note in
-                            serialized["review-impl-909ae895-r0"]["attribution_notes"]))
+                            serialized["review-cap-sample"]["attribution_notes"]))
         summary = provider_context_window_summary(joined)
         self.assertEqual(summary["known_count"], 1)
         by_policy = provider_context_by_policy(joined)
@@ -313,7 +313,7 @@ class OrganicEndToEndTests(unittest.TestCase):
         self.assertIsNone(by_policy["fresh"]["max_context_tokens"])
 
     def test_cap_session_exception_does_not_allow_other_identity_conflicts(self):
-        events = read_lifecycle_events_jsonl(FIXTURE_DIR / "organic-quota-ops-events.jsonl")
+        events = read_lifecycle_events_jsonl(FIXTURE_DIR / "synthetic-events.jsonl")
         capped = next(obs for obs in provider_context_observations_from_events(events) if obs.capped)
         for changed in ({"context_id": "other"}, {"context_generation": 3},
                         {"provider": "codex"}, {"context_policy": "resume"}):

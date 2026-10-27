@@ -1,5 +1,9 @@
 # Agent Crew telemetry contract fixtures
 
+All fixtures in this tree are synthetic: task and session identities, timestamps,
+paths and measurements are invented while producer field shapes and edge cases
+are preserved. They are not organic evidence or economic measurements.
+
 These fixtures document the JSONL contract `agent_crew` issue #202
 ("feat: expose durable context identity and lifecycle telemetry") specifies,
 so `quota_core.context_economics.agent_crew_adapter` can be built and tested

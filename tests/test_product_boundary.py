@@ -19,12 +19,24 @@ from quota_core.context_economics.metrics_b1 import compute_metrics
 
 
 PACKAGE = Path(__file__).resolve().parents[1] / "quota_core"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 PRIVATE_MODULES = {"quota_ops", "alfred", "agent_crew"}
 FLEET_NAMES = re.compile(
-    r"(?<![a-z0-9])(?:alfred|quota-ops|apify-forge|halla|alpha_engine|"
+    r"(?<![a-z0-9])(?:alfred|quota-ops|apify-forge|halla|alpha[_-]engine|"
     r"kis-trader|btc-quant-engine|claude_autonomous_trader)(?![a-z0-9])",
     re.IGNORECASE,
 )
+
+
+def _dynamic_import_target(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call) or not node.args:
+        return None
+    func = node.func
+    dynamic = (isinstance(func, ast.Name) and func.id in {"__import__", "import_module"}) or (
+        isinstance(func, ast.Attribute) and func.attr == "import_module")
+    if dynamic and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+        return node.args[0].value
+    return None
 
 
 class ProductBoundaryTests(unittest.TestCase):
@@ -56,10 +68,35 @@ class ProductBoundaryTests(unittest.TestCase):
                 for module in modules:
                     if module.split(".")[0] in PRIVATE_MODULES:
                         violations.append(f"{path}:{node.lineno}: private import {module}")
+                module = _dynamic_import_target(node)
+                if module and module.split(".")[0] in PRIVATE_MODULES:
+                    violations.append(f"{path}:{node.lineno}: dynamic private import {module}")
                 if isinstance(node, ast.Constant) and isinstance(node.value, str):
                     value = node.value
                     if re.search(r"\btmux\b|session[_ -]?restart", value, re.I):
                         violations.append(f"{path}:{node.lineno}: session actuation {value!r}")
+        self.assertEqual(violations, [])
+
+    def test_dynamic_import_guard_detects_private_import_forms(self):
+        for source in ('importlib.import_module("agent_crew.memory")',
+                       '__import__("alfred.runtime")',
+                       'import_module("quota_ops.secret")'):
+            tree = ast.parse(source)
+            targets = [_dynamic_import_target(node) for node in ast.walk(tree)]
+            self.assertTrue(any(target and target.split(".")[0] in PRIVATE_MODULES
+                                for target in targets), source)
+
+    def test_fixtures_have_no_fleet_names_or_home_paths(self):
+        violations = []
+        for path in FIXTURES.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            if "/home/" in content or FLEET_NAMES.search(content):
+                violations.append(str(path.relative_to(FIXTURES)))
         self.assertEqual(violations, [])
 
     def test_missing_private_metric_sources_are_unknown_not_errors(self):

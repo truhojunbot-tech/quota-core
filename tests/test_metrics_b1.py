@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import json
 import hashlib
-import importlib
 import os
 import sqlite3
 import subprocess
-import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
-from contextlib import contextmanager
 from unittest.mock import patch
 
 from quota_core.context_economics import metrics_b1
@@ -21,22 +18,6 @@ from quota_core.context_economics.metrics_b1 import compute_metrics, format_tabl
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "context_economics"
-
-
-@contextmanager
-def isolated_agent_crew_modules():
-    """Exercise imports from a fake checkout without leaking into other tests."""
-    saved = {name: module for name, module in sys.modules.items()
-             if name == "agent_crew" or name.startswith("agent_crew.")}
-    for name in saved:
-        del sys.modules[name]
-    try:
-        yield
-    finally:
-        for name in list(sys.modules):
-            if name == "agent_crew" or name.startswith("agent_crew."):
-                del sys.modules[name]
-        sys.modules.update(saved)
 
 
 class B1MetricsTests(unittest.TestCase):
@@ -448,25 +429,26 @@ class B1MetricsTests(unittest.TestCase):
             rows = compute_metrics(100, 200, self.crew_root,
                                    FIXTURES / "b1_hook_boundaries.jsonl",
                                    bots=["alpha"], eval_path=eval_path,
-                                   memory_db=memory_db)
+                                   memory_db=memory_db,
+                                   replay_adapter=lambda cases, snapshot: {})
             m3a = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M3a")
             self.assertIsNone(m3a["value"])
             self.assertIsNone(m3a["n"])
             self.assertIn(str(memory_db), m3a["reason"])
             memory_db.touch()
-            with patch.dict(os.environ, {"LEMMALOG_AGENT_CREW_SRC": str(Path(self.tmp.name) / "missing-src")}):
-                rows = compute_metrics(100, 200, self.crew_root,
-                                       FIXTURES / "b1_hook_boundaries.jsonl",
-                                       bots=["alpha"], eval_path=eval_path,
-                                       memory_db=memory_db)
+            rows = compute_metrics(100, 200, self.crew_root,
+                                   FIXTURES / "b1_hook_boundaries.jsonl",
+                                   bots=["alpha"], eval_path=eval_path,
+                                   memory_db=memory_db)
             m3a = next(row for row in rows if row["bot"] == "alpha" and row["metric"] == "M3a")
             self.assertIsNone(m3a["value"])
-            self.assertIn("LEMMALOG_AGENT_CREW_SRC", m3a["reason"])
+            self.assertEqual(m3a["reason"], "replay_adapter_not_supplied")
             with patch.object(metrics_b1, "_replay_frozen_eval", return_value={"M3a": (1, 1), "M3b": (0, 1)}) as replay:
                 rows = compute_metrics(100, 200, self.crew_root,
                                        FIXTURES / "b1_hook_boundaries.jsonl",
                                        bots=["alpha"], eval_path=eval_path,
-                                       memory_db=memory_db)
+                                       memory_db=memory_db,
+                                       replay_adapter=lambda cases, snapshot: {})
             self.assertEqual(replay.call_count, 1)
             by_metric = {row["metric"]: row for row in rows if row["bot"] == "alpha"}
             self.assertEqual((by_metric["M3a"]["value"], by_metric["M3a"]["n"]), (1.0, 1))
@@ -478,26 +460,6 @@ class B1MetricsTests(unittest.TestCase):
             db.execute("CREATE TABLE source_only (id INTEGER)")
             db.execute("INSERT INTO source_only VALUES (1)")
         before_bytes, before_mtime = source.read_bytes(), source.stat().st_mtime_ns
-        package = Path(self.tmp.name) / "fake-crew" / "agent_crew"
-        package.mkdir(parents=True)
-        (package / "__init__.py").write_text("")
-        (package / "memory_runtime.py").write_text(
-            "class MemoryScope:\n"
-            "    def __init__(self, **fields): self.__dict__.update(fields)\n")
-        (package / "memory_hybrid.py").write_text(
-            "import sqlite3\n"
-            "observed_path = None\n"
-            "snapshot_write_seen = False\n"
-            "class HybridMemoryStorage:\n"
-            "    def __init__(self, path):\n"
-            "        global observed_path, snapshot_write_seen\n"
-            "        observed_path = path\n"
-            "        with sqlite3.connect(path) as db:\n"
-            "            db.execute('CREATE TABLE snapshot_only (id INTEGER)')\n"
-            "            db.execute('INSERT INTO snapshot_only VALUES (1)')\n"
-            "            snapshot_write_seen = db.execute('SELECT count(*) FROM snapshot_only').fetchone()[0] == 1\n"
-            "    def retrieve_ranked(self, scope, query, role, k, byte_budget):\n"
-            "        return {'head': [], 'middle': []}\n")
         real_connect = sqlite3.connect
         observed_ro = []
 
@@ -510,37 +472,33 @@ class B1MetricsTests(unittest.TestCase):
 
         cases = {"owner_cases": [{"project": "alpha", "query": "owner",
                                    "expected": ["key"]}], "task_cases": []}
-        with isolated_agent_crew_modules(), patch.dict(os.environ, {
-                "LEMMALOG_AGENT_CREW_SRC": str(package.parent)}), patch.object(
-                metrics_b1.sqlite3, "connect", side_effect=checked_connect):
-            self.assertEqual(metrics_b1._replay_frozen_eval(cases, source),
+        observed_snapshot = []
+        def replay(cases, snapshot):
+            observed_snapshot.append(snapshot)
+            with sqlite3.connect(snapshot) as db:
+                db.execute("CREATE TABLE snapshot_only (id INTEGER)")
+                db.execute("INSERT INTO snapshot_only VALUES (1)")
+                self.assertEqual(db.execute("SELECT count(*) FROM snapshot_only").fetchone()[0], 1)
+            return {"M3a": (0, 1), "M3b": (0, 0)}
+        with patch.object(metrics_b1.sqlite3, "connect", side_effect=checked_connect):
+            self.assertEqual(metrics_b1._replay_frozen_eval(cases, source, replay),
                              {"M3a": (0, 1), "M3b": (0, 0)})
-            hybrid = sys.modules["agent_crew.memory_hybrid"]
-            self.assertNotEqual(Path(hybrid.observed_path), source)
-            self.assertTrue(hybrid.snapshot_write_seen)
+        self.assertEqual(len(observed_snapshot), 1)
+        self.assertNotEqual(observed_snapshot[0], source)
         self.assertEqual(len(observed_ro), 1)
         self.assertEqual(source.read_bytes(), before_bytes)
         self.assertEqual(source.stat().st_mtime_ns, before_mtime)
         with sqlite3.connect(source) as db:
             self.assertEqual(db.execute("SELECT name FROM sqlite_master WHERE name='snapshot_only'").fetchone(), None)
 
-    def test_cached_agent_crew_module_from_other_checkout_is_refused(self):
+    def test_replay_adapter_is_required_even_with_valid_eval_and_memory_db(self):
         source = Path(self.tmp.name) / "memory-source.db"
         source.touch()
-        first = Path(self.tmp.name) / "first" / "agent_crew"
-        second = Path(self.tmp.name) / "second" / "agent_crew"
-        for package in (first, second):
-            package.mkdir(parents=True)
-            (package / "__init__.py").write_text("")
-            (package / "memory_hybrid.py").write_text("class HybridMemoryStorage: pass\n")
-            (package / "memory_runtime.py").write_text("class MemoryScope: pass\n")
-        with isolated_agent_crew_modules():
-            sys.path.insert(0, str(first.parent))
-            try:
-                importlib.import_module("agent_crew.memory_hybrid")
-            finally:
-                sys.path.remove(str(first.parent))
-            with patch.dict(os.environ, {"LEMMALOG_AGENT_CREW_SRC": str(second.parent)}):
-                with self.assertRaisesRegex(ImportError, "agent_crew_src_mismatch"):
-                    metrics_b1._replay_frozen_eval({"owner_cases": [], "task_cases": []}, source)
-            self.assertFalse("agent_crew.memory_runtime" in sys.modules)
+        eval_path = Path(self.tmp.name) / "eval.json"
+        eval_path.write_text('{"owner_cases":[],"task_cases":[]}')
+        with patch.object(metrics_b1, "EVAL_SHA256", hashlib.sha256(eval_path.read_bytes()).hexdigest()):
+            rows = compute_metrics(100, 200, self.crew_root,
+                                   FIXTURES / "b1_hook_boundaries.jsonl", bots=["alpha"],
+                                   eval_path=eval_path, memory_db=source)
+        self.assertEqual(next(row for row in rows if row["metric"] == "M3a")["reason"],
+                         "replay_adapter_not_supplied")

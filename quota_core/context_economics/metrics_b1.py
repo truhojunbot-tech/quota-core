@@ -8,20 +8,18 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib
 import json
 import math
 import os
 import re
 import sqlite3
 import subprocess
-import sys
 import tempfile
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .agent_crew_adapter import _iter_jsonl, read_lifecycle_events_jsonl
 
@@ -491,32 +489,20 @@ def _score_eval_cases(eval_set: Mapping[str, object], storage: object,
     return scores
 
 
-def _replay_frozen_eval(eval_set: Mapping[str, object], memory_db: Path) -> dict[str, tuple[int, int]]:
-    """Replay on a snapshot: HybridMemoryStorage may migrate or embed its DB."""
+ReplayAdapter = Callable[[Mapping[str, object], Path], dict[str, tuple[int, int]]]
+
+
+def _replay_frozen_eval(eval_set: Mapping[str, object], memory_db: Path,
+                        adapter: ReplayAdapter) -> dict[str, tuple[int, int]]:
+    """Give an injected replay adapter a snapshot, never the source DB."""
     if not memory_db.is_file():
         raise FileNotFoundError(f"memory_db_unavailable:{memory_db}")
-    raw_src = os.environ.get("LEMMALOG_AGENT_CREW_SRC")
-    if not raw_src:
-        raise ImportError("agent_crew_src_unavailable:LEMMALOG_AGENT_CREW_SRC")
-    src = Path(raw_src).expanduser()
-    package_root = src / "src" if (src / "src" / "agent_crew" / "memory_hybrid.py").is_file() else src
-    if not (package_root / "agent_crew" / "memory_hybrid.py").is_file():
-        raise ImportError(f"agent_crew_src_unavailable:LEMMALOG_AGENT_CREW_SRC={src}")
-    sys.path.insert(0, str(package_root))
-    try:
-        hybrid = importlib.import_module("agent_crew.memory_hybrid")
-        if Path(hybrid.__file__).resolve() != (package_root / "agent_crew" / "memory_hybrid.py").resolve():
-            raise ImportError(f"agent_crew_src_mismatch:LEMMALOG_AGENT_CREW_SRC={src}")
-        runtime = importlib.import_module("agent_crew.memory_runtime")
-    finally:
-        sys.path.remove(str(package_root))
     with tempfile.TemporaryDirectory(prefix="quota-core-m3-replay-") as tmp:
         snapshot = Path(tmp) / "adr001_memory.db"
         with closing(sqlite3.connect(f"{memory_db.resolve().as_uri()}?mode=ro", uri=True)) as source:
             with closing(sqlite3.connect(snapshot)) as target:
                 source.backup(target)
-        storage = hybrid.HybridMemoryStorage(str(snapshot))
-        return _score_eval_cases(eval_set, storage, runtime.MemoryScope)
+        return adapter(eval_set, snapshot)
 
 
 def compute_metrics(since: float, until: float, crew_root: str | Path,
@@ -524,7 +510,8 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
                     eval_path: str | Path | None = None,
                     memory_db: str | Path | None = None,
                     transcript_root: str | Path | None = None,
-                    lifecycle_log: str | Path | None = None) -> list[dict[str, object]]:
+                    lifecycle_log: str | Path | None = None,
+                    replay_adapter: ReplayAdapter | None = None) -> list[dict[str, object]]:
     """Compute one source-attributed row per B1.3 metric per bot.
 
     The window is half-open [since, until). A missing producer or pre-A2
@@ -561,10 +548,12 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
                 eval_reason = "frozen_eval_set_sha256_mismatch"
             elif memory_path is None:
                 eval_reason = "memory_db_not_supplied:--memory-db"
+            elif replay_adapter is None:
+                eval_reason = "replay_adapter_not_supplied"
             else:
                 try:
                     eval_set = json.loads(contents)
-                    eval_scores = _replay_frozen_eval(eval_set, memory_path)
+                    eval_scores = _replay_frozen_eval(eval_set, memory_path, replay_adapter)
                     eval_source = f"{path};{memory_path}"
                 except (OSError, ImportError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
                     eval_reason = str(exc) or type(exc).__name__

@@ -1,11 +1,7 @@
 """Regression tests for quota-core issue #58: conform to Agent Crew's real contract.
 
-Uses tests/fixtures/agent_crew/real_contract/ (sanitized golden fixtures
-derived from real `agent_crew` production output), not the synthetic
-fixtures in tests/fixtures/agent_crew/ -- those were authored against a
-documented contract that turned out to differ from the real one. See that
-fixture directory's README.md for the four confirmed mismatches this file
-tests against.
+Uses wholly synthetic producer-shaped fixtures in real_contract/. They retain
+the observed wire-format distinctions while replacing identifiers and times.
 """
 
 from __future__ import annotations
@@ -84,7 +80,7 @@ class OutcomeMismatchTests(unittest.TestCase):
     def test_real_attribution_raw_outcome_is_preserved_for_diagnostics(self):
         attributions = read_attribution_jsonl(REAL_FIXTURES / "attribution.jsonl")
         reconciled = reconcile_attribution_by_task(attributions)
-        failed = next(a for a in reconciled if a.task_id == "impl-08da84a7")
+        failed = next(a for a in reconciled if a.task_id == "impl-sample-c")
         self.assertEqual(failed.outcome, "failed")
         self.assertEqual(failed.raw_outcome, "failed:dispatcher_timeout")
 
@@ -104,7 +100,7 @@ class ReconciliationMismatchTests(unittest.TestCase):
     def test_reconciliation_picks_the_terminal_row_not_an_earlier_dispatch_row(self):
         attributions = read_attribution_jsonl(REAL_FIXTURES / "attribution.jsonl")
         reconciled = reconcile_attribution_by_task(attributions)
-        tester_task = next(a for a in reconciled if a.task_id == "test-a4f50eb4")
+        tester_task = next(a for a in reconciled if a.task_id == "test-sample-a")
         # The fixture's 3rd row for this task_id is the terminal one (outcome=completed,
         # session_task_index=28, completed_at set) -- not the 1st dispatch row
         # (outcome unset, session_task_index=27, completed_at=0).
@@ -117,14 +113,14 @@ class ReconciliationMismatchTests(unittest.TestCase):
         reconciled = reconcile_attribution_by_task(attributions)
         self.assertEqual(
             [a.task_id for a in reconciled],
-            ["test-a4f50eb4", "review-98011b5c", "impl-08da84a7", "impl-retry-1a2b3c4d"],
+            ["test-sample-a", "review-sample-b", "impl-sample-c", "impl-retry-sample-d"],
         )
 
     def test_retry_lineage_is_reconstructable(self):
         attributions = read_attribution_jsonl(REAL_FIXTURES / "attribution.jsonl")
         reconciled = reconcile_attribution_by_task(attributions)
-        retry = next(a for a in reconciled if a.task_id == "impl-retry-1a2b3c4d")
-        original = next(a for a in reconciled if a.task_id == "impl-08da84a7")
+        retry = next(a for a in reconciled if a.task_id == "impl-retry-sample-d")
+        original = next(a for a in reconciled if a.task_id == "impl-sample-c")
         self.assertEqual(retry.retry_of, original.task_id)
         self.assertEqual(original.outcome, "failed")
         self.assertEqual(retry.outcome, "success")
@@ -137,9 +133,9 @@ class FieldDerivationMismatchTests(unittest.TestCase):
         attributions = read_attribution_jsonl(REAL_FIXTURES / "attribution.jsonl")
         reconciled = reconcile_attribution_by_task(attributions)
         by_id = {a.task_id: a for a in reconciled}
-        self.assertEqual(by_id["test-a4f50eb4"].provider, "gemini")
-        self.assertEqual(by_id["review-98011b5c"].provider, "codex")
-        self.assertEqual(by_id["impl-08da84a7"].provider, "claude")
+        self.assertEqual(by_id["test-sample-a"].provider, "gemini")
+        self.assertEqual(by_id["review-sample-b"].provider, "codex")
+        self.assertEqual(by_id["impl-sample-c"].provider, "claude")
 
     def test_unrecognized_fields_are_preserved_not_dropped(self):
         attributions = read_attribution_jsonl(REAL_FIXTURES / "attribution.jsonl")
@@ -197,7 +193,7 @@ class EndToEndContractTest(unittest.TestCase):
         self.assertEqual(len(successful), 3)
         self.assertIsNotNone(tokens_per_successful_task(records))
 
-        failed_task = next(r for r in records if r.task_id == "impl-08da84a7")
+        failed_task = next(r for r in records if r.task_id == "impl-sample-c")
         self.assertFalse(failed_task.succeeded)
         self.assertEqual(failed_task.raw_outcome, "failed:dispatcher_timeout")
         self.assertIsNotNone(token_components_total(failed_task.tokens))
