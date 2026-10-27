@@ -40,23 +40,20 @@ _SECRET_PATTERNS = re.compile(
 
 
 def _redact_secrets(value: str) -> str:
-    """Match Alfred's ratified redact_secrets token shapes without importing its runtime."""
+    """Redact common secret-token shapes without importing a private runtime."""
     return _SECRET_PATTERNS.sub("[REDACTED]", value)
 
 
 def _transcript_project(path: Path) -> str:
-    """Port the project-directory mapping proved by quota-ops renewal_measure."""
+    """Derive a project from common encoded transcript directory shapes."""
     raw = path.parent.name
-    if raw == "-home-truhojun-alfred":
-        return "alfred"
     crew = re.search(r"--agent-crew-worktrees-([^-]+(?:-[^-]+)*)-(?:claude|codex|gemini)$", raw)
     if crew:
         return crew.group(1).replace("_", "-")
-    for prefix in ("-home-truhojun-alfred-instances-", "-home-truhojun-work-", "-work-"):
-        if raw.startswith(prefix):
-            raw = raw[len(prefix):]
-            break
-    return "quota-ops" if raw == "Quota" else raw.replace("_", "-")
+    instance = re.search(r"(?:^|-)instances-(.+)$", raw)
+    if instance:
+        return instance.group(1).replace("_", "-")
+    return raw.strip("-").replace("_", "-")
 
 
 def _transcript_requests(path: Path, since: float, until: float) -> tuple[
@@ -116,10 +113,7 @@ def _lifecycle_transitions(lifecycle_log: Path, since: float,
                 at = _time(event.get("timestamp"))
                 if at is None or not since <= at < until:
                     continue
-                if ((event.get("runtime") == "alfred_watchdog" and event.get("event_type") == "success"
-                     and event.get("action") == "RENEW") or
-                    (event.get("runtime") == "quota_ops_proactive_compact" and event.get("event_type") == "success"
-                     and event.get("action") == "compact")):
+                if event.get("event_type") == "success" and event.get("action") in {"RENEW", "compact"}:
                     project = str(event.get("project") or "").replace("_", "-")
                     by_project[project].append(at)
     return by_project
@@ -249,7 +243,7 @@ def _task_ids(db_path: Path, since: float, until: float) -> set[str] | None:
     return {row[0] for row in rows if isinstance(row[0], str)}
 
 
-def _served_item_metric(bot: str, events_file: Path, memory_db: Path,
+def _served_item_metric(bot: str, events_file: Path, memory_db: Path | None,
                         since: float, until: float) -> dict[str, object]:
     events = [event for event in _iter_jsonl(events_file)
               if event.get("event_type") == "context_pack_built" and event.get("shadow") is not True
@@ -259,6 +253,8 @@ def _served_item_metric(bot: str, events_file: Path, memory_db: Path,
                       0, None, "no_nonshadow_served_item_receipts_in_window")
         result["join_coverage"] = None
         return result
+    if memory_db is None:
+        return _row(bot, "M7", None, None, None, "memory_db_not_supplied:--memory-db")
     if not memory_db.is_file():
         return _row(bot, "M7", None, None, None, f"memory_db_unavailable:{memory_db}")
     counts = {"superseded": 0, "cross_project": 0, "secret_matches": 0, "total": 0}
@@ -338,7 +334,9 @@ def _github_followup(bot: str, issue: object, pr_number: object,
     """
     if not isinstance(issue, int) or isinstance(issue, bool) or not isinstance(pr_number, int):
         return None
-    repo = f"truhojunbot-tech/{bot}"
+    # A project may itself be an owner/repo slug. The hosting account is
+    # deliberately not inferred from a private fleet configuration.
+    repo = bot
     if cache is None:
         cache = {}
     try:
@@ -375,7 +373,10 @@ def _github_followup(bot: str, issue: object, pr_number: object,
                (at := _time(event.get("created_at"))) is not None and approved_at < at <= end
                for event in history if isinstance(event, dict)):
             return True
-        repo_path = Path.home() / "alfred" / "projects" / bot
+        local_repos = os.environ.get("QUOTA_CORE_LOCAL_REPOS")
+        if not local_repos:
+            return None
+        repo_path = Path(local_repos).expanduser() / bot
         if not (repo_path / ".git").exists():
             return None
         log = subprocess.run(
@@ -536,7 +537,7 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
     lifecycle_path = Path(lifecycle_log).expanduser() if lifecycle_log else None
     lifecycle_by_project = (_lifecycle_transitions(lifecycle_path, since, until)
                             if lifecycle_path is not None else {})
-    memory_path = Path(memory_db).expanduser() if memory_db else Path.home() / ".agent_crew/memory/adr001_memory.db"
+    memory_path = Path(memory_db).expanduser() if memory_db else None
     hook_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in _iter_jsonl(hook_path):
         bot = event.get("bot")
@@ -558,6 +559,8 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
             contents = path.read_bytes()
             if hashlib.sha256(contents).hexdigest() != EVAL_SHA256:
                 eval_reason = "frozen_eval_set_sha256_mismatch"
+            elif memory_path is None:
+                eval_reason = "memory_db_not_supplied:--memory-db"
             else:
                 try:
                     eval_set = json.loads(contents)
@@ -668,17 +671,17 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only B1.3 M1–M8 hourly metrics")
     parser.add_argument("--since", required=True)
     parser.add_argument("--until", required=True)
-    parser.add_argument("--crew-root", type=Path, default=Path.home() / ".agent_crew")
+    parser.add_argument("--crew-root", type=Path, required=True)
     parser.add_argument("--hook-log", type=Path, required=True)
     parser.add_argument("--bot", action="append", dest="bots",
                         help="limit output to a named bot (repeatable)")
     parser.add_argument("--eval-path", type=Path)
     parser.add_argument("--memory-db", type=Path,
                         help="ADR-001 memory DB to snapshot read-only for frozen EVAL replay")
-    parser.add_argument("--transcript-root", type=Path, default=Path.home() / ".claude/projects",
+    parser.add_argument("--transcript-root", type=Path,
                         help="Claude transcript project directory for bot-session M1")
     parser.add_argument("--lifecycle-log", type=Path,
-                        default=Path.home() / "alfred/quota/logs/compact_lifecycle_events.jsonl",
+                        default=None,
                         help="Quota compact/RENEW lifecycle JSONL for bot-session M1")
     parser.add_argument("--table", action="store_true")
     args = parser.parse_args(argv)
