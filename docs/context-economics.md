@@ -412,8 +412,9 @@ counts for *every* task in the window. M3a/M3b replay the frozen EVAL set
 when `--eval-path` matches SHA
 `0bdb218d0c8e6ba3da8202c19201fee52a9605664ebe3ea4fb1d5de92de4ac61`.
 Set `LEMMALOG_AGENT_CREW_SRC` to the Agent Crew source root; the ADR-001 DB
-defaults to `~/.agent_crew/memory/adr001_memory.db` and can be overridden by
-`--memory-db`. Replay snapshots the DB read-only before invoking
+must be supplied explicitly with `--memory-db`. Without that path, M3a/M3b
+and any M7 served-item join that needs the DB remain unknown with
+`memory_db_not_supplied:--memory-db`. Replay snapshots the DB read-only before invoking
 `retrieve_ranked`, whose local indexes and embeddings may write to the snapshot.
 M3a counts owner cases with an expected key in head or middle[:5] out of 17;
 M3b counts task cases with expected reference tokens there out of 24. These
