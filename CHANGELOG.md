@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Wired known stale/misrouted review cascades and their observed token totals
+  into the #80 shadow contract's orchestration-waste fields. Unknown or partial
+  token evidence remains null; recommendations and pure policy cohorts are unchanged.
+
 - Added read-only B1.3 joins for per-generation Claude cache usage, non-shadow
   served-item identities, and matured review follow-ups. Missing or ambiguous
   links carry explicit reasons; shadow retrieval is never counted as served.
