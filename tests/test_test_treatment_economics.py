@@ -81,13 +81,13 @@ class RuntimeAttributionFieldsTests(unittest.TestCase):
         row = {
             "task_id": "t1", "outcome": "completed",
             "effective_test_scope": "full_suite", "test_scope_source": "operator",
-            "test_scope_hash": "sha256:abcd", "lock_wait_seconds": 275.0, "lock_defer_count": 1,
+            "test_scope_hash": "sha256:abcd", "lock_wait_seconds": 23.0, "lock_defer_count": 1,
         }
         a = attribution_from_dict(row)
         self.assertEqual(a.effective_test_scope, "full_suite")
         self.assertEqual(a.test_scope_source, "operator")
         self.assertEqual(a.test_scope_hash, "sha256:abcd")
-        self.assertEqual(a.lock_wait_seconds, 275.0)
+        self.assertEqual(a.lock_wait_seconds, 23.0)
         self.assertEqual(a.lock_defer_count, 1)
 
     def test_round_trip_through_to_dict_and_back(self):
@@ -181,7 +181,7 @@ class FixtureIntegrationTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         for row in rows:
             self.assertEqual(row.effective_test_scope, "full_suite")
-            self.assertEqual(row.lock_wait_seconds, 275.0)
+            self.assertEqual(row.lock_wait_seconds, 23.0)
             self.assertEqual(row.lock_defer_count, 1)
 
     def test_deferred_task_produces_exactly_one_task_record_not_two(self):

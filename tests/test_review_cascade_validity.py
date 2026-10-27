@@ -28,10 +28,10 @@ def test_production_shaped_cascade_signals_are_not_context_policy_samples(tmp_pa
     conn.close()
     signals = read_task_cascade_signals(db)
     loaded = {r.task_id: r for r in read_task_attribution_sqlite(db)}
-    assert loaded["review-5652-old"].orchestration_validity == "stale"
-    assert loaded["review-9aeb0354"].orchestration_validity == "misrouted"
-    ids = ["review-5652-old", "fix-review-5652-old-r1", "review-5652-28419e96",
-           "review-9aeb0354", "fix-review-9aeb0354-r1", "review-impl-watch-corrected"]
+    assert loaded["review-42-old"].orchestration_validity == "stale"
+    assert loaded["review-branch-mismatch"].orchestration_validity == "misrouted"
+    ids = ["review-42-old", "fix-review-42-old-r1", "review-42-new-head",
+           "review-branch-mismatch", "fix-review-branch-mismatch-r1", "review-impl-sample-corrected"]
     records = [TaskEconomicsRecord(task_id=task_id, runtime="cli", context_policy="fresh",
                task_type="implement" if task_id.startswith("fix-") else "review",
                outcome="success", tokens=TokenComponents(provider_total=10)) for task_id in ids]
@@ -50,18 +50,18 @@ def test_production_shaped_cascade_signals_are_not_context_policy_samples(tmp_pa
     assert summary["waste_task_count"] == 4
     assert summary["waste_known_tokens"] == 40
     assert orchestration_cascade_summary([results[0], results[0]])["waste_task_count"] == 1
-    signals["test-review-9aeb0354"] = {
+    signals["test-review-branch-mismatch"] = {
         "task_type": "test", "branch": "main",
-        "context": {"prev_task_id": "review-9aeb0354"},
+        "context": {"prev_task_id": "review-branch-mismatch"},
     }
     [test_row] = attach_task_cascade_validity([
-        TaskEconomicsRecord(task_id="test-review-9aeb0354", runtime="cli", task_type="test",
+        TaskEconomicsRecord(task_id="test-review-branch-mismatch", runtime="cli", task_type="test",
                             context_policy="fresh")], signals)
     assert test_row.orchestration_validity == "misrouted"
     assert context_policy_cohort(test_row) != "fresh"
     round_review, round_fix = attach_task_cascade_validity([
-        TaskEconomicsRecord(task_id="review-harvest-499-r1", runtime="cli", task_type="review", context_policy="resume"),
-        TaskEconomicsRecord(task_id="fix-review-harvest-499-r1-r1", runtime="cli", task_type="implement", context_policy="resume"),
+        TaskEconomicsRecord(task_id="review-round-sample-r1", runtime="cli", task_type="review", context_policy="resume"),
+        TaskEconomicsRecord(task_id="fix-review-round-sample-r1-r1", runtime="cli", task_type="implement", context_policy="resume"),
     ], signals)
     assert round_review.orchestration_validity == "unknown"
     assert round_fix.orchestration_validity == "unknown"

@@ -8,20 +8,18 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import importlib
 import json
 import math
 import os
 import re
 import sqlite3
 import subprocess
-import sys
 import tempfile
 from collections import defaultdict
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .agent_crew_adapter import _iter_jsonl, read_lifecycle_events_jsonl
 
@@ -491,32 +489,38 @@ def _score_eval_cases(eval_set: Mapping[str, object], storage: object,
     return scores
 
 
-def _replay_frozen_eval(eval_set: Mapping[str, object], memory_db: Path) -> dict[str, tuple[int, int]]:
-    """Replay on a snapshot: HybridMemoryStorage may migrate or embed its DB."""
+ReplayAdapter = Callable[[Mapping[str, object], Path], dict[str, tuple[int, int]]]
+
+
+def _replay_frozen_eval(eval_set: Mapping[str, object], memory_db: Path,
+                        adapter: ReplayAdapter) -> dict[str, tuple[int, int]]:
+    """Give an injected replay adapter a snapshot, never the source DB."""
     if not memory_db.is_file():
         raise FileNotFoundError(f"memory_db_unavailable:{memory_db}")
-    raw_src = os.environ.get("LEMMALOG_AGENT_CREW_SRC")
-    if not raw_src:
-        raise ImportError("agent_crew_src_unavailable:LEMMALOG_AGENT_CREW_SRC")
-    src = Path(raw_src).expanduser()
-    package_root = src / "src" if (src / "src" / "agent_crew" / "memory_hybrid.py").is_file() else src
-    if not (package_root / "agent_crew" / "memory_hybrid.py").is_file():
-        raise ImportError(f"agent_crew_src_unavailable:LEMMALOG_AGENT_CREW_SRC={src}")
-    sys.path.insert(0, str(package_root))
-    try:
-        hybrid = importlib.import_module("agent_crew.memory_hybrid")
-        if Path(hybrid.__file__).resolve() != (package_root / "agent_crew" / "memory_hybrid.py").resolve():
-            raise ImportError(f"agent_crew_src_mismatch:LEMMALOG_AGENT_CREW_SRC={src}")
-        runtime = importlib.import_module("agent_crew.memory_runtime")
-    finally:
-        sys.path.remove(str(package_root))
     with tempfile.TemporaryDirectory(prefix="quota-core-m3-replay-") as tmp:
         snapshot = Path(tmp) / "adr001_memory.db"
         with closing(sqlite3.connect(f"{memory_db.resolve().as_uri()}?mode=ro", uri=True)) as source:
             with closing(sqlite3.connect(snapshot)) as target:
                 source.backup(target)
-        storage = hybrid.HybridMemoryStorage(str(snapshot))
-        return _score_eval_cases(eval_set, storage, runtime.MemoryScope)
+        return adapter(eval_set, snapshot)
+
+
+def _valid_replay_scores(value: object) -> dict[str, tuple[int, int]] | None:
+    """Accept only complete, nonempty frozen-set scores from an external adapter."""
+    if not isinstance(value, Mapping):
+        return None
+    scores: dict[str, tuple[int, int]] = {}
+    for metric in ("M3a", "M3b"):
+        score = value.get(metric)
+        if not isinstance(score, tuple) or len(score) != 2:
+            return None
+        hits, count = score
+        if (not isinstance(hits, int) or isinstance(hits, bool)
+                or not isinstance(count, int) or isinstance(count, bool)
+                or count <= 0 or hits < 0 or hits > count):
+            return None
+        scores[metric] = (hits, count)
+    return scores
 
 
 def compute_metrics(since: float, until: float, crew_root: str | Path,
@@ -524,7 +528,8 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
                     eval_path: str | Path | None = None,
                     memory_db: str | Path | None = None,
                     transcript_root: str | Path | None = None,
-                    lifecycle_log: str | Path | None = None) -> list[dict[str, object]]:
+                    lifecycle_log: str | Path | None = None,
+                    replay_adapter: ReplayAdapter | None = None) -> list[dict[str, object]]:
     """Compute one source-attributed row per B1.3 metric per bot.
 
     The window is half-open [since, until). A missing producer or pre-A2
@@ -561,13 +566,21 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
                 eval_reason = "frozen_eval_set_sha256_mismatch"
             elif memory_path is None:
                 eval_reason = "memory_db_not_supplied:--memory-db"
+            elif replay_adapter is None:
+                eval_reason = "replay_adapter_not_supplied"
             else:
                 try:
                     eval_set = json.loads(contents)
-                    eval_scores = _replay_frozen_eval(eval_set, memory_path)
-                    eval_source = f"{path};{memory_path}"
+                    eval_scores = _valid_replay_scores(
+                        _replay_frozen_eval(eval_set, memory_path, replay_adapter))
+                    if eval_scores is None:
+                        eval_reason = "replay_adapter_invalid_result"
+                    else:
+                        eval_source = f"{path};{memory_path}"
                 except (OSError, ImportError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
                     eval_reason = str(exc) or type(exc).__name__
+                except Exception as exc:
+                    eval_reason = f"replay_adapter_error:{type(exc).__name__}"
     result: list[dict[str, object]] = []
     for bot in sorted(bot_names):
         db = root / bot / "tasks.db"
@@ -675,9 +688,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hook-log", type=Path, required=True)
     parser.add_argument("--bot", action="append", dest="bots",
                         help="limit output to a named bot (repeatable)")
-    parser.add_argument("--eval-path", type=Path)
+    parser.add_argument("--eval-path", type=Path,
+                        help="SHA-checked EVAL input; M3 replay requires a Python API replay_adapter")
     parser.add_argument("--memory-db", type=Path,
-                        help="ADR-001 memory DB to snapshot read-only for frozen EVAL replay")
+                        help="memory DB for M7; Python API-only M3 replay snapshots it read-only")
     parser.add_argument("--transcript-root", type=Path,
                         help="Claude transcript project directory for bot-session M1")
     parser.add_argument("--lifecycle-log", type=Path,
