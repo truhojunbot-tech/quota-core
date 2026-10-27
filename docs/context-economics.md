@@ -408,14 +408,16 @@ without any optional source, its metric stays unknown with a reason.
 
 M1 aggregates complete crew receipt token components; M2/M4/M5 use hook rows
 excluding `headless_oneshot`; M3c requires a pack receipt with middle-kind
-counts for *every* task in the window. M3a/M3b replay the frozen EVAL set
-when `--eval-path` matches SHA
+counts for *every* task in the window. The Python API can replay M3a/M3b from
+the frozen EVAL set when `eval_path` matches SHA
 `0bdb218d0c8e6ba3da8202c19201fee52a9605664ebe3ea4fb1d5de92de4ac61`.
-The ADR-001 DB must be supplied explicitly with `--memory-db`. The Python API
-also requires a caller-supplied `replay_adapter(eval_set, snapshot_path)` for
+The memory DB must be supplied explicitly. The Python API also requires a
+caller-supplied `replay_adapter(eval_set, snapshot_path)` for
 M3a/M3b; quota-core does not import a private retrieval implementation.
-Without that adapter M3a/M3b remain unknown with
-`replay_adapter_not_supplied`. Without the DB, M3a/M3b and any M7 served-item
+The CLI accepts `--eval-path` and `--memory-db` for source validation but cannot
+inject an adapter, so CLI M3a/M3b remain unknown with
+`replay_adapter_not_supplied`. Malformed adapter scores or adapter failures also
+yield reasoned nulls. Without the DB, M3a/M3b and any M7 served-item
 join that needs it remain unknown with `memory_db_not_supplied:--memory-db`.
 Replay snapshots the DB read-only before invoking the adapter, whose indexes
 and embeddings may write to the snapshot.

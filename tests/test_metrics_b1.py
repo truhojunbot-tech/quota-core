@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import io
 import os
 import sqlite3
 import subprocess
@@ -11,6 +12,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from quota_core.context_economics import metrics_b1
@@ -502,3 +504,58 @@ class B1MetricsTests(unittest.TestCase):
                                    eval_path=eval_path, memory_db=source)
         self.assertEqual(next(row for row in rows if row["metric"] == "M3a")["reason"],
                          "replay_adapter_not_supplied")
+
+    def test_bad_replay_adapters_degrade_only_m3_with_specific_reason(self):
+        eval_path = Path(self.tmp.name) / "eval.json"
+        eval_path.write_text('{"owner_cases":[],"task_cases":[]}')
+        source = Path(self.tmp.name) / "memory-source.db"
+        with sqlite3.connect(source) as db:
+            db.execute("CREATE TABLE sample (id INTEGER)")
+
+        def raises(_cases, _snapshot):
+            raise RuntimeError("private adapter detail")
+
+        cases = (
+            ("empty", lambda _cases, _snapshot: {}, "replay_adapter_invalid_result"),
+            ("none", lambda _cases, _snapshot: None, "replay_adapter_invalid_result"),
+            ("short_tuple", lambda _cases, _snapshot: {"M3a": (1,), "M3b": (0, 1)},
+             "replay_adapter_invalid_result"),
+            ("missing_metric", lambda _cases, _snapshot: {"M3a": (1, 1)},
+             "replay_adapter_invalid_result"),
+            ("bad_counts", lambda _cases, _snapshot: {"M3a": (2, 1), "M3b": (0, 1)},
+             "replay_adapter_invalid_result"),
+            ("raises", raises, "replay_adapter_error:RuntimeError"),
+        )
+        with patch.object(metrics_b1, "EVAL_SHA256", hashlib.sha256(eval_path.read_bytes()).hexdigest()):
+            for name, adapter, reason in cases:
+                with self.subTest(name=name):
+                    rows = compute_metrics(100, 200, self.crew_root,
+                                           FIXTURES / "b1_hook_boundaries.jsonl",
+                                           bots=["alpha"], eval_path=eval_path,
+                                           memory_db=source, replay_adapter=adapter)
+                    self.assertEqual({row["metric"] for row in rows}, set(metrics_b1.METRICS))
+                    for metric in ("M3a", "M3b"):
+                        row = next(row for row in rows if row["metric"] == metric)
+                        self.assertIsNone(row["value"])
+                        self.assertIsNone(row["n"])
+                        self.assertEqual(row["reason"], reason)
+                        self.assertNotIn("private adapter detail", row["reason"])
+
+    def test_cli_reports_adapter_not_supplied_for_sha_valid_eval(self):
+        eval_path = Path(self.tmp.name) / "eval.json"
+        eval_path.write_text('{"owner_cases":[],"task_cases":[]}')
+        source = Path(self.tmp.name) / "memory-source.db"
+        with sqlite3.connect(source) as db:
+            db.execute("CREATE TABLE sample (id INTEGER)")
+        output = io.StringIO()
+        with patch.object(metrics_b1, "EVAL_SHA256", hashlib.sha256(eval_path.read_bytes()).hexdigest()), redirect_stdout(output):
+            self.assertEqual(metrics_b1.main([
+                "--since", "1970-01-01T00:01:40+00:00", "--until", "1970-01-01T00:03:20+00:00", "--crew-root", str(self.crew_root),
+                "--hook-log", str(FIXTURES / "b1_hook_boundaries.jsonl"),
+                "--bot", "alpha", "--eval-path", str(eval_path), "--memory-db", str(source),
+            ]), 0)
+        rows = json.loads(output.getvalue())
+        for metric in ("M3a", "M3b"):
+            row = next(row for row in rows if row["metric"] == metric)
+            self.assertIsNone(row["value"])
+            self.assertEqual(row["reason"], "replay_adapter_not_supplied")

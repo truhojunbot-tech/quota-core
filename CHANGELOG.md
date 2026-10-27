@@ -23,9 +23,10 @@
   and a read-only, same-DB-snapshot parity CLI that reports missing, extra,
   and changed decisions in both directions.
 
-- Replayed SHA-pinned B1.3 M3a/M3b EVAL cases through Agent Crew
-  `retrieve_ranked` on a read-only snapshot of the ADR-001 memory DB, replacing
-  the pre-A2 placeholder where sources are available.
+- B1.3 M3a/M3b frozen EVAL replay is available through the Python API with a
+  caller-injected adapter and a read-only memory-DB snapshot. The CLI cannot
+  inject an adapter and reports `replay_adapter_not_supplied`; invalid or failing
+  adapters now produce reasoned nulls instead of aborting the report.
 
 - Added read-only B1.3 definition-version-1 M1–M8 source-attributed JSON rows
   and an hourly table CLI. Missing retrieval, served-item, and matured-review

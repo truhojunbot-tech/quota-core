@@ -505,6 +505,24 @@ def _replay_frozen_eval(eval_set: Mapping[str, object], memory_db: Path,
         return adapter(eval_set, snapshot)
 
 
+def _valid_replay_scores(value: object) -> dict[str, tuple[int, int]] | None:
+    """Accept only complete, nonempty frozen-set scores from an external adapter."""
+    if not isinstance(value, Mapping):
+        return None
+    scores: dict[str, tuple[int, int]] = {}
+    for metric in ("M3a", "M3b"):
+        score = value.get(metric)
+        if not isinstance(score, tuple) or len(score) != 2:
+            return None
+        hits, count = score
+        if (not isinstance(hits, int) or isinstance(hits, bool)
+                or not isinstance(count, int) or isinstance(count, bool)
+                or count <= 0 or hits < 0 or hits > count):
+            return None
+        scores[metric] = (hits, count)
+    return scores
+
+
 def compute_metrics(since: float, until: float, crew_root: str | Path,
                     hook_log: str | Path, *, bots: list[str] | None = None,
                     eval_path: str | Path | None = None,
@@ -553,10 +571,16 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
             else:
                 try:
                     eval_set = json.loads(contents)
-                    eval_scores = _replay_frozen_eval(eval_set, memory_path, replay_adapter)
-                    eval_source = f"{path};{memory_path}"
+                    eval_scores = _valid_replay_scores(
+                        _replay_frozen_eval(eval_set, memory_path, replay_adapter))
+                    if eval_scores is None:
+                        eval_reason = "replay_adapter_invalid_result"
+                    else:
+                        eval_source = f"{path};{memory_path}"
                 except (OSError, ImportError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
                     eval_reason = str(exc) or type(exc).__name__
+                except Exception as exc:
+                    eval_reason = f"replay_adapter_error:{type(exc).__name__}"
     result: list[dict[str, object]] = []
     for bot in sorted(bot_names):
         db = root / bot / "tasks.db"
@@ -664,9 +688,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hook-log", type=Path, required=True)
     parser.add_argument("--bot", action="append", dest="bots",
                         help="limit output to a named bot (repeatable)")
-    parser.add_argument("--eval-path", type=Path)
+    parser.add_argument("--eval-path", type=Path,
+                        help="SHA-checked EVAL input; M3 replay requires a Python API replay_adapter")
     parser.add_argument("--memory-db", type=Path,
-                        help="ADR-001 memory DB to snapshot read-only for frozen EVAL replay")
+                        help="memory DB for M7; Python API-only M3 replay snapshots it read-only")
     parser.add_argument("--transcript-root", type=Path,
                         help="Claude transcript project directory for bot-session M1")
     parser.add_argument("--lifecycle-log", type=Path,

@@ -194,9 +194,10 @@ explicitly. Its optional local Git follow-up check
 uses `QUOTA_CORE_LOCAL_REPOS` as the directory containing project repositories;
 without it, that source remains unknown. A missing transcript, lifecycle log,
 or other private telemetry returns a reasoned null rather than a fabricated
-zero. The optional frozen-evaluation replay imports a caller-supplied storage
-module only when `LEMMALOG_AGENT_CREW_SRC` is set; its absence is a reasoned
-null, not a package-install dependency.
+zero. Frozen-evaluation replay uses a caller-injected Python API
+`replay_adapter(eval_set, snapshot_path)`; quota-core imports no private storage
+module. The CLI has no adapter option, so its M3a/M3b rows remain reasoned nulls
+(`replay_adapter_not_supplied`) even when EVAL and memory paths are supplied.
 
 Before repo split, public core must pass these checks:
 - No hard-coded private home paths
