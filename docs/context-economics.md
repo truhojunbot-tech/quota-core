@@ -402,7 +402,9 @@ transcript usage to transcript compact boundaries or Quota RENEW/compact
 events by project and the proved two-hour request window. Duplicate streaming
 request IDs count once; ambiguous or incomplete joins remain unknown with a
 specific `bot_session_reason` and `bot_session_join_coverage`. The CLI accepts
-`--transcript-root` and `--lifecycle-log` overrides for reproducible snapshots.
+explicit `--transcript-root` and `--lifecycle-log` paths for reproducible
+snapshots. Frozen-evaluation replay likewise requires an explicit `--memory-db`;
+without any optional source, its metric stays unknown with a reason.
 
 M1 aggregates complete crew receipt token components; M2/M4/M5 use hook rows
 excluding `headless_oneshot`; M3c requires a pack receipt with middle-kind

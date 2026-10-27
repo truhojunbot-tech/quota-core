@@ -243,7 +243,7 @@ def _task_ids(db_path: Path, since: float, until: float) -> set[str] | None:
     return {row[0] for row in rows if isinstance(row[0], str)}
 
 
-def _served_item_metric(bot: str, events_file: Path, memory_db: Path,
+def _served_item_metric(bot: str, events_file: Path, memory_db: Path | None,
                         since: float, until: float) -> dict[str, object]:
     events = [event for event in _iter_jsonl(events_file)
               if event.get("event_type") == "context_pack_built" and event.get("shadow") is not True
@@ -253,6 +253,8 @@ def _served_item_metric(bot: str, events_file: Path, memory_db: Path,
                       0, None, "no_nonshadow_served_item_receipts_in_window")
         result["join_coverage"] = None
         return result
+    if memory_db is None:
+        return _row(bot, "M7", None, None, None, "memory_db_not_supplied:--memory-db")
     if not memory_db.is_file():
         return _row(bot, "M7", None, None, None, f"memory_db_unavailable:{memory_db}")
     counts = {"superseded": 0, "cross_project": 0, "secret_matches": 0, "total": 0}
@@ -535,7 +537,7 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
     lifecycle_path = Path(lifecycle_log).expanduser() if lifecycle_log else None
     lifecycle_by_project = (_lifecycle_transitions(lifecycle_path, since, until)
                             if lifecycle_path is not None else {})
-    memory_path = Path(memory_db).expanduser() if memory_db else Path.home() / ".agent_crew/memory/adr001_memory.db"
+    memory_path = Path(memory_db).expanduser() if memory_db else None
     hook_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for event in _iter_jsonl(hook_path):
         bot = event.get("bot")
@@ -557,6 +559,8 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
             contents = path.read_bytes()
             if hashlib.sha256(contents).hexdigest() != EVAL_SHA256:
                 eval_reason = "frozen_eval_set_sha256_mismatch"
+            elif memory_path is None:
+                eval_reason = "memory_db_not_supplied:--memory-db"
             else:
                 try:
                     eval_set = json.loads(contents)
@@ -667,14 +671,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only B1.3 M1–M8 hourly metrics")
     parser.add_argument("--since", required=True)
     parser.add_argument("--until", required=True)
-    parser.add_argument("--crew-root", type=Path, default=Path.home() / ".agent_crew")
+    parser.add_argument("--crew-root", type=Path, required=True)
     parser.add_argument("--hook-log", type=Path, required=True)
     parser.add_argument("--bot", action="append", dest="bots",
                         help="limit output to a named bot (repeatable)")
     parser.add_argument("--eval-path", type=Path)
     parser.add_argument("--memory-db", type=Path,
                         help="ADR-001 memory DB to snapshot read-only for frozen EVAL replay")
-    parser.add_argument("--transcript-root", type=Path, default=Path.home() / ".claude/projects",
+    parser.add_argument("--transcript-root", type=Path,
                         help="Claude transcript project directory for bot-session M1")
     parser.add_argument("--lifecycle-log", type=Path,
                         default=None,
