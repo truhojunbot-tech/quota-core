@@ -40,23 +40,20 @@ _SECRET_PATTERNS = re.compile(
 
 
 def _redact_secrets(value: str) -> str:
-    """Match Alfred's ratified redact_secrets token shapes without importing its runtime."""
+    """Redact common secret-token shapes without importing a private runtime."""
     return _SECRET_PATTERNS.sub("[REDACTED]", value)
 
 
 def _transcript_project(path: Path) -> str:
-    """Port the project-directory mapping proved by quota-ops renewal_measure."""
+    """Derive a project from common encoded transcript directory shapes."""
     raw = path.parent.name
-    if raw == "-home-truhojun-alfred":
-        return "alfred"
     crew = re.search(r"--agent-crew-worktrees-([^-]+(?:-[^-]+)*)-(?:claude|codex|gemini)$", raw)
     if crew:
         return crew.group(1).replace("_", "-")
-    for prefix in ("-home-truhojun-alfred-instances-", "-home-truhojun-work-", "-work-"):
-        if raw.startswith(prefix):
-            raw = raw[len(prefix):]
-            break
-    return "quota-ops" if raw == "Quota" else raw.replace("_", "-")
+    instance = re.search(r"(?:^|-)instances-(.+)$", raw)
+    if instance:
+        return instance.group(1).replace("_", "-")
+    return raw.strip("-").replace("_", "-")
 
 
 def _transcript_requests(path: Path, since: float, until: float) -> tuple[
@@ -116,10 +113,7 @@ def _lifecycle_transitions(lifecycle_log: Path, since: float,
                 at = _time(event.get("timestamp"))
                 if at is None or not since <= at < until:
                     continue
-                if ((event.get("runtime") == "alfred_watchdog" and event.get("event_type") == "success"
-                     and event.get("action") == "RENEW") or
-                    (event.get("runtime") == "quota_ops_proactive_compact" and event.get("event_type") == "success"
-                     and event.get("action") == "compact")):
+                if event.get("event_type") == "success" and event.get("action") in {"RENEW", "compact"}:
                     project = str(event.get("project") or "").replace("_", "-")
                     by_project[project].append(at)
     return by_project
@@ -338,7 +332,9 @@ def _github_followup(bot: str, issue: object, pr_number: object,
     """
     if not isinstance(issue, int) or isinstance(issue, bool) or not isinstance(pr_number, int):
         return None
-    repo = f"truhojunbot-tech/{bot}"
+    # A project may itself be an owner/repo slug. The hosting account is
+    # deliberately not inferred from a private fleet configuration.
+    repo = bot
     if cache is None:
         cache = {}
     try:
@@ -375,7 +371,10 @@ def _github_followup(bot: str, issue: object, pr_number: object,
                (at := _time(event.get("created_at"))) is not None and approved_at < at <= end
                for event in history if isinstance(event, dict)):
             return True
-        repo_path = Path.home() / "alfred" / "projects" / bot
+        local_repos = os.environ.get("QUOTA_CORE_LOCAL_REPOS")
+        if not local_repos:
+            return None
+        repo_path = Path(local_repos).expanduser() / bot
         if not (repo_path / ".git").exists():
             return None
         log = subprocess.run(
@@ -678,7 +677,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--transcript-root", type=Path, default=Path.home() / ".claude/projects",
                         help="Claude transcript project directory for bot-session M1")
     parser.add_argument("--lifecycle-log", type=Path,
-                        default=Path.home() / "alfred/quota/logs/compact_lifecycle_events.jsonl",
+                        default=None,
                         help="Quota compact/RENEW lifecycle JSONL for bot-session M1")
     parser.add_argument("--table", action="store_true")
     args = parser.parse_args(argv)

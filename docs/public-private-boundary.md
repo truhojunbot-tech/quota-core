@@ -186,6 +186,17 @@ The live dashboard may expose a private `Claude Sessions` tab, but that tab must
 
 ## Split Readiness Checks
 
+The public package is checked by `tests/test_product_boundary.py`: package
+files and imports cannot name a fleet bot, a private module, an absolute home
+path, or a session-restart command. The B1 metrics CLI now requires the caller to
+provide a lifecycle log explicitly. Its optional local Git follow-up check
+uses `QUOTA_CORE_LOCAL_REPOS` as the directory containing project repositories;
+without it, that source remains unknown. A missing transcript, lifecycle log,
+or other private telemetry returns a reasoned null rather than a fabricated
+zero. The optional frozen-evaluation replay imports a caller-supplied storage
+module only when `LEMMALOG_AGENT_CREW_SRC` is set; its absence is a reasoned
+null, not a package-install dependency.
+
 Before repo split, public core must pass these checks:
 - No hard-coded private home paths
 - No Telegram token or chat ID

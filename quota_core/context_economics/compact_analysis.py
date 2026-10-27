@@ -2,7 +2,7 @@
 
 Given a compact or reset event on a context, compare the N task records
 immediately before it to the N task records immediately after it. This is
-the primitive `quota-ops` issue #7's compact telemetry is meant to feed --
+the provider's compact telemetry is meant to feed --
 it answers "did this proactive compact actually help?" from data instead of
 intuition.
 """
