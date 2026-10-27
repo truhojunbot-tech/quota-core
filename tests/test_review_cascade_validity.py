@@ -8,6 +8,7 @@ from quota_core.context_economics.analytics import compare_context_policies, con
 from quota_core.context_economics.correlate import attach_task_cascade_validity
 from quota_core.context_economics.schema import TaskEconomicsRecord, TokenComponents, task_economics_to_dict
 from quota_core.context_economics.sqlite_attribution import read_task_attribution_sqlite
+from quota_core.context_economics.policy import recommend_task_policy
 
 
 def test_production_shaped_cascade_signals_are_not_context_policy_samples(tmp_path):
@@ -72,3 +73,17 @@ def test_missing_signal_is_unknown_not_valid():
     assert out.orchestration_validity == "unknown"
     assert context_policy_cohort(out) == "fresh"
     assert orchestration_cascade_summary([out])["counts"]["valid"] == 0
+
+
+def test_missing_review_signal_does_not_change_shadow_policy_decision():
+    """#74 is an attribution axis, not a policy-input or threshold change."""
+    record = TaskEconomicsRecord(
+        task_id="older-review", runtime="cli", task_type="review",
+        context_policy="resume", outcome="success",
+        tokens=TokenComponents(provider_total=120),
+    )
+    before = recommend_task_policy(record).to_dict()
+    [joined] = attach_task_cascade_validity([record], {})
+    assert joined.orchestration_validity == "unknown"
+    assert context_policy_cohort(joined) == "resume"
+    assert recommend_task_policy(joined).to_dict() == before
