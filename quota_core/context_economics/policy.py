@@ -284,6 +284,33 @@ def _nonnegative_number_or_none(value: object) -> float | int | None:
     return None
 
 
+def _known_task_total_tokens(record: TaskEconomicsRecord) -> int | None:
+    """Use a reported total or a complete, non-overlapping token breakdown.
+
+    Reasoning is a subset of output, and partial components are not a total.
+    The task-attribution SQLite path carries the four telemetry components;
+    other callers may instead carry a provider-reported total.
+    """
+    reported = _nonnegative_int_or_none(record.tokens.provider_total)
+    if reported is not None:
+        return reported
+    telemetry = record.task_telemetry
+    components = (
+        telemetry.uncached_input_tokens, telemetry.cache_write_tokens,
+        telemetry.cache_read_tokens, telemetry.output_tokens,
+    )
+    known = tuple(_nonnegative_int_or_none(value) for value in components)
+    if all(value is not None for value in known):
+        return sum(known)
+    usage = record.tokens
+    breakdown = (usage.fresh_input, usage.cache_creation, usage.cache_read, usage.output)
+    known = tuple(_nonnegative_int_or_none(value) for value in breakdown)
+    if all(value is not None for value in known):
+        tools = _nonnegative_int_or_none(usage.tool_tokens)
+        return sum(known) + (tools or 0)
+    return None
+
+
 def _envelope(record: TaskEconomicsRecord, multiplier: float) -> SoftBudgetEnvelope:
     def limit(value: int | None) -> int | None:
         normalized = _nonnegative_int_or_none(value)
@@ -367,6 +394,13 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
         "duplicate_tokens": _nonnegative_int_or_none(evidence.duplicate_waste_tokens),
     }
     renewable = any(value is not None and value > 0 for value in waste.values())
+    # Durable review/cascade validity is a measurement of *where tokens went*,
+    # not a new reason to alter the task's recommendation. Overlay only the
+    # reported waste field after deriving the existing renewability predicate.
+    if record.orchestration_validity in ("stale", "misrouted"):
+        axis = f"{record.orchestration_validity}_tokens"
+        if waste[axis] is None:
+            waste[axis] = _known_task_total_tokens(record)
     cache_seen = (_nonnegative_int_or_none(record.task_telemetry.cache_read_tokens) or 0) > 0
     confidence: Literal["high", "medium", "low"] = "high" if quality and len(record.task_telemetry.observed_components) >= 3 else "medium" if record.task_telemetry.observed_components else "low"
     rationale = ["shadow_only_no_enforcement", f"risk_tier:{tier}", "reasoning_effort_never_reduced_for_cost"]

@@ -1,14 +1,16 @@
 """#74: task-row evidence for stale and misrouted review cascades."""
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 from quota_core.context_economics.agent_crew_adapter import read_task_cascade_signals
 from quota_core.context_economics.analytics import compare_context_policies, context_policy_cohort, orchestration_cascade_summary
 from quota_core.context_economics.correlate import attach_task_cascade_validity
-from quota_core.context_economics.schema import TaskEconomicsRecord, TokenComponents, task_economics_to_dict
+from quota_core.context_economics.schema import TaskEconomicsRecord, TaskTokenTelemetry, TokenComponents, task_economics_to_dict
 from quota_core.context_economics.sqlite_attribution import read_task_attribution_sqlite
-from quota_core.context_economics.policy import recommend_task_policy
+from quota_core.context_economics.policy import QualityEvidence, recommend_task_policy
+from quota_core.context_economics.report_producer import main as produce_report
 
 
 def test_production_shaped_cascade_signals_are_not_context_policy_samples(tmp_path):
@@ -87,3 +89,87 @@ def test_missing_review_signal_does_not_change_shadow_policy_decision():
     assert joined.orchestration_validity == "unknown"
     assert context_policy_cohort(joined) == "resume"
     assert recommend_task_policy(joined).to_dict() == before
+
+
+def test_only_known_invalid_work_adds_waste_without_changing_recommendations():
+    evidence = QualityEvidence(
+        safety_or_live_change=False, broad_architecture_change=False,
+        bounded_routine_fix=True, human_gate_required=False,
+        independent_review_correct=True, required_context_recalled=True,
+    )
+    record = TaskEconomicsRecord(
+        task_id="review-sample", runtime="cli", task_type="review",
+        context_policy="resume", outcome="success",
+        task_telemetry=TaskTokenTelemetry(
+            uncached_input_tokens=2, cache_write_tokens=3,
+            cache_read_tokens=5, output_tokens=7, reasoning_tokens=11,
+        ),
+    )
+    before = recommend_task_policy(record, evidence).to_dict()
+    for validity, field in (("stale", "stale_tokens"), ("misrouted", "misrouted_tokens")):
+        decision = recommend_task_policy(replace(record, orchestration_validity=validity), evidence).to_dict()
+        assert decision["orchestration_waste"] == {
+            "stale_tokens": 17 if validity == "stale" else None,
+            "misrouted_tokens": 17 if validity == "misrouted" else None,
+            "duplicate_tokens": None,
+        }
+        decision["orchestration_waste"] = before["orchestration_waste"]
+        assert decision == before
+    assert recommend_task_policy(replace(record, orchestration_validity="valid"), evidence).to_dict() == before
+    assert recommend_task_policy(replace(record, orchestration_validity="unknown"), evidence).to_dict() == before
+    partial = replace(record, orchestration_validity="stale", task_telemetry=replace(
+        record.task_telemetry, cache_read_tokens=None))
+    assert recommend_task_policy(partial, evidence).orchestration_waste["stale_tokens"] is None
+    provider_total = replace(record, orchestration_validity="misrouted",
+                             tokens=TokenComponents(provider_total=23),
+                             task_telemetry=TaskTokenTelemetry())
+    assert recommend_task_policy(provider_total, evidence).orchestration_waste["misrouted_tokens"] == 23
+    measured_zero = replace(record, orchestration_validity="stale",
+                            task_telemetry=TaskTokenTelemetry(
+                                uncached_input_tokens=0, cache_write_tokens=0,
+                                cache_read_tokens=0, output_tokens=0))
+    assert recommend_task_policy(measured_zero, evidence).orchestration_waste["stale_tokens"] == 0
+    malformed = replace(record, orchestration_validity="stale",
+                        task_telemetry=replace(record.task_telemetry, output_tokens=-1))
+    assert recommend_task_policy(malformed, evidence).orchestration_waste["stale_tokens"] is None
+
+
+def test_sqlite_cascade_tokens_reach_emitted_contract(tmp_path):
+    db = tmp_path / "synthetic.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, task_type TEXT, branch TEXT, context TEXT)")
+        tasks = [
+            ("review-stale", "review", "feature", {"review_publication": "stale"}),
+            ("review-stale-partial", "review", "feature", {"review_publication": "stale"}),
+            ("fix-stale", "implement", "feature", {"prev_task_id": "review-stale"}),
+            ("impl-parent", "implement", "feature", {"result_branch": "feature", "result_commit": "sha-a"}),
+            ("review-misrouted", "review", "other", {"prev_task_id": "impl-parent", "reviewed_sha": "sha-a"}),
+            ("test-misrouted", "test", "other", {"prev_task_id": "review-misrouted"}),
+            ("review-unknown", "review", "feature", {}),
+        ]
+        conn.executemany("INSERT INTO tasks VALUES (?, ?, ?, ?)",
+                         [(task_id, kind, branch, json.dumps(context))
+                          for task_id, kind, branch, context in tasks])
+        conn.execute("""CREATE TABLE task_attribution (
+            task_id TEXT PRIMARY KEY, created_at REAL, task_type TEXT,
+            context_policy TEXT, outcome TEXT, uncached_input_tokens INTEGER,
+            cache_write_tokens INTEGER, cache_read_tokens INTEGER,
+            output_tokens INTEGER, reasoning_tokens INTEGER)""")
+        for task_id, kind, _branch, _context in tasks:
+            if task_id == "impl-parent":
+                continue
+            values = (2, 3, None, 7, 11) if task_id in ("review-unknown", "review-stale-partial") else (2, 3, 5, 7, 11)
+            conn.execute("INSERT INTO task_attribution VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                         (task_id, 100.25, kind, "resume", "completed", *values))
+    report_path, contract_path = tmp_path / "report.json", tmp_path / "contract.json"
+    assert produce_report(["--db", str(db), "--out", str(report_path),
+                           "--contract-out", str(contract_path)]) == 0
+    decisions = {row["task_id"]: row for row in json.loads(contract_path.read_text())["decisions"]}
+    for task_id in ("review-stale", "fix-stale"):
+        assert decisions[task_id]["orchestration_waste"]["stale_tokens"] == 17
+    for task_id in ("review-misrouted", "test-misrouted"):
+        assert decisions[task_id]["orchestration_waste"]["misrouted_tokens"] == 17
+    assert decisions["review-stale-partial"]["orchestration_waste"]["stale_tokens"] is None
+    assert decisions["review-unknown"]["orchestration_waste"] == {
+        "stale_tokens": None, "misrouted_tokens": None, "duplicate_tokens": None,
+    }

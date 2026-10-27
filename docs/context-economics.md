@@ -569,6 +569,15 @@ retain their recorded context-policy cohort, while validity counts disclose
 their sample size. The result-ref mismatch rule applies only to an implement
 parent; a later review round may legitimately target a newer commit.
 
+The shadow policy contract also records known invalid-task token usage in
+`orchestration_waste.stale_tokens` or `.misrouted_tokens`, including inherited
+fix/test tasks. It uses a reported provider total or a complete four-category
+task telemetry or normalized usage breakdown (uncached input, cache write,
+cache read, output; add tool tokens when separately reported); reasoning is
+already part of output. A partial or absent observation remains
+`null`, never an inferred zero. This attribution does not alter review-round,
+session, cache, budget, or provider recommendations.
+
 ## Context Pack economics (`context_pack_analytics.py`, quota-core#62)
 
 Consumes Agent Crew #239's real Context Pack producer contract: a
