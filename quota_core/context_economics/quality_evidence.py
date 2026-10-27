@@ -404,10 +404,15 @@ def ingest_attribution_quality_evidence(
             values[fact] = boolean(raw.get(fact)) if trusted else None
         pack = raw.get("context_pack_hash")
         recall = boolean(raw.get("required_context_recalled")) if "required_context_recalled" in columns else None
+        raw_na = raw.get("recall_not_applicable") if "recall_not_applicable" in columns else None
         if recall is True:
             recall_state, na = "observed_true", None
         elif recall is False:
             recall_state, na = "observed_false", None
+        elif raw_na is True or (type(raw_na) is int and raw_na == 1):
+            # SQLite persists a producer boolean true as integer 1. Do not
+            # coerce strings or other truthy values into an exemption.
+            recall_state, na = "producer_not_applicable", True
         elif isinstance(pack, str) and pack:
             recall_state, na = "applicable_but_missing", None
         else:
