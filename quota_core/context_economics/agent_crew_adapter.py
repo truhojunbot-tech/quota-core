@@ -476,7 +476,10 @@ def enrich_with_task_error_reasons(
             # this is the exact same stale-verdict shape wearing a
             # different normalized label -- excluding it here would fix
             # only the historical shape and silently miss the
-            # forward-looking one.
+            # forward-looking one. (Since quota-core#80 normalize_outcome()
+            # maps "timed_out" to None instead, which the outcome-None
+            # backfill branches below already reconcile; "unknown" stays
+            # here for records that already carry it.)
             enriched.append(
                 replace(
                     a,
