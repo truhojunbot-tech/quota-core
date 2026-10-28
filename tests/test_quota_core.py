@@ -1172,7 +1172,7 @@ class SessionReportContractTests(unittest.TestCase):
         self.assertEqual(report["totals"]["human_messages"], 1)
         self.assertEqual(report["totals"]["api_calls"], 1)
         self.assertEqual(report["totals"]["deduped_api_calls"], 1)
-        self.assertEqual(report["totals"]["cache_hit_pct"], 42.9)
+        self.assertEqual(report["totals"]["cache_hit_pct"], 37.5)
         self.assertEqual(report["by_project"][0]["name"], "demo-project")
         self.assertEqual(report["by_model"][0]["name"], "claude-sonnet-4-6")
         self.assertEqual(report["by_subagent"], [])
@@ -1182,11 +1182,39 @@ class SessionReportContractTests(unittest.TestCase):
         self.assertEqual(report["by_day"][0]["sessions"], 1)
         self.assertEqual(report["hourly_bursts"][0]["name"], "05-07 00:00Z")
         self.assertEqual(report["top_sessions"][0]["name"], "demo-project/session")
-        self.assertEqual(report["cache_efficiency"][0]["cache_hit_pct"], 42.9)
+        self.assertEqual(report["cache_efficiency"][0]["cache_hit_pct"], 37.5)
         self.assertIn("cache_creation_spike", report["cache_breaks"][0]["reason"])
         self.assertIn("/investigate why cache", report["expensive_prompts"][0]["prompt_preview"])
         self.assertEqual(report["expensive_prompts"][0]["context"][0]["here"], True)
         self.assertEqual(report["reconciliation"]["quota_scanner_total_tokens"], 120)
+
+    def test_cache_hit_pct_denominator_includes_uncached_input(self):
+        # #80 item 6: cache_hit_pct must share metrics_b1 M1's denominator
+        # (uncached input + cache write + cache read), not cache tokens only.
+        cases = (
+            ({"input_tokens": 9000, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 0}, 9.1),
+            ({"input_tokens": 10, "cache_read_input_tokens": 30, "cache_creation_input_tokens": 40}, 37.5),
+        )
+        for usage, expected in cases:
+            with self.subTest(usage=usage), tempfile.TemporaryDirectory() as temp_dir:
+                project_dir = Path(temp_dir) / "demo-project"
+                project_dir.mkdir()
+                rows = [
+                    {"timestamp": "2026-05-07T00:00:00Z", "message": {"role": "user", "content": "check cache"}},
+                    {
+                        "timestamp": "2026-05-07T00:00:01Z",
+                        "requestId": "req-1",
+                        "message": {"id": "msg-1", "model": "claude-sonnet-4-6", "usage": {**usage, "output_tokens": 20}},
+                    },
+                ]
+                (project_dir / "session.jsonl").write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+
+                report = analyze_claude_sessions([temp_dir], since="24h", redaction="preview", now=1778169600)
+
+            m1 = usage["cache_read_input_tokens"] / sum(usage.values())
+            self.assertEqual(report["totals"]["cache_hit_pct"], round(m1 * 100, 1))
+            self.assertEqual(report["totals"]["cache_hit_pct"], expected)
+            self.assertEqual(report["cache_efficiency"][0]["cache_hit_pct"], expected)
 
     def test_subagent_usage_excludes_parent_calls_after_agent_tool(self):
         with tempfile.TemporaryDirectory() as temp_dir:
