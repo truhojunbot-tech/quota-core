@@ -156,7 +156,7 @@ def _iter_session_messages(path: Path) -> list[dict[str, Any]]:
                 continue
             if not isinstance(message, dict):
                 continue
-            key = str(message.get("id") or f"{message.get('timestamp')}:{message.get('type')}:{message.get('content', '')[:80]}")
+            key = _message_key(message)
             if key in seen:
                 continue
             seen.add(key)
@@ -165,15 +165,25 @@ def _iter_session_messages(path: Path) -> list[dict[str, Any]]:
     record = _load_session_file(path)
     if record is None:
         return []
-    for message in record.get("messages", []):
+    raw_messages = record.get("messages", [])
+    if not isinstance(raw_messages, list):
+        return []
+    for message in raw_messages:
         if not isinstance(message, dict):
             continue
-        key = str(message.get("id") or f"{message.get('timestamp')}:{message.get('type')}:{message.get('content', '')[:80]}")
+        key = _message_key(message)
         if key in seen:
             continue
         seen.add(key)
         messages.append(message)
     return messages
+
+
+def _message_key(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    # Only str/list content is sliceable; other shapes key on their repr.
+    preview = content[:80] if isinstance(content, (str, list)) else content
+    return str(message.get("id") or f"{message.get('timestamp')}:{message.get('type')}:{preview}")
 
 
 def _project_name(tmp_dir: Path, session_file: Path) -> str:

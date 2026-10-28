@@ -68,6 +68,8 @@ def _transcript_requests(path: Path, since: float, until: float) -> tuple[
                     row = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(row, dict):
+                    continue
                 if row.get("subtype") == "compact_boundary" and "compactMetadata" in row:
                     at = _time(row.get("timestamp"))
                     if at is not None and since <= at < until:
@@ -107,6 +109,8 @@ def _lifecycle_transitions(lifecycle_log: Path, since: float,
                 try:
                     event = json.loads(line)
                 except ValueError:
+                    continue
+                if not isinstance(event, dict):
                     continue
                 at = _time(event.get("timestamp"))
                 if at is None or not since <= at < until:

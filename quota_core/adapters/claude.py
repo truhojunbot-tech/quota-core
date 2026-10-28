@@ -196,7 +196,7 @@ def _extract_usage(record: dict[str, Any]) -> dict[str, Any] | None:
 
 def _usage_tokens(usage: dict[str, Any]) -> int:
     return sum(
-        int(usage.get(key) or 0)
+        _optional_int(usage.get(key)) or 0
         for key in (
             "input_tokens",
             "output_tokens",
