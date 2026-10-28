@@ -11,10 +11,12 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from quota_core.adapters.claude import scan_claude_local
 from quota_core.adapters.gemini import scan_gemini_local
@@ -96,6 +98,86 @@ class MetricsB1JsonlReaderTests(_TmpDir):
             for raw in [None, *BAD_FILES.values(), '{"ok": 1}']:
                 conn.execute("INSERT INTO tokenomics_shadow_receipts VALUES (?, 1.0)", (raw,))
         self.assertEqual(metrics_b1._receipts(db, 0, 2), [{}, {"ok": 1}])
+
+
+# Shapes of `gh` JSON stdout that a CLI hiccup, rate-limit page or API change
+# can produce. A whole-payload problem means the source is unavailable; a bad
+# row inside a list is skipped and the good rows still count.
+BAD_GH_PAYLOADS = {
+    "empty": "",
+    "truncated": '[{"number": 9, "title": "fix #42"',
+    "object": '{"message": "API rate limit exceeded"}',
+    "null": "null",
+    "scalar": "5",
+}
+BAD_GH_ITEMS = {"int": 3, "string": "fix #42", "null": None, "missing_keys": {}}
+
+
+class MetricsB1GithubStdoutTests(_TmpDir):
+    APPROVED_AT = 1767225600.0  # 2026-01-01T00:00:00Z
+    END = APPROVED_AT + 72 * 3600
+    FOLLOWUP = {"number": 9, "title": "Follow-up fix for #42", "body": "",
+                "createdAt": "2026-01-02T00:00:00Z"}
+    REOPENED = {"event": "reopened", "created_at": "2026-01-02T00:00:00Z"}
+
+    def _followup(self, listing: str, events: str = "[]"):
+        def respond(args, **_kwargs):
+            out = listing if args[:3] == ["gh", "pr", "list"] else events
+            return subprocess.CompletedProcess(args, 0, out, "")
+        with patch.object(metrics_b1.subprocess, "run", side_effect=respond), \
+                patch.dict("os.environ", {"QUOTA_CORE_LOCAL_REPOS": ""}):
+            return metrics_b1._github_followup("alpha", 42, 7, self.APPROVED_AT, self.END,
+                                               cache={}, search_from=self.APPROVED_AT)
+
+    def test_pr_listing_bad_payload_is_unavailable(self):
+        for name, payload in BAD_GH_PAYLOADS.items():
+            with self.subTest(name):
+                self.assertIsNone(self._followup(payload))
+
+    def test_pr_listing_bad_items_are_skipped_and_good_rows_still_count(self):
+        for name, item in BAD_GH_ITEMS.items():
+            with self.subTest(name):
+                self.assertIs(self._followup(json.dumps([item, self.FOLLOWUP])), True)
+                # Only bad rows: no follow-up seen, and nothing else proves a clean window.
+                self.assertIsNone(self._followup(json.dumps([item])))
+
+    def test_pr_events_bad_payload_is_unavailable(self):
+        for name, payload in BAD_GH_PAYLOADS.items():
+            with self.subTest(name):
+                self.assertIsNone(self._followup("[]", payload))
+
+    def test_pr_events_bad_items_are_skipped_and_good_rows_still_count(self):
+        for name, item in BAD_GH_ITEMS.items():
+            with self.subTest(name):
+                self.assertIs(self._followup("[]", json.dumps([item, self.REOPENED])), True)
+
+    def test_review_followup_metric_survives_bad_gh_rows(self):
+        db = self.root / "tasks.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE tasks (task_id TEXT, task_type TEXT, context TEXT, verdict TEXT, "
+                         "result_posted_at REAL, created_at REAL, receipt_id TEXT, pr_number INTEGER)")
+            conn.execute("CREATE TABLE tokenomics_shadow_receipts (task_id TEXT, "
+                         "shadow_recommendation_json TEXT, actual_execution_json TEXT)")
+            conn.execute("INSERT INTO tasks VALUES ('impl-1', 'implement', '{\"issue_number\": 42}', "
+                         "NULL, NULL, ?, 'cea-1', 7)", (self.APPROVED_AT - 10,))
+            conn.execute("INSERT INTO tasks VALUES ('review-1', 'review', '{\"prev_task_id\": \"impl-1\"}', "
+                         "'approve', ?, ?, NULL, NULL)", (self.APPROVED_AT, self.APPROVED_AT - 5))
+            conn.execute("INSERT INTO tokenomics_shadow_receipts VALUES ('impl-1', '{\"a\": 1}', '{\"b\": 1}')")
+        for name, (listing, events) in {
+            "listing_items": (json.dumps([3, "x", None]), "[]"),
+            "events_null": ("[]", "null"),
+        }.items():
+            with self.subTest(name):
+                def respond(args, **_kwargs):
+                    out = listing if args[:3] == ["gh", "pr", "list"] else events
+                    return subprocess.CompletedProcess(args, 0, out, "")
+                with patch.object(metrics_b1.subprocess, "run", side_effect=respond), \
+                        patch.dict("os.environ", {"QUOTA_CORE_LOCAL_REPOS": ""}):
+                    row = metrics_b1._review_followup_metric(
+                        "alpha", db, self.APPROVED_AT + 72 * 3600 - 1, self.APPROVED_AT + 72 * 3600 + 1)
+                self.assertEqual((row["metric"], row["n"], row["eligible"], row["unknown"]),
+                                 ("M8", 0, 1, 1))
+                self.assertIsNone(row["value"])
 
 
 class AdapterScanTests(_TmpDir):
