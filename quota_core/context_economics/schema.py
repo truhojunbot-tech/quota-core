@@ -70,6 +70,12 @@ NormalizedOutcome = Literal["success", "failed", "unknown"]
 # still normalizes to "failed".
 _SUCCESS_OUTCOME_PREFIXES = {"success", "completed", "done", "ok"}
 _FAILURE_OUTCOME_PREFIXES = {"failed", "error", "cancelled", "canceled", "timeout"}
+# Operational states that are not a terminal result (quota-core#80): a
+# dispatcher timeout or a task parked for a human/blocker has neither
+# succeeded nor failed. Normalizing them to "unknown" made
+# analytics._not_succeeded count them as failures, so they normalize to
+# None (not yet terminal) instead; raw_outcome keeps the original tag.
+_UNRESOLVED_OUTCOME_PREFIXES = {"timed_out", "needs_human", "blocked"}
 
 FailureCategory = Literal[
     "context_or_policy",
@@ -203,13 +209,16 @@ def normalize_outcome(raw: str | None) -> NormalizedOutcome | None:
     """Map a runtime's raw outcome string to success/failed/unknown.
 
     Returns ``None`` for an empty/missing outcome (task still in progress,
-    or outcome genuinely not reported) -- that is distinct from a real
-    ``"unknown"`` terminal outcome the runtime explicitly reported.
+    or outcome genuinely not reported) or an unresolved operational state
+    (``timed_out``/``needs_human``/``blocked``) -- that is distinct from a
+    real ``"unknown"`` terminal outcome the runtime explicitly reported.
     """
 
     if not raw:
         return None
     prefix = raw.split(":", 1)[0].strip().lower()
+    if prefix in _UNRESOLVED_OUTCOME_PREFIXES:
+        return None
     if prefix in _SUCCESS_OUTCOME_PREFIXES:
         return "success"
     if prefix in _FAILURE_OUTCOME_PREFIXES:
@@ -345,6 +354,9 @@ def parse_flexible_timestamp(value: Any) -> float | None:
     """Parse a timestamp that may be a unix epoch (int/float/numeric string)
     or an ISO-8601 string (Agent Crew's real ``ts`` field, e.g.
     ``"2026-08-21T23:56:19.497696"`` -- naive, implicitly UTC).
+
+    A numeric epoch ``<= 0`` is the producer's "unset" sentinel, not
+    1970-01-01, and returns ``None`` (quota-core#80).
     """
 
     if value is None or value == "":
@@ -353,11 +365,11 @@ def parse_flexible_timestamp(value: Any) -> float | None:
         return None
     if isinstance(value, (int, float)):
         number = float(value)
-        return number if isfinite(number) else None
+        return number if isfinite(number) and number > 0 else None
     if isinstance(value, str):
         try:
             number = float(value)
-            return number if isfinite(number) else None
+            return number if isfinite(number) and number > 0 else None
         except ValueError:
             pass
         text = value.strip()
