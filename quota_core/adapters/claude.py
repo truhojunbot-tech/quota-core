@@ -99,6 +99,7 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     requests = 0
     projects: dict[str, AggregateBreakdown] = {}
     skipped_large_files = 0
+    malformed_usage_records = 0
 
     for jsonl_file in sorted(projects_dir.rglob("*.jsonl")):
         project_name = normalize_project_name(jsonl_file.parent.name or "unknown")
@@ -121,6 +122,9 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
                 if not usage:
                     continue
                 tokens = _usage_tokens(usage)
+                if tokens is None:
+                    malformed_usage_records += 1
+                    continue
                 if tokens <= 0:
                     continue
                 model = _record_model(record)
@@ -139,9 +143,11 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
                     model_requests=model_requests,
                 )
 
-    warnings = ()
+    warnings: tuple[str, ...] = ()
     if skipped_large_files:
-        warnings = (f"claude skipped {skipped_large_files} oversized local files",)
+        warnings += (f"claude skipped {skipped_large_files} oversized local files",)
+    if malformed_usage_records:
+        warnings += (f"claude skipped {malformed_usage_records} records with malformed usage",)
 
     by_project = finalize_project_aggregates(projects, total_tokens)
     window = SnapshotWindow(
@@ -194,16 +200,27 @@ def _extract_usage(record: dict[str, Any]) -> dict[str, Any] | None:
     return usage if isinstance(usage, dict) else None
 
 
-def _usage_tokens(usage: dict[str, Any]) -> int:
-    return sum(
-        _optional_int(usage.get(key)) or 0
-        for key in (
-            "input_tokens",
-            "output_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-        )
-    )
+def _usage_tokens(usage: dict[str, Any]) -> int | None:
+    """Total usage tokens, or ``None`` when a present component is not a number.
+
+    A partly unreadable record is skipped as a whole rather than counted with
+    the bad component as zero, which would understate the total silently.
+    """
+    total = 0
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ):
+        value = usage.get(key)
+        if not value:
+            continue
+        parsed = _optional_int(value)
+        if parsed is None:
+            return None
+        total += parsed
+    return total
 
 
 def _record_model(record: dict[str, Any]) -> str:

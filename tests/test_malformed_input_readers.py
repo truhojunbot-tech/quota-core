@@ -19,6 +19,7 @@ from pathlib import Path
 from quota_core.adapters.claude import scan_claude_local
 from quota_core.adapters.gemini import scan_gemini_local
 from quota_core.cli import load_snapshot_file
+from quota_core.cli import main as cli_main
 from quota_core.config import ProviderConfig
 from quota_core.context_economics import acceptance, metrics_b1, report_producer
 from quota_core.context_economics.agent_crew_adapter import (
@@ -111,8 +112,15 @@ class AdapterScanTests(_TmpDir):
                 projects.mkdir(parents=True)
                 (projects / "a.jsonl").write_text(f"{bad}\n{good}\n")
                 snapshot = scan_claude_local(ProviderConfig(paths={"projects_dir": str(projects.parent)}), 1)
-                expected = {"string_tokens": 11}.get(name, 7)
-                self.assertEqual(snapshot.windows["local_all"].total_tokens, expected)
+                # A record with an unreadable component is skipped whole and
+                # reported, never counted with that component as zero.
+                self.assertEqual(snapshot.windows["local_all"].total_tokens, 7)
+                self.assertEqual(snapshot.windows["local_all"].requests, 1)
+                malformed = name.endswith("_tokens")
+                self.assertEqual(
+                    snapshot.warnings,
+                    ("claude skipped 1 records with malformed usage",) if malformed else (),
+                )
 
     def test_gemini_jsonl_scan_tolerates_bad_lines_and_non_string_content(self):
         good = json.dumps({"id": "g1", "type": "gemini", "tokens": {"total": 9}})
@@ -150,6 +158,13 @@ class AdapterScanTests(_TmpDir):
                 snapshot = scan_gemini_local(ProviderConfig(paths={"tmp_dir": str(project.parent)}), 1)
                 expected = 10 if name.endswith("_content") else 0
                 self.assertEqual(snapshot.windows["local_all"].total_tokens, expected)
+                # A file with no usable shape is reported, so it cannot pass
+                # for a valid session with zero use; "{}" has no messages.
+                malformed = name not in ("missing_keys", "null_content", "object_content")
+                self.assertEqual(
+                    snapshot.warnings,
+                    ("gemini skipped 1 malformed session files",) if malformed else (),
+                )
 
 
 class SessionReaderTests(_TmpDir):
@@ -230,15 +245,47 @@ class ConfigAndReportFileTests(_TmpDir):
 
     def test_report_producer_parity_check_bad_contract_is_a_usage_error(self):
         db = self.root / "attribution.db"
-        db.touch()
-        for name in ("empty", "truncated", "non_json", "non_object"):
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE unrelated (x INTEGER)")
+        cases = {name: BAD_FILES[name] for name in ("empty", "truncated", "non_json", "non_object")}
+        cases.update({
+            "missing_decisions": "{}",
+            "decisions_scalar": '{"decisions": 3}',
+            "decision_without_task_id": '{"decisions": [{}]}',
+        })
+        for name, contents in cases.items():
             with self.subTest(name):
-                path = self._write(BAD_FILES[name])
+                path = self._write(contents)
                 stderr = io.StringIO()
                 with redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
                     report_producer.main(["--db", str(db), "--parity-check", str(path)])
                 self.assertEqual(raised.exception.code, 2)
                 self.assertIn("parity", stderr.getvalue())
+
+    def test_shadow_report_bad_pricing_file_leaves_costs_unknown(self):
+        db = self.root / "attribution.db"
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE unrelated (x INTEGER)")
+
+        def report(*extra: str) -> str:
+            stdout = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                self.assertEqual(cli_main(["context-economics-shadow-report", "--database", str(db), *extra]), 0)
+            return stdout.getvalue()
+
+        unpriced = report()
+        pricing = self.root / "pricing.json"
+        cases = {
+            **BAD_FILES,
+            "provider_not_object": '{"claude": 3}',
+            "rate_not_number": '{"claude": {"default": {"input": "x"}}}',
+        }
+        for name, contents in cases.items():
+            with self.subTest(name):
+                pricing.write_text(contents)
+                self.assertEqual(report("--pricing", str(pricing)), unpriced)
+        with self.subTest("missing_file"):
+            self.assertEqual(report("--pricing", str(self.root / "absent.json")), unpriced)
 
     def test_acceptance_bad_report_is_a_usage_error(self):
         for name in ("empty", "truncated", "non_json", "non_object"):

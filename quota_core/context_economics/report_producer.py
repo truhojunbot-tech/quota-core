@@ -625,7 +625,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"could not read --parity-check {args.parity_check}: {error}")
         if not isinstance(contract, Mapping):
             parser.error("--parity-check contract must be a JSON object")
-        print(json.dumps(compare_contract_to_source(contract, db_paths, args.at, args.table), sort_keys=True))
+        try:
+            parity = compare_contract_to_source(contract, db_paths, args.at, args.table)
+        except ValueError as error:
+            parser.error(f"--parity-check failed: {error}")
+        print(json.dumps(parity, sort_keys=True))
         return 0
     if args.at:
         parser.error("--at requires --parity-check")
