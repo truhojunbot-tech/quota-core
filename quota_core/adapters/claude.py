@@ -179,7 +179,7 @@ def _optional_int(value: Any) -> int | None:
         return None
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
@@ -205,6 +205,8 @@ def _usage_tokens(usage: dict[str, Any]) -> int | None:
 
     A partly unreadable record is skipped as a whole rather than counted with
     the bad component as zero, which would understate the total silently.
+    Only an absent/null component counts as zero; empty strings, containers,
+    booleans and negative counts are malformed.
     """
     total = 0
     for key in (
@@ -214,10 +216,12 @@ def _usage_tokens(usage: dict[str, Any]) -> int | None:
         "cache_creation_input_tokens",
     ):
         value = usage.get(key)
-        if not value:
+        if value is None:
             continue
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return None
         parsed = _optional_int(value)
-        if parsed is None:
+        if parsed is None or parsed < 0:
             return None
         total += parsed
     return total

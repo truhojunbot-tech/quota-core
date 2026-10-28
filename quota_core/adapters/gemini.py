@@ -79,6 +79,7 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     projects: dict[str, AggregateBreakdown] = {}
     skipped_large_files = 0
     malformed_session_files = 0
+    malformed_session_rows = 0
     for session_file in _session_files(tmp_dir):
         try:
             if session_file.stat().st_size > MAX_LOCAL_SCAN_FILE_BYTES:
@@ -91,6 +92,8 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         if session_messages is None:
             malformed_session_files += 1
             continue
+        session_messages, malformed_rows = session_messages
+        malformed_session_rows += malformed_rows
         for message in session_messages:
             if not isinstance(message, dict) or message.get("type") != "gemini":
                 continue
@@ -118,6 +121,8 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         warnings += (f"gemini skipped {skipped_large_files} oversized local files",)
     if malformed_session_files:
         warnings += (f"gemini skipped {malformed_session_files} malformed session files",)
+    if malformed_session_rows:
+        warnings += (f"gemini skipped {malformed_session_rows} malformed session rows",)
 
     window = SnapshotWindow(
         window_start=None,
@@ -138,34 +143,40 @@ def _session_files(tmp_dir: Path) -> list[Path]:
     return sorted([*tmp_dir.rglob("session-*.json"), *tmp_dir.rglob("session-*.jsonl")])
 
 
-def _iter_session_messages(path: Path) -> list[dict[str, Any]] | None:
-    """Messages in one session file; ``None`` when a ``.json`` file is malformed."""
+def _iter_session_messages(path: Path) -> tuple[list[dict[str, Any]], int] | None:
+    """Messages in one session file and its malformed ``.jsonl`` row count.
+
+    ``None`` when a ``.json`` file is malformed as a whole.
+    """
     seen: set[str] = set()
     messages: list[dict[str, Any]] = []
+    malformed_rows = 0
     if path.suffix == ".jsonl":
         try:
             lines = path.read_text(errors="replace").splitlines()
         except OSError:
-            return []
+            return [], 0
         for line in lines:
             if not line.strip():
                 continue
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
+                malformed_rows += 1
                 continue
             if not isinstance(message, dict):
+                malformed_rows += 1
                 continue
             key = _message_key(message)
             if key in seen:
                 continue
             seen.add(key)
             messages.append(message)
-        return messages
+        return messages, malformed_rows
     try:
         text = path.read_text(errors="replace")
     except OSError:
-        return []
+        return [], 0
     try:
         record = json.loads(text)
     except json.JSONDecodeError:
@@ -183,7 +194,7 @@ def _iter_session_messages(path: Path) -> list[dict[str, Any]] | None:
             continue
         seen.add(key)
         messages.append(message)
-    return messages
+    return messages, 0
 
 
 def _message_key(message: dict[str, Any]) -> str:

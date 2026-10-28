@@ -105,6 +105,14 @@ class AdapterScanTests(_TmpDir):
             **BAD_LINES,
             "string_tokens": json.dumps({"message": {"usage": {"input_tokens": "abc", "output_tokens": 4}}}),
             "object_tokens": json.dumps({"message": {"usage": {"input_tokens": {"n": 1}}}}),
+            **{
+                f"{label}_tokens": json.dumps({"message": {"usage": {"input_tokens": value, "output_tokens": 4}}})
+                for label, value in {
+                    "empty_string": "", "empty_list": [], "empty_object": {}, "false": False,
+                    "true": True, "negative": -3,
+                }.items()
+            },
+            "infinite_tokens": '{"message": {"usage": {"input_tokens": Infinity, "output_tokens": 4}}}',
         }
         for name, bad in bad_values.items():
             with self.subTest(name):
@@ -138,6 +146,20 @@ class AdapterScanTests(_TmpDir):
                 snapshot = scan_gemini_local(ProviderConfig(paths={"tmp_dir": str(project.parent)}), 1)
                 expected = 10 if name.endswith("_content") else 9
                 self.assertEqual(snapshot.windows["local_all"].total_tokens, expected)
+                # Unparseable / non-object rows are reported, never silent.
+                malformed = name in ("truncated", "non_json", "non_object", "scalar")
+                self.assertEqual(
+                    snapshot.warnings,
+                    ("gemini skipped 1 malformed session rows",) if malformed else (),
+                )
+
+    def test_gemini_jsonl_scan_with_only_malformed_rows_is_not_a_clean_zero(self):
+        project = self.root / "all_bad" / "p"
+        project.mkdir(parents=True)
+        (project / "session-a.jsonl").write_text("{bad\n[1]\n\n")
+        snapshot = scan_gemini_local(ProviderConfig(paths={"tmp_dir": str(project.parent)}), 1)
+        self.assertEqual(snapshot.windows["local_all"].total_tokens, 0)
+        self.assertEqual(snapshot.warnings, ("gemini skipped 2 malformed session rows",))
 
     def test_gemini_json_scan_tolerates_bad_files_and_bad_messages_field(self):
         good_message = {"id": "g1", "type": "gemini", "tokens": {"total": 9}}
@@ -265,27 +287,50 @@ class ConfigAndReportFileTests(_TmpDir):
     def test_shadow_report_bad_pricing_file_leaves_costs_unknown(self):
         db = self.root / "attribution.db"
         with sqlite3.connect(db) as conn:
-            conn.execute("CREATE TABLE unrelated (x INTEGER)")
+            conn.execute(
+                "CREATE TABLE task_attribution (task_id TEXT, status TEXT, task_type TEXT, provider TEXT, "
+                "model TEXT, uncached_input_tokens INTEGER, cache_write_tokens INTEGER, "
+                "cache_read_tokens INTEGER, output_tokens INTEGER)"
+            )
+            conn.execute(
+                "INSERT INTO task_attribution VALUES "
+                "('t1', 'completed', 'implement', 'provider-a', 'model-y', 100, 0, 0, 10)"
+            )
 
-        def report(*extra: str) -> str:
+        def cost(*extra: str) -> dict:
             stdout = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
                 self.assertEqual(cli_main(["context-economics-shadow-report", "--database", str(db), *extra]), 0)
-            return stdout.getvalue()
+            artifacts = json.loads(stdout.getvalue())["artifacts"]
+            self.assertEqual([item["task_id"] for item in artifacts], ["t1"])
+            return artifacts[0]["cost"]
 
-        unpriced = report()
+        unknown = {"uncached_input": None, "cache_write": None, "cache_read": None,
+                   "output": None, "reasoning": None}
         pricing = self.root / "pricing.json"
+        # Control: a valid price book does cost this decision.
+        pricing.write_text(json.dumps({"provider-a": {"default": {"uncached_input": 0.1, "output": 0.2}}}))
+        priced = cost("--pricing", str(pricing))
+        self.assertTrue(priced["priced"])
+        self.assertAlmostEqual(priced["productive"]["uncached_input"], 10.0)
+        self.assertAlmostEqual(priced["productive"]["output"], 2.0)
+
         cases = {
             **BAD_FILES,
-            "provider_not_object": '{"claude": 3}',
-            "rate_not_number": '{"claude": {"default": {"input": "x"}}}',
+            "provider_not_object": '{"provider-a": 3}',
+            "rate_not_number": '{"provider-a": {"default": {"uncached_input": "x"}}}',
         }
         for name, contents in cases.items():
             with self.subTest(name):
                 pricing.write_text(contents)
-                self.assertEqual(report("--pricing", str(pricing)), unpriced)
+                payload = cost("--pricing", str(pricing))
+                self.assertFalse(payload["rates_found"])
+                self.assertFalse(payload["priced"])
+                self.assertEqual(payload["productive"], unknown)
         with self.subTest("missing_file"):
-            self.assertEqual(report("--pricing", str(self.root / "absent.json")), unpriced)
+            payload = cost("--pricing", str(self.root / "absent.json"))
+            self.assertFalse(payload["priced"])
+            self.assertEqual(payload["productive"], unknown)
 
     def test_acceptance_bad_report_is_a_usage_error(self):
         for name in ("empty", "truncated", "non_json", "non_object"):
