@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
+from ..atomic_io import atomic_write_text
 from .policy import POLICY_CONTRACT_VERSION, policy_contract_schema
 from .quality_evidence import derive_progress_evidence, derive_quality_evidence, ingest_attribution_quality_evidence
 from dataclasses import replace
@@ -631,7 +632,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--contract-out must differ from --out")
     report, records = _produce_shadow_report(db_paths, _load_existing(out), args.table)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_text(out, json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if args.contract_out:
         contract = build_contract(report, records, db_paths)
         contract_sha = write_contract_atomically(args.contract_out, contract)

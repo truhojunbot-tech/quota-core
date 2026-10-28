@@ -8,6 +8,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from .atomic_io import atomic_write_text
 from .config import QuotaCoreConfig, default_config_path, load_config, validate_config, write_default_config
 from .dashboard.renderer import render_page
 from .dashboard.verification import verify_dashboard_html
@@ -162,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.output:
             target = Path(args.output).expanduser()
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(rendered + "\n")
+            atomic_write_text(target, rendered + "\n")
         print(rendered)
         return 0
     raise SystemExit(f"quota-core {args.command} is not implemented yet")
@@ -179,7 +180,7 @@ def write_demo(output: str | Path) -> Path:
     html = render_page([snapshot_from_dict(data)], title="quota_core demo")
     target = Path(output).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(html)
+    atomic_write_text(target, html)
     return target
 
 
@@ -194,7 +195,7 @@ def write_scan(config_path: str | Path | None, output: str | Path) -> Path:
     }
     target = Path(output).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, indent=2))
+    atomic_write_text(target, json.dumps(payload, indent=2))
     return target
 
 
@@ -235,7 +236,7 @@ def write_dashboard(snapshot_path: str | Path, output: str | Path) -> Path:
     html = render_page(snapshots, title="quota_core dashboard")
     target = Path(output).expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(html)
+    atomic_write_text(target, html)
     return target
 
 
@@ -282,7 +283,7 @@ def verify_session_parity(
     if output:
         target = Path(output).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(summary, ensure_ascii=False, indent=2))
+        atomic_write_text(target, json.dumps(summary, ensure_ascii=False, indent=2))
     return summary
 
 
