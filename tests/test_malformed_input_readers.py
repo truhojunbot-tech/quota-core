@@ -109,10 +109,12 @@ class AdapterScanTests(_TmpDir):
                 f"{label}_tokens": json.dumps({"message": {"usage": {"input_tokens": value, "output_tokens": 4}}})
                 for label, value in {
                     "empty_string": "", "empty_list": [], "empty_object": {}, "false": False,
-                    "true": True, "negative": -3,
+                    "true": True, "negative": -3, "fractional": 1.9, "fractional_string": "1.9",
                 }.items()
             },
             "infinite_tokens": '{"message": {"usage": {"input_tokens": Infinity, "output_tokens": 4}}}',
+            # An integral float is a whole count and stays valid: 2 + 4 + good 7.
+            "integral_float_ok": json.dumps({"message": {"usage": {"input_tokens": 2.0, "output_tokens": 4}}}),
         }
         for name, bad in bad_values.items():
             with self.subTest(name):
@@ -122,6 +124,11 @@ class AdapterScanTests(_TmpDir):
                 snapshot = scan_claude_local(ProviderConfig(paths={"projects_dir": str(projects.parent)}), 1)
                 # A record with an unreadable component is skipped whole and
                 # reported, never counted with that component as zero.
+                if name == "integral_float_ok":
+                    self.assertEqual(snapshot.windows["local_all"].total_tokens, 13)
+                    self.assertEqual(snapshot.windows["local_all"].requests, 2)
+                    self.assertEqual(snapshot.warnings, ())
+                    continue
                 self.assertEqual(snapshot.windows["local_all"].total_tokens, 7)
                 self.assertEqual(snapshot.windows["local_all"].requests, 1)
                 malformed = name.endswith("_tokens")

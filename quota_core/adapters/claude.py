@@ -206,7 +206,7 @@ def _usage_tokens(usage: dict[str, Any]) -> int | None:
     A partly unreadable record is skipped as a whole rather than counted with
     the bad component as zero, which would understate the total silently.
     Only an absent/null component counts as zero; empty strings, containers,
-    booleans and negative counts are malformed.
+    booleans, negative and fractional/non-finite counts are malformed.
     """
     total = 0
     for key in (
@@ -219,6 +219,8 @@ def _usage_tokens(usage: dict[str, Any]) -> int | None:
         if value is None:
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            return None
+        if isinstance(value, float) and not value.is_integer():
             return None
         parsed = _optional_int(value)
         if parsed is None or parsed < 0:
