@@ -130,21 +130,31 @@ def token_components_for_provider(provider: str, usage: dict[str, Any]) -> Token
 
 
 def merge_token_components(components: list[TokenComponents]) -> TokenComponents:
-    """Sum multiple :class:`TokenComponents`, keeping a field ``None`` only if *all* inputs lack it."""
+    """Sum multiple :class:`TokenComponents` without inventing a known total.
+
+    A merged field is known only if *every* input knows it: summing the known
+    values of a mixed set would silently undercount the inputs that lack it
+    (a reported 100-token total plus a record with only 50 output tokens is
+    not a 100-token task). ``tool_tokens`` is additive on top of a complete
+    breakdown and is treated as 0 when absent, so it sums whatever is known.
+    """
 
     def _sum(attr: str) -> int | None:
         values = [getattr(c, attr) for c in components]
-        known = [v for v in values if v is not None]
-        if not known:
+        if not values or any(v is None for v in values):
             return None
-        return sum(known)
+        return sum(values)
+
+    def _sum_known(attr: str) -> int | None:
+        known = [v for v in (getattr(c, attr) for c in components) if v is not None]
+        return sum(known) if known else None
 
     return TokenComponents(
         fresh_input=_sum("fresh_input"),
         output=_sum("output"),
         cache_read=_sum("cache_read"),
         cache_creation=_sum("cache_creation"),
-        tool_tokens=_sum("tool_tokens"),
+        tool_tokens=_sum_known("tool_tokens"),
         provider_total=_sum("provider_total"),
     )
 

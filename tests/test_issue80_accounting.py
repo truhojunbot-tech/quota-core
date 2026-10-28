@@ -4,6 +4,7 @@ fabricated totals, and configured pricing reaching the policy decision."""
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from quota_core.context_economics import (
     PricingBook,
@@ -51,6 +52,30 @@ class CorrelateClaimsEachRecordOnceTests(unittest.TestCase):
                                         _attr("t2", provider_session_id="s", started_at=100, completed_at=110)], usage)
         self.assertEqual([r.tokens.provider_total for r in out], [None, 5])
 
+
+    def test_merged_total_stays_unknown_unless_every_record_reports_one(self):
+        # A reported 100-token record plus a distinct 50-output-token record
+        # without a total is not a 100-token task: the total is unknown.
+        usage = [ProviderUsageRecord(provider="claude", provider_session_id="s",
+                                     tokens=TokenComponents(provider_total=100)),
+                 ProviderUsageRecord(provider="claude", provider_session_id="s",
+                                     tokens=TokenComponents(output=50))]
+        [record] = correlate_task_economics([_attr("t", provider_session_id="s")], usage)
+        self.assertIsNone(record.tokens.provider_total)
+        self.assertIsNone(record.tokens.output)
+        misrouted = replace(record, outcome="failed", orchestration_validity="misrouted")
+        self.assertIsNone(recommend_task_policy(misrouted).orchestration_waste["misrouted_tokens"])
+
+    def test_merged_total_sums_when_every_record_reports_one(self):
+        usage = [ProviderUsageRecord(provider="claude", provider_session_id="s",
+                                     tokens=TokenComponents(provider_total=100, tool_tokens=3)),
+                 ProviderUsageRecord(provider="claude", provider_session_id="s",
+                                     tokens=TokenComponents(provider_total=50))]
+        [record] = correlate_task_economics([_attr("t", provider_session_id="s")], usage)
+        self.assertEqual(record.tokens.provider_total, 150)
+        self.assertEqual(record.tokens.tool_tokens, 3)
+        misrouted = replace(record, outcome="failed", orchestration_validity="misrouted")
+        self.assertEqual(recommend_task_policy(misrouted).orchestration_waste["misrouted_tokens"], 150)
 
 class ProviderTotalIsReportedOnlyTests(unittest.TestCase):
     def test_partial_components_are_not_stored_as_a_provider_total(self):
