@@ -607,7 +607,8 @@ def compute_metrics(since: float, until: float, crew_root: str | Path,
         cache_read = sum(parts[2] for parts in known)
         m1 = _row(bot, "M1", db_source + ":tokenomics_shadow_receipts", len(known),
                   cache_read / total if total else None,
-                  "no_complete_positive_economics_receipts_in_window")
+                  "no_complete_positive_economics_receipts_in_window"
+                  if db.is_file() else "no_tasks_db")
         session_value, session_n, session_reason, joined, transitions = (
             _session_cache(bot, since, until, transcript_path,
                            lifecycle_by_project.get(bot.replace("_", "-"), []))
