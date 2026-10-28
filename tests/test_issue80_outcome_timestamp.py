@@ -22,7 +22,7 @@ from quota_core.context_economics import (
     stratified_failure_rates,
 )
 from quota_core.context_economics.compact_analysis import _window_stats
-from quota_core.context_economics.schema import attribution_from_dict
+from quota_core.context_economics.schema import attribution_from_dict, validate_attribution_dict
 from quota_core.context_economics.sqlite_attribution import read_task_attribution_sqlite
 
 UNRESOLVED = ("timed_out", "needs_human", "blocked")
@@ -92,6 +92,37 @@ class UnsetTimestampTest(unittest.TestCase):
         )
         self.assertIsNone(rec.duration_seconds)
         self.assertIsNone(_window_stats([rec])["avg_duration_seconds"])
+
+
+class TimestampParserValidatorAgreementTest(unittest.TestCase):
+    """The validator must not reject what the parser accepts as unset (#80)."""
+
+    FIELDS = ("started_at", "completed_at", "updated_at")
+
+    def _errors(self, key, value):
+        return validate_attribution_dict({"runtime": "r", "task_id": "t", key: value})
+
+    def test_unset_sentinel_is_valid_and_parses_to_none(self):
+        for key in self.FIELDS:
+            for value in (0, 0.0, "0", "0.0", -1, "-5"):
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(self._errors(key, value), ())
+                    a = attribution_from_dict({"runtime": "r", "task_id": "t", key: value})
+                    self.assertIsNone(getattr(a, key))
+
+    def test_real_timestamps_valid(self):
+        for key in self.FIELDS:
+            for value in (1_700_000_000, "1700000000.5", "2026-08-21T23:56:19.497696", None):
+                with self.subTest(key=key, value=value):
+                    self.assertEqual(self._errors(key, value), ())
+
+    def test_malformed_timestamps_still_rejected(self):
+        for key in self.FIELDS:
+            for value in ("garbage", "nan", float("nan"), float("inf"), "-inf", True, False, [], {}):
+                with self.subTest(key=key, value=value):
+                    errors = self._errors(key, value)
+                    self.assertEqual(len(errors), 1)
+                    self.assertIn(key, errors[0])
 
 
 if __name__ == "__main__":

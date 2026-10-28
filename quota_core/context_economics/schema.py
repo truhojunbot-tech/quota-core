@@ -385,6 +385,28 @@ def parse_flexible_timestamp(value: Any) -> float | None:
     return None
 
 
+def _is_unset_timestamp_sentinel(value: Any) -> bool:
+    """True for a finite numeric epoch ``<= 0`` (int/float/numeric string).
+
+    :func:`parse_flexible_timestamp` maps these to ``None`` as the producer's
+    "unset" marker; the validator must accept them too, so parser and
+    validator agree (quota-core#80). NaN/inf and bools stay malformed.
+    """
+
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        number = float(value)
+    elif isinstance(value, str):
+        try:
+            number = float(value)
+        except ValueError:
+            return False
+    else:
+        return False
+    return isfinite(number) and number <= 0
+
+
 @dataclass(frozen=True)
 class TokenComponents:
     """Provider-reported token usage, kept as separate economic categories.
@@ -1621,10 +1643,15 @@ def validate_attribution_dict(data: dict[str, Any]) -> tuple[str, ...]:
             errors.append(f"{key} must be an integer or null")
     # started_at/completed_at/updated_at accept unix epoch (int/float) or an
     # ISO-8601 string (Agent Crew's real `ts`-style timestamps) -- only flag
-    # a value that parses as neither.
+    # a value that parses as neither. A numeric ``<= 0`` is the producer's
+    # unset sentinel, which the parser reads as None -- not malformed (#80).
     for key in ("started_at", "completed_at", "updated_at"):
         value = data.get(key)
-        if value is not None and parse_flexible_timestamp(value) is None:
+        if (
+            value is not None
+            and parse_flexible_timestamp(value) is None
+            and not _is_unset_timestamp_sentinel(value)
+        ):
             errors.append(f"{key} must be a unix epoch number, an ISO-8601 string, or null")
     # Agent Crew #278/#279 (quota-core #68): lock_wait_seconds=0.0 is a real
     # measured value and must remain a valid, non-error input -- only a
