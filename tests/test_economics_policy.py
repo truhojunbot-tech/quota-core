@@ -79,19 +79,19 @@ class EconomicsPolicyTests(unittest.TestCase):
                           independent_review_correct=True)
         cases = {
             "unknown_recall": (recommend_task_policy(_record(), QualityEvidence(**known_risk)),
-                               "09b568f76c6331e0adb44e899cb12eefaba2f310ff5e70631e64728d1eded796"),
+                               "460cfb7482e2d1cb72e9ed578a80ab34e9542a3cff50088a6250e4888b1388bb"),
             "negative_recall": (recommend_task_policy(_record(), QualityEvidence(**known_risk, required_context_recalled=False)),
-                                "8802ee5847c9baaa895fabc7e8b7242d1aa94ab12374f8dc247e87365267552d"),
+                                "a7f8470a2e9b9477605d639c58fdbb2abb24727143e842aaf06b6eded8de6490"),
             "positive_recall": (recommend_task_policy(_record(), QualityEvidence(**known_risk, required_context_recalled=True)),
                                 "cc9c4495c44dc9397b499d5099ec016a024cb71f02bf9d3084d36190bad4260e"),
             "failed_review_unknown_recall": (recommend_task_policy(_record(), QualityEvidence(**{**known_risk, "independent_review_correct": False})),
-                                             "bc9bdc6cf9a82fba4705261801052ba1b524eff61a1a5bb43760726a43927fb0"),
+                                             "7ac1f131dab99354a3fbf16e30a02836a46b4c3055c6f77e7f881c6a98f2c018"),
             "blocked_exemption": (recommend_task_policy(_record(), QualityEvidence(independent_review_correct=True, recall_not_applicable=True)),
-                                  "16232f59d3054604a67f0d73b0a5e62a3e79626a920426e0caf8b29ae9a2a390"),
+                                  "531c4a1bc2ef55a1175ffbd263bb472ccd91bad832a2a2dc772aaa8f1985e6eb"),
         }
         fixture_hashes = {
-            "sample-implement": "db7425c7cbd45f9995367c8a452fd3b6231b5aa864b8c8512a41569099c3abc5",
-            "sample-review": "b7e96c5d1e699edf219bbdb46562093dafe8aee033f8a6e99552a88960e2410d",
+            "sample-implement": "55153e6ddef588a7755bd157732e48007e11f911b83b550073118a6613b1b790",
+            "sample-review": "4aad10ff4bbc2af1968b9b0b87c5886b122a3d5791c51ddb89754a9a1367f3a2",
         }
         for record in correlate_task_economics(read_attribution_jsonl(FIXTURE), []):
             cases[record.task_id] = (recommend_task_policy(record), fixture_hashes[record.task_id])
@@ -189,8 +189,7 @@ class EconomicsPolicyTests(unittest.TestCase):
         self.assertEqual(decision.recommended_provider_tier, "escalate_allowed")
         self.assertTrue(decision.human_gate_required)
         self.assertEqual(decision.recommended_cache_treatment, "insufficient_evidence")
-        self.assertEqual(decision.recommended_soft_budget.uncached_input_tokens, 0)
-        self.assertIsNone(decision.recommended_soft_budget.cache_read_tokens)
+        self.assertIsNone(decision.recommended_soft_budget)
         self.assertIn("independent_review_correctness_unknown_or_negative", decision.override_reasons)
 
     def test_no_retrieval_recall_exemption_keeps_review_quality_floor(self):
@@ -282,6 +281,25 @@ class EconomicsPolicyTests(unittest.TestCase):
             self.assertIsNone(decision.recommended_soft_budget)
             self.assertIn("no_budget_anchor_for_non_successful_or_unknown_outcome", decision.override_reasons)
 
+    def test_only_quality_preserving_success_anchors_budget(self):
+        known = dict(safety_or_live_change=False, broad_architecture_change=False,
+                     bounded_routine_fix=True, human_gate_required=False)
+        cases = (("preserving", dict(independent_review_correct=True, required_context_recalled=True)),
+                 ("not_preserving", dict(independent_review_correct=False, required_context_recalled=True)),
+                 ("not_preserving", dict(independent_review_correct=True, required_context_recalled=False)),
+                 ("unknown", dict(independent_review_correct=True)))
+        for state, facts in cases:
+            with self.subTest(state=state, facts=facts):
+                decision = recommend_task_policy(_record(uncached_input_tokens=100), QualityEvidence(**known, **facts))
+                self.assertEqual(decision.quality_evidence_state, state)
+                if state == "preserving":
+                    self.assertEqual(decision.recommended_soft_budget.uncached_input_tokens, 120)
+                    self.assertFalse(any(r.startswith("no_budget_anchor") for r in decision.override_reasons))
+                else:
+                    self.assertIsNone(decision.recommended_soft_budget)
+                    self.assertIn(f"no_budget_anchor_for_quality_evidence_{state}", decision.override_reasons)
+                    self.assertNotIn("no_budget_anchor_for_non_successful_or_unknown_outcome", decision.override_reasons)
+
     def test_negative_evidence_is_normalized_to_unknown_for_schema_safety(self):
         decision = recommend_task_policy(_record(uncached_input_tokens=-1), QualityEvidence(
             safety_or_live_change=False, broad_architecture_change=False,
@@ -303,7 +321,8 @@ class EconomicsPolicyTests(unittest.TestCase):
 
     def test_synthetic_samples_produce_one_shadow_artifact_each(self):
         records = correlate_task_economics(read_attribution_jsonl(FIXTURE), [])
-        report = shadow_policy_report(records)
+        preserving = QualityEvidence(independent_review_correct=True, required_context_recalled=True)
+        report = shadow_policy_report(records, {record.task_id: preserving for record in records})
         self.assertEqual(report["decision_count"], 2)
         self.assertEqual(report["decisions"][0]["recommended_soft_budget"]["cache_read_tokens"], 60900)
         self.assertIsNone(report["decisions"][1]["recommended_soft_budget"]["reasoning_tokens"])

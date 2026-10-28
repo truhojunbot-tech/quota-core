@@ -407,9 +407,13 @@ def recommend_task_policy(record: TaskEconomicsRecord, evidence: QualityEvidence
     if cache_seen: rationale.append("cache_read_is_productive_measurement_not_waste")
     if evidence.new_evidence_or_progress is True: rationale.append("new_evidence_extends_review_fix_envelope")
     if evidence.repeated_unchanged_state is True: rationale.append("unchanged_state_does_not_extend_review_fix_envelope")
-    budget = _envelope(record, multiplier) if record.outcome == "success" else None
-    if budget is None:
+    # Only a quality-preserving run may anchor the soft budget; a cheaper but
+    # unproven success must not set the envelope (#80 G1).
+    budget = _envelope(record, multiplier) if quality_evidence_state == "preserving" else None
+    if record.outcome != "success":
         overrides.append("no_budget_anchor_for_non_successful_or_unknown_outcome")
+    elif budget is None:
+        overrides.append(f"no_budget_anchor_for_quality_evidence_{quality_evidence_state}")
     return PolicyDecision(
         POLICY_CONTRACT_VERSION, "shadow", record.task_id,
         {"provider": record.provider or record.agent, "model": record.model, "session": record.provider_session_id, "context_id": record.context_id, "context_generation": record.context_generation},
