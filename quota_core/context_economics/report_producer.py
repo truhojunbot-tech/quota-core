@@ -620,8 +620,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.parity_check:
         if not all(Path(path).expanduser().is_file() for path in db_paths):
             parser.error("all parity source DBs must exist")
-        contract = json.loads(Path(args.parity_check).read_text(encoding="utf-8"))
-        print(json.dumps(compare_contract_to_source(contract, db_paths, args.at, args.table), sort_keys=True))
+        try:
+            contract = json.loads(Path(args.parity_check).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            parser.error(f"could not read --parity-check {args.parity_check}: {error}")
+        if not isinstance(contract, Mapping):
+            parser.error("--parity-check contract must be a JSON object")
+        try:
+            parity = compare_contract_to_source(contract, db_paths, args.at, args.table)
+        except ValueError as error:
+            parser.error(f"--parity-check failed: {error}")
+        print(json.dumps(parity, sort_keys=True))
         return 0
     if args.at:
         parser.error("--at requires --parity-check")

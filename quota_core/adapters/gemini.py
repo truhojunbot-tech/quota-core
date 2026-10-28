@@ -78,6 +78,8 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     requests = 0
     projects: dict[str, AggregateBreakdown] = {}
     skipped_large_files = 0
+    malformed_session_files = 0
+    malformed_session_rows = 0
     for session_file in _session_files(tmp_dir):
         try:
             if session_file.stat().st_size > MAX_LOCAL_SCAN_FILE_BYTES:
@@ -86,7 +88,13 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
         except OSError:
             continue
         project_name = normalize_project_name(_project_name(tmp_dir, session_file))
-        for message in _iter_session_messages(session_file):
+        session_messages = _iter_session_messages(session_file)
+        if session_messages is None:
+            malformed_session_files += 1
+            continue
+        session_messages, malformed_rows = session_messages
+        malformed_session_rows += malformed_rows
+        for message in session_messages:
             if not isinstance(message, dict) or message.get("type") != "gemini":
                 continue
             tokens, model = _message_tokens(message)
@@ -108,9 +116,13 @@ def scan_gemini_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
             )
 
     by_project = finalize_project_aggregates(projects, total_tokens)
-    warnings = ()
+    warnings: tuple[str, ...] = ()
     if skipped_large_files:
-        warnings = (f"gemini skipped {skipped_large_files} oversized local files",)
+        warnings += (f"gemini skipped {skipped_large_files} oversized local files",)
+    if malformed_session_files:
+        warnings += (f"gemini skipped {malformed_session_files} malformed session files",)
+    if malformed_session_rows:
+        warnings += (f"gemini skipped {malformed_session_rows} malformed session rows",)
 
     window = SnapshotWindow(
         window_start=None,
@@ -131,49 +143,65 @@ def _session_files(tmp_dir: Path) -> list[Path]:
     return sorted([*tmp_dir.rglob("session-*.json"), *tmp_dir.rglob("session-*.jsonl")])
 
 
-def _load_session_file(path: Path) -> dict[str, Any] | None:
-    try:
-        record = json.loads(path.read_text(errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return record if isinstance(record, dict) else None
+def _iter_session_messages(path: Path) -> tuple[list[dict[str, Any]], int] | None:
+    """Messages in one session file and its malformed ``.jsonl`` row count.
 
-
-def _iter_session_messages(path: Path) -> list[dict[str, Any]]:
+    ``None`` when a ``.json`` file is malformed as a whole.
+    """
     seen: set[str] = set()
     messages: list[dict[str, Any]] = []
+    malformed_rows = 0
     if path.suffix == ".jsonl":
         try:
             lines = path.read_text(errors="replace").splitlines()
         except OSError:
-            return []
+            return [], 0
         for line in lines:
             if not line.strip():
                 continue
             try:
                 message = json.loads(line)
             except json.JSONDecodeError:
+                malformed_rows += 1
                 continue
             if not isinstance(message, dict):
+                malformed_rows += 1
                 continue
-            key = str(message.get("id") or f"{message.get('timestamp')}:{message.get('type')}:{message.get('content', '')[:80]}")
+            key = _message_key(message)
             if key in seen:
                 continue
             seen.add(key)
             messages.append(message)
-        return messages
-    record = _load_session_file(path)
-    if record is None:
-        return []
-    for message in record.get("messages", []):
+        return messages, malformed_rows
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return [], 0
+    try:
+        record = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    raw_messages = record.get("messages", [])
+    if not isinstance(raw_messages, list):
+        return None
+    for message in raw_messages:
         if not isinstance(message, dict):
             continue
-        key = str(message.get("id") or f"{message.get('timestamp')}:{message.get('type')}:{message.get('content', '')[:80]}")
+        key = _message_key(message)
         if key in seen:
             continue
         seen.add(key)
         messages.append(message)
-    return messages
+    return messages, 0
+
+
+def _message_key(message: dict[str, Any]) -> str:
+    content = message.get("content", "")
+    # Only str/list content is sliceable; other shapes key on their repr.
+    preview = content[:80] if isinstance(content, (str, list)) else content
+    return str(message.get("id") or f"{message.get('timestamp')}:{message.get('type')}:{preview}")
 
 
 def _project_name(tmp_dir: Path, session_file: Path) -> str:
