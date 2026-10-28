@@ -15,6 +15,8 @@ def runtime_share_label(runtime: RuntimeBreakdown, service_total: int) -> str:
 
 
 def quota_utilization_label(window: SnapshotWindow, *, decimals: int = 1) -> str:
+    if window.utilization is None:
+        return "미보고"
     if quota_window_is_stale(window):
         if quota_utilization_is_delayed(window):
             return "집계 지연"
@@ -27,6 +29,8 @@ def quota_utilization_label(window: SnapshotWindow, *, decimals: int = 1) -> str
 
 
 def runtime_quota_context_label(window: SnapshotWindow) -> str:
+    if window.utilization is None:
+        return "quota 미보고"
     if quota_window_is_stale(window):
         return "quota 집계 지연"
     if quota_window_is_cached(window):
@@ -35,7 +39,7 @@ def runtime_quota_context_label(window: SnapshotWindow) -> str:
 
 
 def quota_utilization_is_delayed(window: SnapshotWindow) -> bool:
-    return bool(window.total_tokens > 0 and window.utilization <= 0 and quota_window_is_stale(window))
+    return bool(window.total_tokens > 0 and (window.utilization or 0.0) <= 0 and quota_window_is_stale(window))
 
 
 def quota_window_is_stale(window: SnapshotWindow) -> bool:

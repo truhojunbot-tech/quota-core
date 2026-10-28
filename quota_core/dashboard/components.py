@@ -1061,15 +1061,17 @@ def concentration_label(window: SnapshotWindow) -> str:
     return "distributed"
 
 
-def clamped_pct(utilization: float) -> float:
-    return max(0.0, min(100.0, utilization * 100))
+def clamped_pct(utilization: float | None) -> float:
+    return max(0.0, min(100.0, (utilization or 0.0) * 100))
 
 
 def percent0(utilization: float) -> str:
     return f"{clamped_pct(utilization):.0f}%"
 
 
-def percent1(utilization: float) -> str:
+def percent1(utilization: float | None) -> str:
+    if utilization is None:
+        return "n/a"
     return f"{clamped_pct(utilization):.1f}%"
 
 

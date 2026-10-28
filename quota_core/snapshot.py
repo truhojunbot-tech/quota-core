@@ -47,7 +47,8 @@ class SnapshotWindow:
     window_start: int | None = None
     window_end: int | None = None
     resets_at: int | None = None
-    utilization: float = 0.0
+    # ``None`` = the provider reported no utilization (not the same as 0%).
+    utilization: float | None = 0.0
     total_tokens: int = 0
     requests: int = 0
     by_project: dict[str, AggregateBreakdown] = field(default_factory=dict)
@@ -189,7 +190,7 @@ def window_from_dict(data: dict[str, Any]) -> SnapshotWindow:
         window_start=data.get("window_start"),
         window_end=data.get("window_end"),
         resets_at=data.get("resets_at"),
-        utilization=float(data.get("utilization") or 0.0),
+        utilization=None if "utilization" in data and data["utilization"] is None else float(data.get("utilization") or 0.0),
         total_tokens=int(data.get("total_tokens") or 0),
         requests=int(data.get("requests") or 0),
         by_project=_aggregate_map(data.get("by_project", {})),
@@ -250,8 +251,8 @@ def validate_snapshot_dict(snapshot: dict[str, Any]) -> tuple[str, ...]:
         _validate_optional_int(window, "window_start", prefix, errors)
         _validate_optional_int(window, "window_end", prefix, errors)
         _validate_optional_int(window, "resets_at", prefix, errors)
-        if not isinstance(window.get("utilization", 0.0), (int, float)):
-            errors.append(f"{prefix}.utilization must be numeric")
+        if window.get("utilization", 0.0) is not None and not isinstance(window.get("utilization", 0.0), (int, float)):
+            errors.append(f"{prefix}.utilization must be numeric or null")
         if not isinstance(window.get("total_tokens", 0), int):
             errors.append(f"{prefix}.total_tokens must be an integer")
         if not isinstance(window.get("requests", 0), int):

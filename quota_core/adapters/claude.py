@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +16,7 @@ from quota_core.adapters.projects import (
     project_aggregates_from_raw,
 )
 from quota_core.config import ProviderConfig
+from quota_core.session.claude import dedupe_key
 from quota_core.snapshot import (
     AggregateBreakdown,
     NormalizedSnapshot,
@@ -30,12 +33,19 @@ WINDOW_SECONDS = {
 }
 MAX_LOCAL_SCAN_FILE_BYTES = 50 * 1024 * 1024
 VALID_CACHE_STATES = {"live", "cached", "stale", "unknown"}
+LIVE_MAX_AGE_SECONDS = 30
+CACHED_MAX_AGE_SECONDS = 300
 
 
-def normalize_claude_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
-    """Convert the existing Claude monitor payload into a normalized snapshot."""
+def normalize_claude_quota(payload: dict[str, Any], now: int | None = None) -> NormalizedSnapshot:
+    """Convert the existing Claude monitor payload into a normalized snapshot.
+
+    ``now`` (default: the current time) dates the payload: without an explicit
+    cache state, its freshness comes from the age of ``fetched_at``.
+    """
 
     sampled_at = int(payload.get("fetched_at") or 0)
+    now = int(time.time()) if now is None else now
     error = payload.get("error")
     if error:
         return NormalizedSnapshot(source="claude", sampled_at=sampled_at, errors=(str(error),))
@@ -54,12 +64,12 @@ def normalize_claude_quota(payload: dict[str, Any]) -> NormalizedSnapshot:
         runtime_requests = int(raw_window.get("runtime_requests") or 0)
         by_project = project_aggregates_from_raw(raw_window.get("by_project", {}), total_tokens)
         runtime_by_project = project_aggregates_from_raw(raw_window.get("runtime_by_project", {}), runtime_total)
-        cache_state = _cache_state(raw_window, payload)
+        cache_state = _cache_state(raw_window, payload, sampled_at, now)
         windows[window_name] = SnapshotWindow(
             window_start=window_start,
             window_end=window_end,
             resets_at=resets_at,
-            utilization=float(raw_window.get("utilization") or 0.0),
+            utilization=_optional_utilization(raw_window.get("utilization")),
             total_tokens=total_tokens,
             requests=sum(item.requests for item in by_project.values()),
             by_project=by_project,
@@ -100,6 +110,9 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     projects: dict[str, AggregateBreakdown] = {}
     skipped_large_files = 0
     malformed_usage_records = 0
+    # Claude Code writes one line per content block of a streamed response,
+    # each repeating the request's usage; resumed sessions copy whole records.
+    seen_keys: set[str] = set()
 
     for jsonl_file in sorted(projects_dir.rglob("*.jsonl")):
         project_name = normalize_project_name(jsonl_file.parent.name or "unknown")
@@ -121,12 +134,17 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
                 usage = _extract_usage(record)
                 if not usage:
                     continue
-                tokens = _usage_tokens(usage)
-                if tokens is None:
+                components = _usage_components(usage)
+                if components is None:
                     malformed_usage_records += 1
                     continue
+                tokens = sum(components.values())
                 if tokens <= 0:
                     continue
+                key = dedupe_key(record, components)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
                 model = _record_model(record)
                 total_tokens += tokens
                 requests += 1
@@ -165,13 +183,31 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
     return NormalizedSnapshot(source="claude", sampled_at=sampled_at, windows={"local_all": window}, warnings=warnings)
 
 
-def _cache_state(raw_window: dict[str, Any], payload: dict[str, Any]) -> str:
+def _cache_state(raw_window: dict[str, Any], payload: dict[str, Any], fetched_at: int, now: int) -> str:
     state = raw_window.get("cache_state") or payload.get("cache_state")
     if state in VALID_CACHE_STATES:
         return str(state)
     if raw_window.get("stale") or payload.get("stale"):
         return "stale"
-    return "live"
+    if fetched_at <= 0:
+        return "unknown"
+    age = max(0, now - fetched_at)
+    if age <= LIVE_MAX_AGE_SECONDS:
+        return "live"
+    if age <= CACHED_MAX_AGE_SECONDS:
+        return "cached"
+    return "stale"
+
+
+def _optional_utilization(value: Any) -> float | None:
+    """Reported utilization, or ``None`` when absent/unreadable (never a fake 0.0)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _optional_int(value: Any) -> int | None:
@@ -200,15 +236,15 @@ def _extract_usage(record: dict[str, Any]) -> dict[str, Any] | None:
     return usage if isinstance(usage, dict) else None
 
 
-def _usage_tokens(usage: dict[str, Any]) -> int | None:
-    """Total usage tokens, or ``None`` when a present component is not a number.
+def _usage_components(usage: dict[str, Any]) -> dict[str, int] | None:
+    """Usage token components, or ``None`` when a present component is not a number.
 
     A partly unreadable record is skipped as a whole rather than counted with
     the bad component as zero, which would understate the total silently.
     Only an absent/null component counts as zero; empty strings, containers,
     booleans, negative and fractional/non-finite counts are malformed.
     """
-    total = 0
+    components: dict[str, int] = {}
     for key in (
         "input_tokens",
         "output_tokens",
@@ -217,6 +253,7 @@ def _usage_tokens(usage: dict[str, Any]) -> int | None:
     ):
         value = usage.get(key)
         if value is None:
+            components[key] = 0
             continue
         if isinstance(value, bool) or not isinstance(value, (int, float, str)):
             return None
@@ -225,8 +262,8 @@ def _usage_tokens(usage: dict[str, Any]) -> int | None:
         parsed = _optional_int(value)
         if parsed is None or parsed < 0:
             return None
-        total += parsed
-    return total
+        components[key] = parsed
+    return components
 
 
 def _record_model(record: dict[str, Any]) -> str:
