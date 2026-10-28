@@ -66,6 +66,29 @@ class ClaudeLocalScanDedupeTests(unittest.TestCase):
         self.assertEqual(window.requests, 1)
         self.assertEqual(window.total_tokens, 115)
 
+    def test_streamed_usage_that_grows_counts_the_final_value(self):
+        # Later lines of one streamed request carry cumulative output_tokens;
+        # the request's cost is its final usage, not the first line's.
+        lines = [_assistant_line("req_1", "msg_1", 8), _assistant_line("req_1", "msg_1", 192)]
+        (self.project / "a.jsonl").write_text("\n".join(lines) + "\n")
+
+        window = self._scan().windows["local_all"]
+
+        self.assertEqual(window.requests, 1)
+        self.assertEqual(window.total_tokens, 10 + 192 + 100)
+        self.assertEqual(window.by_project["proj"].total_tokens, 302)
+        self.assertEqual(window.by_model["claude-opus-5-5"].total_tokens, 302)
+
+    def test_final_usage_wins_regardless_of_line_order(self):
+        # A resumed transcript may hold a later snapshot before an earlier one.
+        (self.project / "a.jsonl").write_text(_assistant_line("req_1", "msg_1", 192) + "\n")
+        (self.project / "b.jsonl").write_text(_assistant_line("req_1", "msg_1", 8) + "\n")
+
+        window = self._scan().windows["local_all"]
+
+        self.assertEqual(window.requests, 1)
+        self.assertEqual(window.total_tokens, 302)
+
     def test_records_without_request_id_fall_back_to_message_id(self):
         lines = [_assistant_line(None, "msg_1", 5), _assistant_line(None, "msg_1", 5), _assistant_line(None, "msg_2", 5)]
         (self.project / "a.jsonl").write_text("\n".join(lines) + "\n")

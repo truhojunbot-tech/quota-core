@@ -105,14 +105,13 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
             warnings=("claude projects_dir does not exist",),
         )
 
-    total_tokens = 0
-    requests = 0
-    projects: dict[str, AggregateBreakdown] = {}
     skipped_large_files = 0
     malformed_usage_records = 0
     # Claude Code writes one line per content block of a streamed response,
-    # each repeating the request's usage; resumed sessions copy whole records.
-    seen_keys: set[str] = set()
+    # each repeating the request's usage with cumulative (growing) output
+    # counts; resumed sessions copy whole records. Keep one entry per request,
+    # holding the component-wise maximum, i.e. its final usage.
+    by_key: dict[str, tuple[str, str | None, dict[str, int]]] = {}
 
     for jsonl_file in sorted(projects_dir.rglob("*.jsonl")):
         project_name = normalize_project_name(jsonl_file.parent.name or "unknown")
@@ -138,28 +137,36 @@ def scan_claude_local(config: ProviderConfig, sampled_at: int) -> NormalizedSnap
                 if components is None:
                     malformed_usage_records += 1
                     continue
-                tokens = sum(components.values())
-                if tokens <= 0:
+                if sum(components.values()) <= 0:
                     continue
                 key = dedupe_key(record, components)
-                if key in seen_keys:
+                seen = by_key.get(key)
+                if seen is None:
+                    by_key[key] = (project_name, _record_model(record), components)
                     continue
-                seen_keys.add(key)
-                model = _record_model(record)
-                total_tokens += tokens
-                requests += 1
-                current = projects.get(project_name, AggregateBreakdown())
-                models = dict(current.models)
-                model_requests = dict(current.model_requests)
-                if model:
-                    models[model] = models.get(model, 0) + tokens
-                    model_requests[model] = model_requests.get(model, 0) + 1
-                projects[project_name] = AggregateBreakdown(
-                    total_tokens=current.total_tokens + tokens,
-                    requests=current.requests + 1,
-                    models=models,
-                    model_requests=model_requests,
-                )
+                seen_project, seen_model, seen_components = seen
+                merged = {name: max(value, seen_components.get(name, 0)) for name, value in components.items()}
+                by_key[key] = (seen_project, seen_model or _record_model(record), merged)
+
+    total_tokens = 0
+    requests = 0
+    projects: dict[str, AggregateBreakdown] = {}
+    for project_name, model, components in by_key.values():
+        tokens = sum(components.values())
+        total_tokens += tokens
+        requests += 1
+        current = projects.get(project_name, AggregateBreakdown())
+        models = dict(current.models)
+        model_requests = dict(current.model_requests)
+        if model:
+            models[model] = models.get(model, 0) + tokens
+            model_requests[model] = model_requests.get(model, 0) + 1
+        projects[project_name] = AggregateBreakdown(
+            total_tokens=current.total_tokens + tokens,
+            requests=current.requests + 1,
+            models=models,
+            model_requests=model_requests,
+        )
 
     warnings: tuple[str, ...] = ()
     if skipped_large_files:
