@@ -98,7 +98,7 @@ def shadow_comparison_report(
     for record in records:
         evidence = evidence_by_task.get(record.task_id, QualityEvidence())
         decision = recommend_task_policy(
-            record, evidence
+            record, evidence, pricing.for_record(record) if pricing is not None else None
         ).to_dict()
         actual = {
             "review_fix_rounds": _actual_review_fix_rounds(),

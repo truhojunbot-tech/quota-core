@@ -45,7 +45,8 @@ class TokenComponentsTests(unittest.TestCase):
                                         "input_tokens_cached": 7, "reasoning_tokens": 0,
                                         "output_tokens_reasoning": 5})
         self.assertEqual(codex.cache_read, 0)
-        self.assertEqual(codex.tool_tokens, 0)
+        # Reasoning is a subset of output, never stored as additive tool tokens (#80).
+        self.assertIsNone(codex.tool_tokens)
         gemini = gemini_token_components({"prompt_token_count": 0, "input_tokens": 9,
                                          "candidates_token_count": 0, "output_tokens": 8,
                                          "total_token_count": 0, "total_tokens": 17})
@@ -66,8 +67,10 @@ class TokenComponentsTests(unittest.TestCase):
         self.assertEqual(components.output, 40)
         self.assertEqual(components.cache_read, 5000)
         self.assertEqual(components.cache_creation, 800)
-        # provider_total is derived (sum), not fabricated as one bucket collapsing the others.
-        self.assertEqual(components.provider_total, 5940)
+        # No total was reported, so none is stored (#80); the best-effort
+        # total is derived from the separate components instead.
+        self.assertIsNone(components.provider_total)
+        self.assertEqual(token_components_total(components), 5940)
         self.assertTrue(components.has_full_breakdown)
 
     def test_partial_provider_keeps_unknown_components_unknown(self):
@@ -88,8 +91,9 @@ class TokenComponentsTests(unittest.TestCase):
         self.assertEqual(components.output, 120)
         self.assertEqual(components.cache_read, 300)
         self.assertIsNone(components.cache_creation)
-        # provider_total must not add cached_input on top of input_tokens (which already includes it).
-        self.assertEqual(components.provider_total, 620)
+        # The derived total must not add cached_input on top of input_tokens (which already includes it).
+        self.assertIsNone(components.provider_total)
+        self.assertEqual(token_components_total(components), 620)
 
     def test_token_components_round_trip(self):
         components = TokenComponents(fresh_input=1, output=2, cache_read=3, cache_creation=4, tool_tokens=5, provider_total=15)

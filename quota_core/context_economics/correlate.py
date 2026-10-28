@@ -96,7 +96,10 @@ def correlate_task_economics(
 ) -> list[TaskEconomicsRecord]:
     """Join attribution records with provider usage into :class:`TaskEconomicsRecord`.
 
-    Each usage record is attributed to **at most one** task. When a record's
+    Each usage record is attributed to **at most one** task, across all
+    confidence tiers: a record already charged to one task is never charged
+    again at a lower tier to another (session-only and project heuristic
+    matches claim records in task order). When a record's
     window (with slop) overlaps more than one candidate task in the same
     provider session -- e.g. several quick sequential tasks close together --
     it is assigned exclusively to the task whose own window it is closest to
@@ -137,6 +140,10 @@ def correlate_task_economics(
     winner_index: dict[int, int] = {
         record_id: min(candidates, key=lambda pair: (pair[1], pair[0]))[0] for record_id, candidates in claims.items()
     }
+    # Every record any task has been charged with, across all tiers. Window
+    # winners are claimed up front; medium/low tier matches claim in task
+    # order, so no record is charged to more than one task (#80).
+    claimed: set[int] = set(winner_index)
 
     results: list[TaskEconomicsRecord] = []
     for idx, a in enumerate(attribution_list):
@@ -156,7 +163,7 @@ def correlate_task_economics(
                 )
         else:
             session_matches = [u for u in usage_list if a.provider_session_id and u.provider_session_id == a.provider_session_id]
-            unclaimed_session_matches = [u for u in session_matches if id(u) not in winner_index]
+            unclaimed_session_matches = [u for u in session_matches if id(u) not in claimed]
             if unclaimed_session_matches:
                 matched = unclaimed_session_matches
                 confidence = "medium"
@@ -167,11 +174,11 @@ def correlate_task_economics(
                 else:
                     notes.append("provider_session_id matched but no usage record overlapped the task time window")
             elif session_matches:
-                notes.append("provider_session_id matched but all overlapping usage records were exclusively assigned to other tasks")
+                notes.append("provider_session_id matched but all matching usage records were already assigned to other tasks")
 
         if not matched and a.project and a.started_at is not None:
             project_matches = [
-                u for u in usage_list if u.project == a.project and u.provider_session_id is None and id(u) not in winner_index
+                u for u in usage_list if u.project == a.project and u.provider_session_id is None and id(u) not in claimed
             ]
             proj_window_matches = [u for u in project_matches if _overlaps(u, a.started_at, a.completed_at)]
             if proj_window_matches:
@@ -180,6 +187,7 @@ def correlate_task_economics(
                 notes.append("matched by project + time-range heuristic only (no provider_session_id available)")
 
         if matched:
+            claimed.update(id(u) for u in matched)
             tokens = merge_token_components([u.tokens for u in matched])
             if len(matched) > 1:
                 notes.append(f"{len(matched)} usage records merged for this task")
