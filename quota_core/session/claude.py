@@ -348,6 +348,7 @@ class ClaudeSessionScanner:
             row["_prompt_hashes"].add(prompt_hash)
             row["total_tokens"] = int(row["total_tokens"]) + total
             row["api_calls"] = int(row["api_calls"]) + 1
+            row["input_tokens"] = int(row.get("input_tokens") or 0) + usage["input_tokens"]
             row["cache_read_input_tokens"] = int(row.get("cache_read_input_tokens") or 0) + usage["cache_read_input_tokens"]
             row["cache_creation_input_tokens"] = int(row.get("cache_creation_input_tokens") or 0) + usage["cache_creation_input_tokens"]
         uncached_input_tokens = usage["input_tokens"] + usage["cache_creation_input_tokens"]
@@ -396,7 +397,8 @@ class ClaudeSessionScanner:
                 span["last_ts"] = timestamp
 
     def _totals(self) -> dict[str, Any]:
-        cache_total = self.totals.cache_read_input_tokens + self.totals.cache_creation_input_tokens
+        # Same denominator as metrics_b1 M1: uncached input + cache write + cache read.
+        cache_total = self.totals.input_tokens + self.totals.cache_read_input_tokens + self.totals.cache_creation_input_tokens
         return {
             "input_tokens": self.totals.input_tokens,
             "sessions": len(self.session_spans),
@@ -609,7 +611,7 @@ def cache_efficiency_rows(rows: dict[str, dict[str, Any]], total_tokens: int) ->
     for row in diagnostic_rows(rows):
         cache_read = int(row.get("cache_read_input_tokens") or 0)
         cache_create = int(row.get("cache_creation_input_tokens") or 0)
-        cache_total = cache_read + cache_create
+        cache_total = int(row.get("input_tokens") or 0) + cache_read + cache_create
         result.append(
             {
                 "project": row.get("project"),
