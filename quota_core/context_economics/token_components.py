@@ -43,10 +43,9 @@ def claude_token_components(usage: dict[str, Any]) -> TokenComponents:
     output = _opt_int(usage.get("output_tokens"))
     cache_read = _opt_int(usage.get("cache_read_input_tokens"))
     cache_creation = _opt_int(usage.get("cache_creation_input_tokens"))
-    known = [v for v in (fresh_input, output, cache_read, cache_creation) if v is not None]
+    # Only a total the provider reported; a sum of whatever components
+    # happened to be present is not a total (#80).
     provider_total = _opt_int(usage.get("total_tokens"))
-    if provider_total is None and known:
-        provider_total = sum(known)
     return TokenComponents(
         fresh_input=fresh_input,
         output=output,
@@ -73,23 +72,19 @@ def codex_token_components(usage: dict[str, Any]) -> TokenComponents:
     raw_input = _opt_int(usage.get("input_tokens"))
     cached_input = _opt_int(_first_present(usage, "cached_input_tokens", "input_tokens_cached"))
     output = _opt_int(usage.get("output_tokens"))
-    reasoning = _opt_int(_first_present(usage, "reasoning_tokens", "output_tokens_reasoning"))
     if raw_input is not None and cached_input is not None:
         fresh_input = max(0, raw_input - cached_input)
     else:
         fresh_input = raw_input
     provider_total = _opt_int(usage.get("total_tokens"))
-    if provider_total is None:
-        # raw_input already includes cached_input -- do not add cached_input again.
-        known = [v for v in (raw_input, output) if v is not None]
-        if known:
-            provider_total = sum(known)
     return TokenComponents(
         fresh_input=fresh_input,
         output=output,
         cache_read=cached_input,
         cache_creation=None,
-        tool_tokens=reasoning,
+        # Reasoning is a subset of output, not an additive category; storing
+        # it as tool_tokens would count it twice in every total (#80).
+        tool_tokens=None,
         provider_total=provider_total,
     )
 
@@ -101,14 +96,12 @@ def gemini_token_components(usage: dict[str, Any]) -> TokenComponents:
     the component fields explicitly unknown rather than guessing a split.
     """
 
-    fresh_input = _opt_int(_first_present(usage, "prompt_token_count", "input_tokens"))
+    prompt = _opt_int(_first_present(usage, "prompt_token_count", "input_tokens"))
     output = _opt_int(_first_present(usage, "candidates_token_count", "output_tokens"))
     cache_read = _opt_int(usage.get("cached_content_token_count"))
+    # Cached content is a subset of the prompt, as with Codex.
+    fresh_input = max(0, prompt - cache_read) if prompt is not None and cache_read is not None else prompt
     provider_total = _opt_int(_first_present(usage, "total_token_count", "total_tokens"))
-    if provider_total is None:
-        known = [v for v in (fresh_input, output) if v is not None]
-        if known:
-            provider_total = sum(known)
     return TokenComponents(
         fresh_input=fresh_input,
         output=output,
