@@ -76,7 +76,7 @@ def iter_quota_windows(providers: tuple[ProviderDashboard, ...]) -> list[tuple[s
 
 
 def pressure_windows(providers: tuple[ProviderDashboard, ...]) -> list[tuple[str, DashboardWindow]]:
-    return sorted(iter_quota_windows(providers), key=lambda item: item[1].window.utilization, reverse=True)
+    return sorted(iter_quota_windows(providers), key=lambda item: item[1].window.utilization or 0.0, reverse=True)
 
 
 def next_reset_window(providers: tuple[ProviderDashboard, ...]) -> tuple[str, DashboardWindow] | None:
@@ -118,7 +118,7 @@ def snapshot_has_non_live_reason(snapshot: NormalizedSnapshot) -> bool:
 
 
 def window_is_quota(name: str, window: SnapshotWindow) -> bool:
-    return name != "local_all" and (window.resets_at is not None or window.window_start is not None or window.utilization > 0)
+    return name != "local_all" and (window.resets_at is not None or window.window_start is not None or (window.utilization or 0.0) > 0)
 
 
 def window_is_usage(name: str, window: SnapshotWindow) -> bool:
@@ -161,7 +161,7 @@ def _is_report_window(window: DashboardWindow) -> bool:
 def _primary_window(windows: tuple[DashboardWindow, ...]) -> DashboardWindow | None:
     quota_windows = [window for window in windows if window.is_quota and window.name in {"current_session", "current_week", "current_week_sonnet", "five_hour", "current_quota", "seven_day", "today"}]
     if quota_windows:
-        return max(quota_windows, key=lambda item: item.window.utilization)
+        return max(quota_windows, key=lambda item: item.window.utilization or 0.0)
     for window in windows:
         if window.name == "local_all":
             return window
