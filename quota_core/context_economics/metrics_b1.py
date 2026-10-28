@@ -359,6 +359,8 @@ def _github_followup(bot: str, issue: object, pr_number: object,
         if prs is None:
             return None
         for item in prs:
+            if not isinstance(item, dict):
+                continue
             at = _time(item.get("createdAt"))
             if at is None or not approved_at < at <= end or item.get("number") == pr_number:
                 continue
@@ -371,6 +373,8 @@ def _github_followup(bot: str, issue: object, pr_number: object,
         if events.returncode:
             return None
         history = json.loads(events.stdout)
+        if not isinstance(history, list):
+            return None
         if any(event.get("event") == "reopened" and
                (at := _time(event.get("created_at"))) is not None and approved_at < at <= end
                for event in history if isinstance(event, dict)):
