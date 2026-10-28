@@ -451,8 +451,9 @@ by temp file + rename. A receipt is windowed by its `created_at`, but its
 recompute lets such late receipts land (issue #99: three receipts created
 22:54–22:57Z completed 23:23–23:29Z). Every JSON row and the first table line
 carry `computed_at`; for unchanged sources a recompute is byte-identical except
-for that field. A window that fails keeps its earlier file — only a window with
-no file yet gets an error file. A rotated `HOOK_JSONL.1` is joined before the
+for that field. Both bodies are staged before either file moves, and the JSON
+is rolled back if the table cannot be published, so a window that fails keeps
+its earlier JSON/table pair — only a window with no file yet gets an error file. A rotated `HOOK_JSONL.1` is joined before the
 current segment. Files older than 14 days are pruned. M1 reports
 `no_tasks_db` when the bot has no `tasks.db` (matching M8).
 

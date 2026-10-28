@@ -68,16 +68,48 @@ def hook_input(current: Path, scratch_dir: Path) -> Iterator[Path]:
             joined.unlink(missing_ok=True)
 
 
-def _write(path: Path, body: str) -> None:
+def _stage(path: Path, body: str) -> Path:
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
                                      prefix=".metrics-", suffix=".tmp", delete=False) as temp:
         staged = Path(temp.name)
         try:
             temp.write(body)
             temp.flush()
-            os.replace(staged, path)
-        finally:
+        except BaseException:
             staged.unlink(missing_ok=True)
+            raise
+    return staged
+
+
+def _publish(json_path: Path, body: str, table_path: Path, table: str) -> None:
+    """Replace an hour's JSON/table pair, or leave the previous pair untouched.
+
+    Both bodies are staged before either file moves. If the table cannot be
+    published, the JSON is rolled back, so readers never see a new JSON next to
+    an old table.
+    """
+    staged: list[Path] = []
+    try:
+        staged.append(_stage(json_path, body))
+        staged.append(_stage(table_path, table))
+        previous = None
+        if json_path.exists():
+            previous = json_path.with_name(f".metrics-{json_path.name}.prev")
+            previous.unlink(missing_ok=True)
+            os.link(json_path, previous)
+            staged.append(previous)
+        os.replace(staged[0], json_path)
+        try:
+            os.replace(staged[1], table_path)
+        except BaseException:
+            if previous is not None:
+                os.replace(previous, json_path)
+            else:
+                json_path.unlink(missing_ok=True)
+            raise
+    finally:
+        for path in staged:
+            path.unlink(missing_ok=True)
 
 
 def render(rows: list[dict[str, object]], computed_at: str) -> tuple[str, str]:
@@ -124,8 +156,7 @@ def run(now: datetime, output_dir: str | Path, crew_root: str | Path, hook_log: 
                                        lifecycle_log=lifecycle_log)
                 computed_at = _stamp(clock())
                 body, table = render(rows, computed_at)
-                _write(json_path, body)
-                _write(table_path, table)
+                _publish(json_path, body, table_path, table)
             except Exception as error:  # one bad window must not cost the others
                 status = 1
                 reason = str(error) or type(error).__name__
@@ -133,11 +164,14 @@ def run(now: datetime, output_dir: str | Path, crew_root: str | Path, hook_log: 
                 if json_path.exists():
                     continue
                 computed_at = _stamp(clock())
-                _write(json_path, json.dumps([{
-                    "bot": None, "metric": "error", "value": None, "reason": reason,
-                    "since": _stamp(since), "until": _stamp(until),
-                    "computed_at": computed_at}], sort_keys=True) + "\n")
-                _write(table_path, f"computed_at: {computed_at}\nmetrics_b1 error: {reason}\n")
+                try:
+                    _publish(json_path, json.dumps([{
+                        "bot": None, "metric": "error", "value": None, "reason": reason,
+                        "since": _stamp(since), "until": _stamp(until),
+                        "computed_at": computed_at}], sort_keys=True) + "\n",
+                        table_path, f"computed_at: {computed_at}\nmetrics_b1 error: {reason}\n")
+                except OSError as write_error:
+                    print(f"metrics_b1_hourly {stem}: {write_error}", file=sys.stderr)
     _prune(output, windows[0][0] - RETENTION)
     return status
 

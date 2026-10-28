@@ -120,6 +120,52 @@ class HourlyRecomputeTests(unittest.TestCase):
         self.assertEqual((self.out / "20261028T21Z.json").read_bytes(), good)
         self.assertGreater(self._m1("20261028T22Z")["computed_at"], stamp)
 
+    def _snapshot(self) -> dict[str, bytes]:
+        return {path.name: path.read_bytes() for path in sorted(self.out.iterdir())}
+
+    def test_failed_table_publish_keeps_previous_consistent_pair(self):
+        now = H + timedelta(hours=1, minutes=7)
+        self._run(now, now)
+        before = self._snapshot()
+        real_replace = metrics_b1_hourly.os.replace
+
+        def table_fails(src, dst):
+            if str(dst).endswith("Z.txt"):
+                raise OSError("injected table replace failure")
+            return real_replace(src, dst)
+
+        with patch.object(metrics_b1_hourly.os, "replace", side_effect=table_fails):
+            self.assertEqual(self._run(now, now + timedelta(hours=1)), 1)
+        self.assertEqual(self._snapshot(), before)  # no new JSON, no staged leftovers
+
+    def test_failed_table_staging_keeps_previous_consistent_pair(self):
+        now = H + timedelta(hours=1, minutes=7)
+        self._run(now, now)
+        before = self._snapshot()
+        real_stage = metrics_b1_hourly._stage
+
+        def table_fails(path, body):
+            if path.suffix == ".txt":
+                raise OSError("injected table write failure")
+            return real_stage(path, body)
+
+        with patch.object(metrics_b1_hourly, "_stage", side_effect=table_fails):
+            self.assertEqual(self._run(now, now + timedelta(hours=1)), 1)
+        self.assertEqual(self._snapshot(), before)
+
+    def test_first_publish_failure_leaves_no_half_pair(self):
+        now = H + timedelta(hours=1, minutes=7)
+        real_replace = metrics_b1_hourly.os.replace
+
+        def table_fails(src, dst):
+            if str(dst).endswith("Z.txt"):
+                raise OSError("injected table replace failure")
+            return real_replace(src, dst)
+
+        with patch.object(metrics_b1_hourly.os, "replace", side_effect=table_fails):
+            self.assertEqual(self._run(now, now), 1)
+        self.assertEqual(self._snapshot(), {})
+
     def test_m1_reason_is_no_tasks_db_when_bot_has_no_db(self):
         rows = compute_metrics(H.timestamp(), (H + timedelta(hours=1)).timestamp(),
                                self.crew_root, self.hook_log, bots=["ghost", "alpha"])
