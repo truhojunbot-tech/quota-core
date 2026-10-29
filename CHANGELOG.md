@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added `metrics_b1_hourly`: each hourly B1.3 run also recomputes the previous
+  three complete hours and atomically rewrites their files with `computed_at`,
+  so receipts whose economics complete after the first snapshot are counted
+  (#99). M1 now says `no_tasks_db` when a bot has no tasks DB.
+
 - Wired known stale/misrouted review cascades and their observed token totals
   into the #80 shadow contract's orchestration-waste fields. Unknown or partial
   token evidence remains null; recommendations and pure policy cohorts are unchanged.
