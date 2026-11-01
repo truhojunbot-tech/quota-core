@@ -12,6 +12,7 @@ All source paths are caller-supplied. Sources are only read.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -43,27 +44,31 @@ def hour_windows(now: datetime, recompute_hours: int = RECOMPUTE_HOURS
 
 
 @contextmanager
-def hook_input(current: Path, scratch_dir: Path) -> Iterator[Path]:
-    """Join the rotated (``<path>.1``) and current segments in chronological order."""
+def hook_input(current: Path, scratch_dir: Path) -> Iterator[tuple[Path, str]]:
+    """Join hook segments and identify the real bytes used by the reader."""
     rotated = Path(str(current) + ".1")
     segments = [path for path in (rotated, current) if path.is_file()]
-    if not segments or segments == [current]:
-        yield current  # A missing log keeps metrics_b1's normal missing-source reason.
+    if not segments:
+        yield current, str(current)  # Preserve metrics_b1's missing-source reason.
         return
     with tempfile.NamedTemporaryFile(dir=scratch_dir, prefix=".hook-", suffix=".tmp",
                                      delete=False) as temp:
         joined = Path(temp.name)
         try:
+            sources = []
             for index, path in enumerate(segments):
                 last_byte = b""
+                digest = hashlib.sha256()
                 with path.open("rb") as source:
                     while block := source.read(1024 * 1024):
                         temp.write(block)
+                        digest.update(block)
                         last_byte = block[-1:]
+                sources.append(f"{path}#sha256={digest.hexdigest()}")
                 if index < len(segments) - 1 and last_byte not in (b"", b"\n"):
                     temp.write(b"\n")
             temp.flush()
-            yield joined
+            yield joined, ";".join(sources)
         finally:
             joined.unlink(missing_ok=True)
 
@@ -146,7 +151,7 @@ def run(now: datetime, output_dir: str | Path, crew_root: str | Path, hook_log: 
     output.mkdir(parents=True, exist_ok=True)
     windows = hour_windows(now, recompute_hours)
     status = 0
-    with hook_input(Path(hook_log).expanduser().resolve(), output) as hooks:
+    with hook_input(Path(hook_log).expanduser().resolve(), output) as (hooks, hook_source):
         for since, until in windows:
             stem = since.strftime("%Y%m%dT%H") + "Z"
             json_path, table_path = output / f"{stem}.json", output / f"{stem}.txt"
@@ -154,6 +159,9 @@ def run(now: datetime, output_dir: str | Path, crew_root: str | Path, hook_log: 
                 rows = compute_metrics(since.timestamp(), until.timestamp(), crew_root, hooks,
                                        memory_db=memory_db, transcript_root=transcript_root,
                                        lifecycle_log=lifecycle_log)
+                for row in rows:
+                    if row.get("source") == str(hooks):
+                        row["source"] = hook_source
                 computed_at = _stamp(clock())
                 body, table = render(rows, computed_at)
                 _publish(json_path, body, table_path, table)
