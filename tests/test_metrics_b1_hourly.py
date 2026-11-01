@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import tempfile
 import unittest
@@ -176,6 +177,44 @@ class HourlyRecomputeTests(unittest.TestCase):
         rows = compute_metrics(H.timestamp(), (H + timedelta(hours=1)).timestamp(),
                                self.crew_root, self.hook_log, bots=["alpha"])
         self.assertEqual(rows[0]["reason"], "no_complete_positive_economics_receipts_in_window")
+
+    def test_hook_sources_name_real_segments_not_deleted_join(self):
+        rotated = Path(str(self.hook_log) + ".1")
+        old_event = {"bot": "alpha", "ts": (H + timedelta(minutes=5)).isoformat(),
+                     "head_hash": "old", "bytes_emitted": 100}
+        new_event = {"bot": "alpha", "ts": (H + timedelta(minutes=10)).isoformat(),
+                     "head_hash": "new", "bytes_emitted": 120}
+        rotated.write_text(json.dumps(old_event) + "\n", encoding="utf-8")
+        self.hook_log.write_text(json.dumps(new_event) + "\n", encoding="utf-8")
+        now = H + timedelta(hours=1, minutes=7)
+        self.assertEqual(self._run(now, now), 0)
+        rows = json.loads((self.out / "20261028T22Z.json").read_text(encoding="utf-8"))
+        hook_rows = [row for row in rows if row["bot"] == "alpha"
+                     and row["metric"] in ("M2", "M4", "M5", "M6")]
+        expected = ";".join(
+            f"{path}#sha256={hashlib.sha256(path.read_bytes()).hexdigest()}"
+            for path in (rotated, self.hook_log))
+        self.assertEqual(len(hook_rows), 4)
+        self.assertEqual({row["source"] for row in hook_rows}, {expected})
+        self.assertTrue(all(str(self.out) not in row["source"] for row in hook_rows))
+        self.assertEqual(next(row for row in hook_rows if row["metric"] == "M2")["value"], 2)
+        self.assertEqual(next(row for row in hook_rows if row["metric"] == "M4")["value"]["max_bytes"], 120)
+
+        reference_log = self.hook_log.with_name("reference.jsonl")
+        reference_log.write_bytes(rotated.read_bytes() + self.hook_log.read_bytes())
+        reference = compute_metrics(H.timestamp(), (H + timedelta(hours=1)).timestamp(),
+                                    self.crew_root, reference_log)
+        self.assertEqual([{key: value for key, value in row.items()
+                           if key not in ("source", "computed_at")} for row in rows],
+                         [{key: value for key, value in row.items() if key != "source"}
+                          for row in reference])
+
+        rotated.unlink()
+        self.assertEqual(self._run(now, now + timedelta(minutes=1)), 0)
+        rows = json.loads((self.out / "20261028T22Z.json").read_text(encoding="utf-8"))
+        current_source = f"{self.hook_log}#sha256={hashlib.sha256(self.hook_log.read_bytes()).hexdigest()}"
+        self.assertEqual({row["source"] for row in rows if row["metric"] in ("M2", "M4", "M5", "M6")},
+                         {current_source})
 
 
 if __name__ == "__main__":

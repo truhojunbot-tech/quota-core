@@ -454,7 +454,10 @@ carry `computed_at`; for unchanged sources a recompute is byte-identical except
 for that field. Both bodies are staged before either file moves, and the JSON
 is rolled back if the table cannot be published, so a window that fails keeps
 its earlier JSON/table pair — only a window with no file yet gets an error file. A rotated `HOOK_JSONL.1` is joined before the
-current segment. Files older than 14 days are pruned. M1 reports
+current segment. Hook-derived rows (M2, M4, M5, M6) attribute their source to
+the real segment paths in read order, each suffixed with `#sha256=<hash>` of
+the bytes copied for that run; the deleted temporary join path is never
+published as a source. Files older than 14 days are pruned. M1 reports
 `no_tasks_db` when the bot has no `tasks.db` (matching M8).
 
 ## Provider context window (issue #70)

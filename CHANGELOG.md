@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed #124: hourly B1.3 hook-derived `source` now identifies the real hook
+  segment paths and their SHA-256 hashes, not the deleted temporary join file;
+  metric values are unchanged.
+
 - Added `metrics_b1_hourly`: each hourly B1.3 run also recomputes the previous
   three complete hours and atomically rewrites their files with `computed_at`,
   so receipts whose economics complete after the first snapshot are counted
